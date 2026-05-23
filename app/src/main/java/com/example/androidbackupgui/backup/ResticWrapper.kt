@@ -327,6 +327,12 @@ object ResticWrapper {
         env["RESTIC_PASSWORD"] = password
         if (backend != "local") {
             env.putAll(buildRcloneEnv(backend, backendUrl, backendUser, backendPass))
+            // restic shells out to `rclone` via PATH (RCLONE_PROGRAM not reliable)
+            val rcloneDir = File(rcloneBinaryPath).parent ?: ""
+            if (rcloneDir.isNotEmpty()) {
+                val currentPath = env.getOrDefault("PATH", "")
+                env["PATH"] = "$rcloneDir:$currentPath"
+            }
         }
         return env
     }
@@ -345,7 +351,6 @@ object ResticWrapper {
         pass: String
     ): Map<String, String> {
         val env = HashMap<String, String>()
-        env["RCLONE_PROGRAM"] = rcloneBinaryPath
         when (backend) {
             "webdav" -> {
                 env["RCLONE_CONFIG_MYREMOTE_TYPE"] = "webdav"
