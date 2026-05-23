@@ -73,12 +73,12 @@ object RestoreOperation {
             }
 
             // 1. Install APK
-            emit(RestoreProgress(index + 1, packages.size, pkg, "install", "正在安裝 APK…"))
+            emit(RestoreProgress(index + 1, packages.size, pkg, "install", "正在安装 APK…"))
             val installed = installApk(appBackupDir)
 
             if (!installed) {
                 fail++
-                emit(RestoreProgress(index + 1, packages.size, pkg, "done", "安裝失敗"))
+                emit(RestoreProgress(index + 1, packages.size, pkg, "done", "安装失败"))
                 continue
             }
 
@@ -86,19 +86,19 @@ object RestoreOperation {
             RootShell.exec("am force-stop '${pkg.shellEscape()}'")
 
             // 3. Restore data
-            emit(RestoreProgress(index + 1, packages.size, pkg, "data", "正在恢復數據…"))
+            emit(RestoreProgress(index + 1, packages.size, pkg, "data", "正在恢复数据…"))
             restoreData(appBackupDir)
 
             // 4. Restore OBB
-            emit(RestoreProgress(index + 1, packages.size, pkg, "obb", "正在恢復 OBB…"))
+            emit(RestoreProgress(index + 1, packages.size, pkg, "obb", "正在恢复 OBB…"))
             restoreObb(pkg, appBackupDir)
 
             // 5. Restore SSAID
-            emit(RestoreProgress(index + 1, packages.size, pkg, "ssaid", "正在恢復 SSAID…"))
+            emit(RestoreProgress(index + 1, packages.size, pkg, "ssaid", "正在恢复 SSAID…"))
             restoreSsaid(pkg, appBackupDir, userId)
 
             // 6. Restore permissions
-            emit(RestoreProgress(index + 1, packages.size, pkg, "permissions", "正在恢復權限…"))
+            emit(RestoreProgress(index + 1, packages.size, pkg, "permissions", "正在恢复权限…"))
             restorePermissions(pkg, appBackupDir)
 
             // 7. Fix data ownership and SELinux

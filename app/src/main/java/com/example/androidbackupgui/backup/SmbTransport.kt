@@ -2,7 +2,8 @@ package com.example.androidbackupgui.backup
 
 import android.util.Log
 import jcifs.CIFSContext
-import jcifs.context.SingletonContext
+import jcifs.config.PropertyConfiguration
+import jcifs.context.BaseContext
 import jcifs.smb.NtlmPasswordAuthenticator
 import jcifs.smb.SmbFile
 import jcifs.smb.SmbFileInputStream
@@ -10,6 +11,7 @@ import jcifs.smb.SmbFileOutputStream
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.util.Properties
 
 class SmbTransport(
     private val host: String,
@@ -21,11 +23,19 @@ class SmbTransport(
     companion object { private const val TAG = "SmbTransport" }
 
     private val context: CIFSContext by lazy {
+        val props = Properties().apply {
+            // Force SMB 2.0.2 minimum — SMB1 is disabled on modern Windows
+            setProperty("jcifs.smb.client.minVersion", "SMB202")
+            setProperty("jcifs.smb.client.maxVersion", "SMB311")
+            // Shorter timeouts for Android
+            setProperty("jcifs.smb.client.responseTimeout", "15000")
+            setProperty("jcifs.smb.client.connTimeout", "10000")
+        }
+        val base = BaseContext(PropertyConfiguration(props))
         if (username.isNotEmpty()) {
-            SingletonContext.getInstance()
-                .withCredentials(NtlmPasswordAuthenticator(/* domain */ "", username, password))
+            base.withCredentials(NtlmPasswordAuthenticator("", username, password))
         } else {
-            SingletonContext.getInstance()
+            base
         }
     }
 
@@ -87,13 +97,22 @@ class SmbTransport(
                 if (!dir.exists() || !dir.isDirectory) {
                     return@withContext Result.success(emptyList())
                 }
+                // SmbFile.getName() in jcifs-ng 2.1.x is broken — it concatenates
+                // parent-dir + filename without separator. Use the URL to extract
+                // the real basename. Trim trailing '/' first (dir URLs end with '/',
+                // which would give empty last-segment otherwise).
                 val entries = dir.listFiles()
-                    ?.map { RemoteTransport.RemoteFileInfo(
-                        name = it.name,
-                        size = if (it.isFile) it.length() else 0,
-                        isDirectory = it.isDirectory
-                    ) }
+                    ?.map { f ->
+                        val urlStr = f.toString().trimEnd('/')  // smb://host/share/test/keys
+                        val name = urlStr.substringAfterLast("/")
+                        RemoteTransport.RemoteFileInfo(
+                            name = name.ifEmpty { f.name },
+                            size = if (f.isFile) f.length() else 0,
+                            isDirectory = f.isDirectory
+                        )
+                    }
                     ?: emptyList()
+                Log.d(TAG, "listFiles $remoteDir -> ${entries.size} entries: ${entries.joinToString { "${it.name}(${if (it.isDirectory) "d" else "f"},${it.size})" }}")
                 Log.d(TAG, "listFiles $remoteDir -> ${entries.size} entries")
                 Result.success(entries)
             } catch (e: Exception) {

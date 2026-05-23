@@ -71,7 +71,7 @@ object BackupOperation {
             val appDir = File(backupRoot, app.packageName)
             appDir.mkdirs()
 
-            emit(BackupProgress(index + 1, apps.size, app.packageName, "apk", "正在備份 APK…"))
+            emit(BackupProgress(index + 1, apps.size, app.packageName, "apk", "正在备份 APK…"))
 
             // 1. Backup APK
             val paths = AppScanner.getApkPaths(app.packageName)
@@ -84,13 +84,13 @@ object BackupOperation {
 
             if (!apkOk) {
                 fail++
-                emit(BackupProgress(index + 1, apps.size, app.packageName, "done", "APK 備份失敗"))
+                emit(BackupProgress(index + 1, apps.size, app.packageName, "done", "APK 备份失败"))
                 continue
             }
 
             // 2. Backup user data (if configured)
             if (config.backupMode == 1 && config.backupUserData == 1) {
-                emit(BackupProgress(index + 1, apps.size, app.packageName, "data", "正在備份數據…"))
+                emit(BackupProgress(index + 1, apps.size, app.packageName, "data", "正在备份数据…"))
                 backupUserData(app.packageName, appDir, userId, config.compressionMethod)
             }
 
@@ -98,13 +98,13 @@ object BackupOperation {
             if (config.backupMode == 1 && config.backupObbData == 1) {
                 val hasObb = AppScanner.hasObbData(app.packageName)
                 if (hasObb) {
-                    emit(BackupProgress(index + 1, apps.size, app.packageName, "obb", "正在備份 OBB…"))
+                    emit(BackupProgress(index + 1, apps.size, app.packageName, "obb", "正在备份 OBB…"))
                     backupObb(app.packageName, appDir, config.compressionMethod)
                 }
             }
 
             // 4. Backup SSAID
-            emit(BackupProgress(index + 1, apps.size, app.packageName, "ssaid", "正在備份 SSAID…"))
+            emit(BackupProgress(index + 1, apps.size, app.packageName, "ssaid", "正在备份 SSAID…"))
             backupSsaid(app.packageName, appDir, userId)
 
             // 5. Backup runtime permissions

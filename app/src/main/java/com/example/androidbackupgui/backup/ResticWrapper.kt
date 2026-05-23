@@ -206,9 +206,9 @@ object ResticWrapper {
                     val msgType = json.optString("message_type", "")
                     if (msgType == "status") {
                         val percent = "%.1f".format(json.optDouble("percent_done", 0.0) * 100)
-                        emit("恢復進度: $percent%")
+                        emit("恢复进度: $percent%")
                     } else if (msgType == "summary") {
-                        emit("恢復完成: ${json.optInt("total_files", 0)} 個檔案")
+                        emit("恢复完成: ${json.optInt("total_files", 0)} 个文件")
                     }
                 } catch (_: Exception) { emit(line) }
             }
@@ -390,6 +390,39 @@ object ResticWrapper {
 
     // ── Internal helpers ───────────────────────────────
 
+    /** Clean up local temp repo and cache directories. */
+    private fun cleanupTempDirs() {
+        if (tempRepoDir.isEmpty()) return
+        try {
+            val repoDir = File(tempRepoDir)
+            if (repoDir.exists()) {
+                val deleted = repoDir.deleteRecursively()
+                Log.i(TAG, "cleanupTempDirs: deleted $tempRepoDir ($deleted)")
+            }
+            val cacheDir = File(tempRepoDir.substringBeforeLast("/") + "/restic_cache")
+            if (cacheDir.exists()) {
+                val deleted = cacheDir.deleteRecursively()
+                Log.i(TAG, "cleanupTempDirs: deleted cache $cacheDir ($deleted)")
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "cleanupTempDirs failed: ${e.message}")
+        }
+    }
+
+    /** True if [tempRepoDir] already contains an initialized restic repository (has a config file). */
+    private fun isLocalRepoPopulated(): Boolean {
+        if (tempRepoDir.isEmpty()) return false
+        return File(tempRepoDir, "config").isFile
+    }
+
+    /**
+     * Public safety-net cleanup called by fragment lifecycle.
+     * Waits for any in-progress operation to finish, then deletes temp dirs.
+     */
+    suspend fun cleanup() {
+        repoSyncMutex.withLock { cleanupTempDirs() }
+    }
+
     /** Build the full command list to run restic. */
     fun buildCommandArgs(args: List<String>): List<String> {
         val cmd = listOf(binaryPath) + args
@@ -465,6 +498,11 @@ object ResticWrapper {
      * Execute [action] with remote repo synced before/after as needed.
      * For local/rest-server backends, executes [action] directly without sync.
      * Protected by [repoSyncMutex] so concurrent operations don't corrupt tempRepoDir.
+     *
+     * Cleanup strategy:
+     * - Write ops (needsUpload=true): cleanup on success (synced to remote) or failure.
+     * - Read-only ops (needsUpload=false): keep local cache for subsequent operations.
+     * - Read-only ops skip download entirely if local repo is already populated.
      */
     private suspend fun <T> withRemoteSync(
         backend: String,
@@ -479,37 +517,65 @@ object ResticWrapper {
     ): Result<T> {
         if (backend != "smb" && backend != "webdav") return action()
 
-        // Serialize all tempRepoDir access — restic can only work on one repo at a time
         return repoSyncMutex.withLock {
-            val t = ensureTransport(backend, backendUrl, backendUser, backendPass, backendShare, repoPath)
-                ?: return@withLock Result.failure(Exception("Failed to create transport for backend: $backend"))
+            var shouldCleanup = false
+            try {
+                val t = ensureTransport(backend, backendUrl, backendUser, backendPass, backendShare, repoPath)
+                    ?: return@withLock Result.failure(Exception("Failed to create transport for backend: $backend"))
 
-            val localDir = File(tempRepoDir)
-            if (needsDownload) {
-                Log.i(TAG, "syncFromRemote start: $repoPath -> $tempRepoDir")
-                val syncResult = RemoteTransport.syncFromRemote(t, localDir, repoPath)
-                if (syncResult.isFailure) {
-                    Log.e(TAG, "syncFromRemote FAILED: ${syncResult.exceptionOrNull()?.message}")
-                    return@withLock Result.failure(Exception("syncFromRemote failed: ${syncResult.exceptionOrNull()?.message}"))
+                val localDir = File(tempRepoDir)
+
+                // Write ops always download to avoid overwriting remote changes.
+                // Read-only ops skip download if local repo is already present.
+                val actualDownload = needsDownload && (needsUpload || !isLocalRepoPopulated())
+                if (actualDownload) {
+                    Log.i(TAG, "syncFromRemote start: $repoPath -> $tempRepoDir")
+                    val syncResult = RemoteTransport.syncFromRemote(t, localDir, repoPath)
+                    if (syncResult.isFailure) {
+                        shouldCleanup = true
+                        Log.e(TAG, "syncFromRemote FAILED: ${syncResult.exceptionOrNull()?.message}")
+                        return@withLock Result.failure(
+                            Exception("syncFromRemote failed: ${syncResult.exceptionOrNull()?.message}")
+                        )
+                    }
+                    Log.i(TAG, "syncFromRemote complete")
+                } else if (needsDownload) {
+                    Log.i(TAG, "syncFromRemote skipped: local repo already populated")
                 }
-                Log.i(TAG, "syncFromRemote complete")
-            }
 
-            val result = action()
+                val result = action()
 
-            if (needsUpload && result.isSuccess) {
-                Log.i(TAG, "syncToRemote start: $tempRepoDir -> $repoPath")
-                val uploadResult = RemoteTransport.syncToRemote(t, localDir, repoPath)
-                if (uploadResult.isFailure) {
-                    Log.e(TAG, "syncToRemote FAILED: ${uploadResult.exceptionOrNull()?.message}")
-                    return@withLock Result.failure(
-                        Exception("syncToRemote failed: ${uploadResult.exceptionOrNull()?.message}")
-                    )
+                if (needsUpload && result.isSuccess) {
+                    Log.i(TAG, "syncToRemote start: $tempRepoDir -> $repoPath")
+                    val uploadResult = RemoteTransport.syncToRemote(t, localDir, repoPath)
+                    if (uploadResult.isFailure) {
+                        shouldCleanup = true
+                        Log.e(TAG, "syncToRemote FAILED: ${uploadResult.exceptionOrNull()?.message}")
+                        return@withLock Result.failure(
+                            Exception("syncToRemote failed: ${uploadResult.exceptionOrNull()?.message}")
+                        )
+                    }
+                    Log.i(TAG, "syncToRemote complete")
+                    shouldCleanup = true
+                } else if (result.isFailure) {
+                    shouldCleanup = true
                 }
-                Log.i(TAG, "syncToRemote complete")
-            }
 
-            result
+                result
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                shouldCleanup = true
+                throw e
+            } catch (e: Exception) {
+                shouldCleanup = true
+                Result.failure(e)
+            } finally {
+                if (shouldCleanup) {
+                    Log.i(TAG, "withRemoteSync: cleaning up temp dirs")
+                    cleanupTempDirs()
+                } else {
+                    Log.d(TAG, "withRemoteSync: keeping local repo for subsequent ops")
+                }
+            }
         }
     }
 

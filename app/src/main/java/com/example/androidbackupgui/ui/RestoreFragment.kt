@@ -15,6 +15,7 @@ import com.example.androidbackupgui.backup.ResticBinary
 import com.example.androidbackupgui.backup.ResticWrapper
 import com.example.androidbackupgui.backup.WifiManager
 import com.example.androidbackupgui.databinding.FragmentRestoreBinding
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import java.io.File
 
@@ -71,7 +72,7 @@ class RestoreFragment : Fragment() {
             selectedSnapshot = null
             loadBackupDir(backupDirs.first())
         } else {
-            binding.statusText.text = "未找到備份目錄，請確保 Backup_* 資料夾存在於 ${defaultDir.absolutePath}"
+            binding.statusText.text = "未找到备份目录，请确保 Backup_* 文件夹存在于 ${defaultDir.absolutePath}"
         }
     }
 
@@ -93,19 +94,17 @@ class RestoreFragment : Fragment() {
         selectedPackages.clear()
         selectedPackages.addAll(packages)
 
-        // Resolve app labels for display
-        appInfos = AppScanner.resolveLabels(requireContext(), packages.map { AppInfo(packageName = it) })
-
-        binding.statusText.text = "共 ${packages.size} 個備份應用"
+        binding.statusText.text = "共 ${packages.size} 个备份应用"
         binding.restoreButton.isEnabled = packages.isNotEmpty()
 
+        appInfos = AppScanner.resolveLabels(requireContext(), packages.map { AppInfo(packageName = it) })
         setupAppList()
     }
 
     private fun selectResticSnapshot() {
         val config = resticConfig ?: return
         setRunning(true)
-        binding.statusText.text = "正在讀取 restic 快照列表…"
+        binding.statusText.text = "正在读取 restic 快照列表…"
 
         viewLifecycleOwner.lifecycleScope.launch {
             val snapshotsResult = ResticWrapper.listSnapshots(
@@ -117,14 +116,14 @@ class RestoreFragment : Fragment() {
                 backendShare = config.resticBackendShare
             )
             if (snapshotsResult.isFailure) {
-                binding.statusText.text = "讀取快照失敗: ${snapshotsResult.exceptionOrNull()?.message}"
+                binding.statusText.text = "读取快照失败: ${snapshotsResult.exceptionOrNull()?.message}"
                 setRunning(false)
                 return@launch
             }
 
             val snapshots = snapshotsResult.getOrThrow()
             if (snapshots.isEmpty()) {
-                binding.statusText.text = "沒有可用的 restic 快照"
+                binding.statusText.text = "没有可用的 restic 快照"
                 setRunning(false)
                 return@launch
             }
@@ -133,7 +132,7 @@ class RestoreFragment : Fragment() {
             backupDir = null
             selectedSnapshot = snapshots.first()
             val backupPath = selectedSnapshot!!.paths.firstOrNull() ?: run {
-                binding.statusText.text = "快照中找不到備份路徑"
+                binding.statusText.text = "快照中找不到备份路径"
                 setRunning(false)
                 return@launch
             }
@@ -147,19 +146,19 @@ class RestoreFragment : Fragment() {
             }
 
             if (packages.isEmpty()) {
-                binding.statusText.text = "無法從快照讀取應用列表"
+                binding.statusText.text = "无法从快照读取应用列表"
                 setRunning(false)
                 return@launch
             }
 
-            binding.backupDirText.text = "restic: ${selectedSnapshot!!.time.take(19)} (${snapshots.size} 個快照可用)"
+            binding.backupDirText.text = "restic: ${selectedSnapshot!!.time.take(19)} (${snapshots.size} 个快照可用)"
             selectedPackages.clear()
             selectedPackages.addAll(packages)
 
             // Resolve app labels for display
             appInfos = AppScanner.resolveLabels(requireContext(), packages.map { AppInfo(packageName = it) })
 
-            binding.statusText.text = "restic 快照共 ${packages.size} 個應用，點擊恢復開始"
+            binding.statusText.text = "restic 快照共 ${packages.size} 个应用，点击恢复开始"
             binding.restoreButton.isEnabled = true
             setRunning(false)
             setupAppList()
@@ -187,7 +186,7 @@ class RestoreFragment : Fragment() {
     private fun setupAppList() {
         binding.appList.adapter = PackageListAdapter(appInfos, selectedPackages) { pkg, checked ->
             if (checked) selectedPackages.add(pkg) else selectedPackages.remove(pkg)
-            binding.statusText.text = "已選擇 ${selectedPackages.size}/${packages.size} 個應用"
+            binding.statusText.text = "已选择 ${selectedPackages.size}/${packages.size} 个应用"
         }
     }
 
@@ -209,7 +208,7 @@ class RestoreFragment : Fragment() {
                 val staging = File(requireContext().cacheDir, "restic_restore_${snapshot.shortId}")
                 staging.mkdirs()
 
-                binding.statusText.text = "正在從 restic 快照恢復到暫存目錄…"
+                binding.statusText.text = "正在从 restic 快照恢复到暂存目录…"
                 val restoreResult = ResticWrapper.restore(
                     repoPath = config.resticRepo,
                     password = config.resticPassword,
@@ -224,7 +223,7 @@ class RestoreFragment : Fragment() {
                 )
 
                 if (restoreResult.isFailure) {
-                    binding.statusText.text = "restic 恢復失敗: ${restoreResult.exceptionOrNull()?.message}"
+                    binding.statusText.text = "restic 恢复失败: ${restoreResult.exceptionOrNull()?.message}"
                     setRunning(false)
                     binding.selectDirButton.isEnabled = true
                     return@launch
@@ -232,7 +231,7 @@ class RestoreFragment : Fragment() {
 
                 // The restored backup directory: <staging>/<original_absolute_path>
                 val restoredBackupDir = File(staging, backupPath.removePrefix("/"))
-                binding.statusText.text = "正在從恢復的備份安裝應用…"
+                binding.statusText.text = "正在从恢复的备份安装应用…"
 
                 val r = RestoreOperation.restoreApps(
                     backupDir = restoredBackupDir,
@@ -266,10 +265,10 @@ class RestoreFragment : Fragment() {
             }
 
             binding.statusText.text = buildString {
-                appendLine("恢復完成！")
-                appendLine("成功: ${result.successCount}  失敗: ${result.failCount}")
-                appendLine("耗時: ${result.elapsedMs / 1000}秒")
-                appendLine("如有 SSAID，請立即重啟設備後再開啟應用")
+                appendLine("恢复完成！")
+                appendLine("成功: ${result.successCount}  失败: ${result.failCount}")
+                appendLine("耗时: ${result.elapsedMs / 1000}秒")
+                appendLine("如有 SSAID，请立即重启设备后再开启应用")
             }
             setRunning(false)
             binding.selectDirButton.isEnabled = true
@@ -281,6 +280,9 @@ class RestoreFragment : Fragment() {
     }
 
     override fun onDestroyView() {
+        viewLifecycleOwner.lifecycleScope.launch(Dispatchers.IO) {
+            ResticWrapper.cleanup()
+        }
         super.onDestroyView()
         _binding = null
     }

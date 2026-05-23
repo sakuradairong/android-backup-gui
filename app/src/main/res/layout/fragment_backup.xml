@@ -17,7 +17,7 @@
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
-            android:text="應用備份"
+            android:text="应用备份"
             android:textAppearance="@style/TextAppearance.Material3.HeadlineSmall"
             android:textColor="?attr/colorOnSurface" />
 
@@ -25,7 +25,7 @@
             android:id="@+id/scanButton"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="掃描應用"
+            android:text="扫描应用"
             style="@style/Widget.Material3.Button.TonalButton" />
     </LinearLayout>
 
@@ -44,7 +44,7 @@
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_marginTop="8dp"
-        android:text="點擊掃描以載入應用列表"
+        android:text="点击扫描以载入应用列表"
         android:textAppearance="@style/TextAppearance.Material3.BodySmall"
         android:textColor="?attr/colorOnSurfaceVariant" />
 
@@ -63,7 +63,7 @@
         android:layout_height="wrap_content"
         android:layout_marginTop="12dp"
         android:enabled="false"
-        android:text="開始備份選中應用"
+        android:text="开始备份选中应用"
         style="@style/Widget.Material3.Button" />
 
 </LinearLayout>

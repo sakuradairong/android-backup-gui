@@ -15,6 +15,7 @@ import com.example.androidbackupgui.backup.ResticBinary
 import com.example.androidbackupgui.backup.ResticWrapper
 import com.example.androidbackupgui.backup.WifiManager
 import com.example.androidbackupgui.databinding.FragmentBackupBinding
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import java.io.File
 
@@ -48,7 +49,7 @@ class BackupFragment : Fragment() {
     private fun scanApps() {
         binding.backupButton.isEnabled = false
         setRunning(true)
-        binding.statusText.text = "正在掃描應用…"
+        binding.statusText.text = "正在扫描应用…"
 
         viewLifecycleOwner.lifecycleScope.launch {
             val ctx = requireContext()
@@ -58,7 +59,7 @@ class BackupFragment : Fragment() {
             selectedApps.clear()
             selectedApps.addAll(apps.map { it.packageName })
 
-            binding.statusText.text = "共找到 ${apps.size} 個應用，全部已選中"
+            binding.statusText.text = "共找到 ${apps.size} 个应用，全部已选中"
             binding.backupButton.isEnabled = apps.isNotEmpty()
             setRunning(false)
 
@@ -69,7 +70,7 @@ class BackupFragment : Fragment() {
     private fun setupAppList() {
         binding.appList.adapter = PackageListAdapter(apps, selectedApps) { pkg, checked ->
             if (checked) selectedApps.add(pkg) else selectedApps.remove(pkg)
-            binding.statusText.text = "已選擇 ${selectedApps.size}/${apps.size} 個應用"
+            binding.statusText.text = "已选择 ${selectedApps.size}/${apps.size} 个应用"
         }
     }
 
@@ -105,7 +106,7 @@ class BackupFragment : Fragment() {
                 if (binaryPath != null) {
                     ResticWrapper.binaryPath = binaryPath
                     ResticWrapper.tempRepoDir = ResticBinary.getTempRepoDir(requireContext())
-                    binding.statusText.text = "正在寫入 restic 去重倉庫…"
+                    binding.statusText.text = "正在写入 restic 去重仓库…"
                     val resticResult = ResticWrapper.backup(
                         repoPath = config.resticRepo,
                         password = config.resticPassword,
@@ -130,23 +131,23 @@ class BackupFragment : Fragment() {
                     resticResult.fold(
                         onSuccess = { resticSummary = it },
                         onFailure = { e ->
-                            binding.statusText.text = "restic 快照失敗: ${e.message}"
+                            binding.statusText.text = "restic 快照失败: ${e.message}"
                         }
                     )
                 }
             }
 
             binding.statusText.text = buildString {
-                appendLine("備份完成！")
-                appendLine("成功: ${result.successCount}  失敗: ${result.failCount}")
-                appendLine("耗時: ${result.elapsedMs / 1000}秒")
-                appendLine("輸出: ${result.outputDir}")
+                appendLine("备份完成！")
+                appendLine("成功: ${result.successCount}  失败: ${result.failCount}")
+                appendLine("耗时: ${result.elapsedMs / 1000}秒")
+                appendLine("输出: ${result.outputDir}")
                 if (resticSummary != null) {
                     appendLine()
                     appendLine("── Restic 快照 ──")
                     appendLine("ID: ${resticSummary!!.snapshotId.take(8)}…")
                     appendLine("新增: ${resticSummary!!.dataAdded / 1024 / 1024} MB")
-                    appendLine("檔案: ${resticSummary!!.totalFilesProcessed}")
+                    appendLine("文件: ${resticSummary!!.totalFilesProcessed}")
                 }
             }
             setRunning(false)
@@ -159,6 +160,9 @@ class BackupFragment : Fragment() {
     }
 
     override fun onDestroyView() {
+        viewLifecycleOwner.lifecycleScope.launch(Dispatchers.IO) {
+            ResticWrapper.cleanup()
+        }
         super.onDestroyView()
         _binding = null
     }

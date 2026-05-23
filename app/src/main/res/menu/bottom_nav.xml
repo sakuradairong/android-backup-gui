@@ -3,11 +3,11 @@
     <item
         android:id="@+id/nav_backup"
         android:icon="@drawable/ic_backup"
-        android:title="備份" />
+        android:title="备份" />
     <item
         android:id="@+id/nav_restore"
         android:icon="@drawable/ic_restore"
-        android:title="恢復" />
+        android:title="恢复" />
     <item
         android:id="@+id/nav_config"
         android:icon="@drawable/ic_config"

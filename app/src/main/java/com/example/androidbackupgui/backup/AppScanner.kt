@@ -58,20 +58,20 @@ object AppScanner {
     }
 
     /**
-     * Resolve human-readable app labels using PackageManager (fast, no root).
-     * Falls back to dumpsys for packages that PackageManager can't resolve.
+     * Resolve human-readable app labels using PackageManager.
+     * Requires QUERY_ALL_PACKAGES permission on Android 11+ (declared in manifest).
+     * Falls back to package name for unreadable packages.
      * Modifies the list in-place and returns it.
      */
     fun resolveLabels(context: Context, packages: List<AppInfo>): List<AppInfo> {
+        if (packages.isEmpty()) return packages
         val pm = context.packageManager
         for (app in packages) {
             app.label = try {
                 val ai = pm.getApplicationInfo(app.packageName, 0)
                 pm.getApplicationLabel(ai).toString()
             } catch (_: PackageManager.NameNotFoundException) {
-                // PackageManager can't resolve (e.g. some system packages) —
-                // leave empty; caller can use getAppLabel() for root-based fallback
-                ""
+                app.packageName
             }
         }
         return packages

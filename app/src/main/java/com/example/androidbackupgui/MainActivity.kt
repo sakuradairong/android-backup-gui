@@ -23,7 +23,7 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityMainBinding
 
-    private val pageTitles = listOf("應用備份", "應用恢復", "備份配置")
+    private val pageTitles = listOf("应用备份", "应用恢复", "备份配置")
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)

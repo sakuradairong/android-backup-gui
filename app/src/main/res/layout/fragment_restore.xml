@@ -17,7 +17,7 @@
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
-            android:text="應用恢復"
+            android:text="应用恢复"
             android:textAppearance="@style/TextAppearance.Material3.HeadlineSmall"
             android:textColor="?attr/colorOnSurface" />
 
@@ -45,7 +45,7 @@
         android:layout_marginTop="12dp"
         android:ellipsize="middle"
         android:singleLine="true"
-        android:text="未選擇備份目錄"
+        android:text="未选择备份目录"
         android:textAppearance="@style/TextAppearance.Material3.BodySmall"
         android:textColor="?attr/colorOnSurfaceVariant" />
 
@@ -64,7 +64,7 @@
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_marginTop="8dp"
-        android:text="請先選擇備份資料夾"
+        android:text="请先选择备份文件夹"
         android:textAppearance="@style/TextAppearance.Material3.BodySmall"
         android:textColor="?attr/colorOnSurfaceVariant" />
 
@@ -83,7 +83,7 @@
         android:layout_height="wrap_content"
         android:layout_marginTop="12dp"
         android:enabled="false"
-        android:text="開始恢復選中應用"
+        android:text="开始恢复选中应用"
         style="@style/Widget.Material3.Button" />
 
 </LinearLayout>

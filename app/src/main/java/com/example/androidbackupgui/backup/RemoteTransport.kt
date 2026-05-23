@@ -117,8 +117,11 @@ interface RemoteTransport {
             try {
                 localDir.mkdirs()
                 val remoteFiles = listRemoteRecursive(transport, remoteDir)
+                // Root dir not found (404): treat as empty remote — nothing to download.
+                // This is normal for first-time init where the repo doesn't exist yet.
                 if (remoteFiles == null) {
-                    return@withContext Result.failure(Exception("syncFromRemote: failed to list remote files"))
+                    Log.w(TAG, "syncFromRemote: remote dir '$remoteDir' not accessible, treating as empty")
+                    return@withContext Result.success(Unit)
                 }
                 val remoteByPath = remoteFiles.associateBy { it.path }
                 val errors = mutableListOf<String>()
@@ -141,6 +144,14 @@ interface RemoteTransport {
                     }
                 }
 
+                // If any download failed, abort before deleting local files —
+                // deleting would destroy valid data for an incomplete sync.
+                if (errors.isNotEmpty()) {
+                    return@withContext Result.failure(
+                        Exception("syncFromRemote: ${errors.size} file(s) failed: ${errors.joinToString("; ")}")
+                    )
+                }
+
                 // Delete local files not on remote (e.g. after prune on another client)
                 val localFiles = walkLocalFiles(localDir)
                 for (relPath in localFiles.keys) {
@@ -149,12 +160,6 @@ interface RemoteTransport {
                         Log.i(TAG, "syncFromRemote deleting stale local: $relPath")
                         try { localFile.delete() } catch (_: Exception) {}
                     }
-                }
-
-                if (errors.isNotEmpty()) {
-                    return@withContext Result.failure(
-                        Exception("syncFromRemote: ${errors.size} file(s) failed: ${errors.joinToString("; ")}")
-                    )
                 }
                 Result.success(Unit)
             } catch (e: Exception) {
@@ -176,10 +181,12 @@ interface RemoteTransport {
             try {
                 val localFiles = walkLocalFiles(localDir)
                 val remoteResult = listRemoteRecursive(transport, remoteDir)
+                // If the remote dir is not accessible (404 or network error), treat as empty.
+                // Any real upload errors will surface during the actual file uploads below.
                 if (remoteResult == null) {
-                    return@withContext Result.failure(Exception("syncToRemote: failed to list remote files"))
+                    Log.w(TAG, "syncToRemote: remote dir '$remoteDir' not accessible, treating as empty")
                 }
-                val remoteByPath = remoteResult.associateBy { it.path }
+                val remoteByPath = (remoteResult ?: emptyList()).associateBy { it.path }
                 val errors = mutableListOf<String>()
 
                 // Collect unique parent directories that need to exist on remote
@@ -211,18 +218,20 @@ interface RemoteTransport {
                     }
                 }
 
+                // If any upload failed, abort before deleting remote files —
+                // deleting during failed sync could lose the only copy on remote.
+                if (errors.isNotEmpty()) {
+                    return@withContext Result.failure(
+                        Exception("syncToRemote: ${errors.size} file(s) failed: ${errors.joinToString("; ")}")
+                    )
+                }
+
                 // Delete remote files no longer present locally
                 for (relPath in remoteByPath.keys) {
                     if (relPath !in localFiles) {
                         Log.i(TAG, "syncToRemote deleting stale: $relPath")
                         transport.delete("$remoteDir/$relPath")
                     }
-                }
-
-                if (errors.isNotEmpty()) {
-                    return@withContext Result.failure(
-                        Exception("syncToRemote: ${errors.size} file(s) failed: ${errors.joinToString("; ")}")
-                    )
                 }
                 Result.success(Unit)
             } catch (e: Exception) {

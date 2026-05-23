@@ -12,7 +12,7 @@
         android:layout_height="wrap_content"
         android:orientation="vertical">
 
-        <!-- ═══════ 備份選項 ═══════ -->
+        <!-- ═══════ 备份选项 ═══════ -->
         <com.google.android.material.card.MaterialCardView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
@@ -30,7 +30,7 @@
                 <TextView
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:text="備份選項"
+                    android:text="备份选项"
                     android:textAppearance="@style/TextAppearance.Material3.TitleMedium"
                     android:textColor="?attr/colorPrimary" />
 
@@ -39,40 +39,40 @@
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:layout_marginTop="12dp"
-                    android:text="備份數據+安裝包 (關閉則僅備份安裝包)" />
+                    android:text="备份数据+安装包 (关闭则仅备份安装包)" />
 
                 <com.google.android.material.switchmaterial.SwitchMaterial
                     android:id="@+id/backupUserDataSwitch"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:layout_marginTop="4dp"
-                    android:text="備份使用者數據" />
+                    android:text="备份用户数据" />
 
                 <com.google.android.material.switchmaterial.SwitchMaterial
                     android:id="@+id/backupObbSwitch"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:layout_marginTop="4dp"
-                    android:text="備份 OBB 外部數據包" />
+                    android:text="备份 OBB 外部数据包" />
 
                 <com.google.android.material.switchmaterial.SwitchMaterial
                     android:id="@+id/backupWifiSwitch"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:layout_marginTop="4dp"
-                    android:text="備份 WiFi 設定" />
+                    android:text="备份 WiFi 设置" />
 
                 <com.google.android.material.switchmaterial.SwitchMaterial
                     android:id="@+id/ignoreRunningSwitch"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:layout_marginTop="4dp"
-                    android:text="忽略運行中的應用" />
+                    android:text="忽略运行中的应用" />
 
             </LinearLayout>
         </com.google.android.material.card.MaterialCardView>
 
-        <!-- ═══════ 輸出路徑 ═══════ -->
+        <!-- ═══════ 输出路径 ═══════ -->
         <com.google.android.material.card.MaterialCardView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
@@ -90,7 +90,7 @@
                 <TextView
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:text="輸出路徑"
+                    android:text="输出路径"
                     android:textAppearance="@style/TextAppearance.Material3.TitleMedium"
                     android:textColor="?attr/colorPrimary" />
 
@@ -98,7 +98,7 @@
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:layout_marginTop="12dp"
-                    android:hint="輸出路徑 (留空使用默認)"
+                    android:hint="输出路径 (留空使用默认)"
                     style="@style/Widget.Material3.TextInputLayout.OutlinedBox">
                     <com.google.android.material.textfield.TextInputEditText
                         android:id="@+id/outputPathEdit"
@@ -111,7 +111,7 @@
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:layout_marginTop="8dp"
-                    android:hint="壓縮算法 (zstd / tar)"
+                    android:hint="压缩算法 (zstd / tar)"
                     style="@style/Widget.Material3.TextInputLayout.OutlinedBox">
                     <com.google.android.material.textfield.TextInputEditText
                         android:id="@+id/compressionEdit"
@@ -124,7 +124,7 @@
             </LinearLayout>
         </com.google.android.material.card.MaterialCardView>
 
-        <!-- ═══════ Restic 雲端備份 ═══════ -->
+        <!-- ═══════ Restic 云端备份 ═══════ -->
         <com.google.android.material.card.MaterialCardView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
@@ -142,7 +142,7 @@
                 <TextView
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:text="Restic 雲端備份"
+                    android:text="Restic 云端备份"
                     android:textAppearance="@style/TextAppearance.Material3.TitleMedium"
                     android:textColor="?attr/colorPrimary" />
 
@@ -151,14 +151,14 @@
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:layout_marginTop="12dp"
-                    android:text="啟用 restic 增量去重 (需安裝 restic 二進制)" />
+                    android:text="启用 restic 增量去重 (需安装 restic 二进制)" />
 
                 <!-- Backend selector -->
                 <TextView
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:layout_marginTop="12dp"
-                    android:text="儲存位置"
+                    android:text="存储位置"
                     android:textAppearance="@style/TextAppearance.Material3.LabelLarge"
                     android:textColor="?attr/colorOnSurface" />
 
@@ -175,7 +175,7 @@
                         android:layout_width="0dp"
                         android:layout_height="wrap_content"
                         android:layout_weight="1"
-                        android:text="本機"
+                        android:text="本机"
                         style="@style/Widget.Material3.Button.TonalButton" />
 
                     <com.google.android.material.button.MaterialButton
@@ -227,7 +227,7 @@
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:layout_marginTop="8dp"
-                    android:hint="SMB 共享名稱 (如 backup、shared)"
+                    android:hint="SMB 共享名称 (如 backup、shared)"
                     android:visibility="gone"
                     style="@style/Widget.Material3.TextInputLayout.OutlinedBox">
                     <com.google.android.material.textfield.TextInputEditText
@@ -243,7 +243,7 @@
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:layout_marginTop="8dp"
-                    android:hint="用戶名"
+                    android:hint="用户名"
                     android:visibility="gone"
                     style="@style/Widget.Material3.TextInputLayout.OutlinedBox">
                     <com.google.android.material.textfield.TextInputEditText
@@ -259,7 +259,7 @@
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:layout_marginTop="8dp"
-                    android:hint="密碼"
+                    android:hint="密码"
                     android:visibility="gone"
                     style="@style/Widget.Material3.TextInputLayout.OutlinedBox">
                     <com.google.android.material.textfield.TextInputEditText
@@ -275,7 +275,7 @@
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:layout_marginTop="8dp"
-                    android:hint="倉庫路徑 (本機: /sdcard/restic-repo / 雲端: 目錄名如 android-backups)"
+                    android:hint="仓库路径 (本机: /sdcard/restic-repo / 云端: 目录名如 android-backups)"
                     style="@style/Widget.Material3.TextInputLayout.OutlinedBox">
                     <com.google.android.material.textfield.TextInputEditText
                         android:id="@+id/resticRepoEdit"
@@ -289,7 +289,7 @@
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:layout_marginTop="8dp"
-                    android:hint="倉庫加密密碼 (請妥善保管，遺失即無法恢復)"
+                    android:hint="仓库加密密码 (请妥善保管，遗失即无法恢复)"
                     style="@style/Widget.Material3.TextInputLayout.OutlinedBox">
                     <com.google.android.material.textfield.TextInputEditText
                         android:id="@+id/resticPasswordEdit"
@@ -327,7 +327,7 @@
                         android:id="@+id/resticStatsButton"
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
-                        android:text="統計"
+                        android:text="统计"
                         android:visibility="gone"
                         style="@style/Widget.Material3.Button.TextButton" />
 
