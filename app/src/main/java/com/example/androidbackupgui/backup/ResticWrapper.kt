@@ -329,10 +329,10 @@ object ResticWrapper {
             env.putAll(buildRcloneEnv(backend, backendUrl, backendUser, backendPass))
             // restic shells out to `rclone` via PATH (RCLONE_PROGRAM not reliable)
             val rcloneDir = File(rcloneBinaryPath).parent ?: ""
-            if (rcloneDir.isNotEmpty()) {
-                val currentPath = env.getOrDefault("PATH", "")
-                env["PATH"] = "$rcloneDir:$currentPath"
-            }
+            val currentPath = env.getOrDefault("PATH", "")
+            val newPath = if (rcloneDir.isNotEmpty()) "$rcloneDir:$currentPath" else currentPath
+            env["PATH"] = newPath
+            Log.d(TAG, "buildFullEnv backend=$backend rcloneBinaryPath=$rcloneBinaryPath rcloneDir=$rcloneDir oldPATH=$currentPath newPATH=$newPath")
         }
         return env
     }
@@ -379,8 +379,8 @@ object ResticWrapper {
     private fun runRestic(env: Map<String, String>, args: List<String>): CommandResult {
         val cmdArgs = buildCommandArgs(args)
         Log.i(TAG, "runRestic cmd=${cmdArgs.joinToString(" ")}")
-        // Log env keys (but NOT values, which may contain passwords)
-        Log.d(TAG, "runRestic env keys: ${env.keys}")
+        // Log env keys and PATH (but NOT passwords)
+        Log.d(TAG, "runRestic PATH=${env["PATH"]} REPOSITORY=${env["RESTIC_REPOSITORY"]} rcloneBinaryPath=$rcloneBinaryPath")
         return try {
             val pb = ProcessBuilder(cmdArgs)
             pb.environment().putAll(env)
