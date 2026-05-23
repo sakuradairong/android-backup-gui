@@ -1,0 +1,319 @@
+package com.example.androidbackupgui.backup
+
+import android.util.Log
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
+import java.io.File
+
+/** Thrown by transports when a remote directory genuinely does not exist (HTTP 404). */
+class FileNotFoundException(path: String) : Exception("Directory not found: $path")
+
+/**
+ * Unified abstraction for remote file transport (SMB / WebDAV).
+ * Replaces the rclone serve proxy with direct protocol implementations.
+ */
+interface RemoteTransport {
+
+    data class RemoteFileInfo(
+        val name: String,
+        val size: Long,
+        val isDirectory: Boolean = false
+    )
+
+    suspend fun upload(localPath: String, remotePath: String): Result<Unit>
+    suspend fun download(remotePath: String, localPath: String): Result<Unit>
+
+    /** List entries in a remote directory (files and subdirectories). */
+    suspend fun listFiles(remoteDir: String): Result<List<RemoteFileInfo>>
+
+    /** Create a directory and any missing parents on the remote. */
+    suspend fun mkdirs(remotePath: String): Result<Unit>
+
+    suspend fun delete(remotePath: String): Result<Unit>
+    suspend fun exists(remotePath: String): Result<Boolean>
+
+    companion object {
+        private const val TAG = "RemoteTransport"
+        private const val MAX_RETRIES = 3
+
+        /**
+         * Returns true if the exception indicates a transient error worth retrying
+         * (network blip, DNS hiccup, server 5xx), false for permanent errors (4xx).
+         */
+        private fun isTransientError(e: Exception): Boolean {
+            val msg = (e.message ?: "") + (e.cause?.message ?: "")
+            // DNS / network-layer failures
+            if (msg.contains("Unable to resolve host", ignoreCase = true)) return true
+            if (msg.contains("No address associated", ignoreCase = true)) return true
+            if (msg.contains("ConnectException", ignoreCase = true)) return true
+            if (msg.contains("SocketTimeoutException", ignoreCase = true)) return true
+            if (msg.contains("timeout", ignoreCase = true)) return true
+            if (msg.contains("Connection refused", ignoreCase = true)) return true
+            if (msg.contains("Network is unreachable", ignoreCase = true)) return true
+            // 5xx server errors (502 Bad Gateway, 503 Service Unavailable, 504 Gateway Timeout)
+            if (Regex("\\b5\\d{2}\\b").containsMatchIn(msg)) return true
+            return false
+        }
+
+        /**
+         * Execute [block] with retries on transient failures.
+         * Uses exponential backoff: 1s, 2s, 4s.
+         */
+        private suspend fun <T> withRetry(
+            tag: String,
+            block: suspend () -> Result<T>
+        ): Result<T> {
+            var lastError: Result<T>? = null
+            for (attempt in 0..MAX_RETRIES) {
+                if (attempt > 0) {
+                    val waitMs = 1000L * (1 shl (attempt - 1)) // 1s, 2s, 4s
+                    Log.w(TAG, "$tag retry $attempt/$MAX_RETRIES after ${waitMs}ms")
+                    delay(waitMs)
+                }
+                val result = block()
+                if (result.isSuccess) return result
+                val err = result.exceptionOrNull()
+                if (err != null && err is Exception && isTransientError(err)) {
+                    lastError = result
+                    continue
+                }
+                return result // permanent error — don't retry
+            }
+            return lastError ?: Result.failure(Exception("$tag: max retries exceeded"))
+        }
+
+        fun create(
+            backend: String,
+            url: String,
+            user: String,
+            pass: String,
+            share: String
+        ): RemoteTransport? {
+            return when (backend) {
+                "webdav" -> {
+                    val baseUrl = url.trimEnd('/')
+                    WebdavTransport(baseUrl, user, pass)
+                }
+                "smb" -> {
+                    val host = url.trimEnd('/')
+                    SmbTransport(host, share, user, pass)
+                }
+                else -> null
+            }
+        }
+
+        /**
+         * Download all files from remote [remoteDir] into [localDir] recursively,
+         * skipping files that already exist locally with the same size.
+         * Deletes local files no longer present on the remote.
+         * Returns failure if any download fails.
+         */
+        suspend fun syncFromRemote(
+            transport: RemoteTransport,
+            localDir: File,
+            remoteDir: String
+        ): Result<Unit> = withContext(Dispatchers.IO) {
+            try {
+                localDir.mkdirs()
+                val remoteFiles = listRemoteRecursive(transport, remoteDir)
+                if (remoteFiles == null) {
+                    return@withContext Result.failure(Exception("syncFromRemote: failed to list remote files"))
+                }
+                val remoteByPath = remoteFiles.associateBy { it.path }
+                val errors = mutableListOf<String>()
+
+                // Download remote files that are new or have different size
+                for ((relPath, info) in remoteByPath) {
+                    val localFile = File(localDir, relPath)
+                    if (localFile.isFile && localFile.length() == info.size) {
+                        Log.d(TAG, "syncFromRemote skip (same size): $relPath")
+                        continue
+                    }
+                    localFile.parentFile?.mkdirs()
+                    val fullRemotePath = "$remoteDir/$relPath"
+                    Log.i(TAG, "syncFromRemote downloading: $fullRemotePath (${info.size} bytes)")
+                    val result = withRetry("download($fullRemotePath)") {
+                        transport.download(fullRemotePath, localFile.absolutePath)
+                    }
+                    if (result.isFailure) {
+                        errors.add("$fullRemotePath: ${result.exceptionOrNull()?.message}")
+                    }
+                }
+
+                // Delete local files not on remote (e.g. after prune on another client)
+                val localFiles = walkLocalFiles(localDir)
+                for (relPath in localFiles.keys) {
+                    if (relPath !in remoteByPath) {
+                        val localFile = localFiles[relPath]!!
+                        Log.i(TAG, "syncFromRemote deleting stale local: $relPath")
+                        try { localFile.delete() } catch (_: Exception) {}
+                    }
+                }
+
+                if (errors.isNotEmpty()) {
+                    return@withContext Result.failure(
+                        Exception("syncFromRemote: ${errors.size} file(s) failed: ${errors.joinToString("; ")}")
+                    )
+                }
+                Result.success(Unit)
+            } catch (e: Exception) {
+                Result.failure(Exception("syncFromRemote failed: ${e.message}", e))
+            }
+        }
+
+        /**
+         * Upload all files from [localDir] into [remoteDir] recursively,
+         * skipping files that already exist remotely with the same size.
+         * Deletes remote files that no longer exist locally.
+         * Returns failure if any upload fails.
+         */
+        suspend fun syncToRemote(
+            transport: RemoteTransport,
+            localDir: File,
+            remoteDir: String
+        ): Result<Unit> = withContext(Dispatchers.IO) {
+            try {
+                val localFiles = walkLocalFiles(localDir)
+                val remoteResult = listRemoteRecursive(transport, remoteDir)
+                if (remoteResult == null) {
+                    return@withContext Result.failure(Exception("syncToRemote: failed to list remote files"))
+                }
+                val remoteByPath = remoteResult.associateBy { it.path }
+                val errors = mutableListOf<String>()
+
+                // Collect unique parent directories that need to exist on remote
+                val remoteDirs = mutableSetOf<String>()
+                for (relPath in localFiles.keys) {
+                    val parent = relPath.substringBeforeLast("/", "")
+                    if (parent.isNotEmpty()) remoteDirs.add(parent)
+                }
+
+                // Ensure all remote directories exist
+                for (dir in remoteDirs) {
+                    transport.mkdirs("$remoteDir/$dir")
+                }
+
+                // Upload new or changed local files
+                for ((relPath, localFile) in localFiles) {
+                    val remoteInfo = remoteByPath[relPath]
+                    if (remoteInfo != null && remoteInfo.size == localFile.length()) {
+                        Log.d(TAG, "syncToRemote skip (same size): $relPath")
+                        continue
+                    }
+                    val fullRemotePath = "$remoteDir/$relPath"
+                    Log.i(TAG, "syncToRemote uploading: $fullRemotePath (${localFile.length()} bytes)")
+                    val result = withRetry("upload($fullRemotePath)") {
+                        transport.upload(localFile.absolutePath, fullRemotePath)
+                    }
+                    if (result.isFailure) {
+                        errors.add("$fullRemotePath: ${result.exceptionOrNull()?.message}")
+                    }
+                }
+
+                // Delete remote files no longer present locally
+                for (relPath in remoteByPath.keys) {
+                    if (relPath !in localFiles) {
+                        Log.i(TAG, "syncToRemote deleting stale: $relPath")
+                        transport.delete("$remoteDir/$relPath")
+                    }
+                }
+
+                if (errors.isNotEmpty()) {
+                    return@withContext Result.failure(
+                        Exception("syncToRemote: ${errors.size} file(s) failed: ${errors.joinToString("; ")}")
+                    )
+                }
+                Result.success(Unit)
+            } catch (e: Exception) {
+                Result.failure(Exception("syncToRemote failed: ${e.message}", e))
+            }
+        }
+
+        // ── Recursive helpers ──────────────────────────────────
+
+
+
+        private data class FlatFileInfo(val path: String, val size: Long)
+
+        /** Recursively list all files on the remote. Returns null on failure.
+         * Depth-limited to avoid redundant requests on servers that report
+         * files as directories or return self-referencing PROPFIND entries. */
+        private const val MAX_RECURSE_DEPTH = 3
+
+        private suspend fun listRemoteRecursive(
+            transport: RemoteTransport,
+            remoteDir: String
+        ): List<FlatFileInfo>? {
+            val result = mutableListOf<FlatFileInfo>()
+            // Pair of (relativePath, depth)
+            val dirsToVisit = mutableListOf("" to 0)
+
+            while (dirsToVisit.isNotEmpty()) {
+                val (subDir, depth) = dirsToVisit.removeLast()
+                if (depth >= MAX_RECURSE_DEPTH) {
+                    Log.w(TAG, "listRemoteRecursive: max depth $MAX_RECURSE_DEPTH reached at $remoteDir/$subDir")
+                    continue
+                }
+                val fullDir = if (subDir.isEmpty()) remoteDir else "$remoteDir/$subDir"
+                val listResult = withRetry("listFiles($fullDir)") {
+                    transport.listFiles(fullDir)
+                }
+                if (listResult.isFailure) {
+                    val err = listResult.exceptionOrNull()
+                    // 404 on a subdirectory: directory doesn't exist, skip it silently.
+                    // 404 on the root directory: fatal — the remote repo path may be wrong.
+                    if (err is FileNotFoundException) {
+                        if (subDir.isEmpty()) {
+                            Log.e(TAG, "listRemoteRecursive: root dir '$fullDir' returned 404 — repo may not exist or is rate-limited")
+                            return null
+                        }
+                        Log.d(TAG, "listRemoteRecursive: $fullDir -> 404, skipping")
+                        continue
+                    }
+                    Log.e(TAG, "listRemoteRecursive: listFiles FAILED for '$fullDir': ${err?.message}")
+                    return null
+                }
+                val entries = listResult.getOrThrow()
+                val parentName = subDir.substringAfterLast("/", subDir)
+
+                for (entry in entries) {
+                    val relPath = if (subDir.isEmpty()) entry.name else "$subDir/${entry.name}"
+                    if (entry.isDirectory) {
+                        // Skip self-referencing entries where the server returns
+                        // the directory itself as a child (e.g. data/f9/ contains "f9")
+                        if (entry.name == parentName) {
+                            Log.d(TAG, "listRemoteRecursive skip self-ref: $relPath")
+                            continue
+                        }
+                        dirsToVisit.add(relPath to depth + 1)
+                    } else {
+                        result.add(FlatFileInfo(relPath, entry.size))
+                    }
+                }
+            }
+            Log.i(TAG, "listRemoteRecursive: $remoteDir → ${result.size} files in ${result.map { it.path }.toSet().size} paths")
+            return result
+        }
+
+        /** Walk the local directory tree, returning relative-path → File mapping for all files. */
+        private fun walkLocalFiles(localDir: File): Map<String, File> {
+            val result = mutableMapOf<String, File>()
+            val dirsToVisit = mutableListOf(localDir)
+            val basePath = localDir.absolutePath
+
+            while (dirsToVisit.isNotEmpty()) {
+                val dir = dirsToVisit.removeLast()
+                for (file in dir.listFiles() ?: emptyArray()) {
+                    if (file.isDirectory) {
+                        dirsToVisit.add(file)
+                    } else {
+                        val relPath = file.absolutePath.removePrefix("$basePath/")
+                        result[relPath] = file
+                    }
+                }
+            }
+            return result
+        }
+    }
+}

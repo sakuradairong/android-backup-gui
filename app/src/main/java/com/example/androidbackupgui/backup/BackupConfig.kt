@@ -66,7 +66,8 @@ data class BackupConfig(
     var resticBackend: String = "local",    // local / webdav / smb
     var resticBackendUrl: String = "",
     var resticBackendUser: String = "",
-    var resticBackendPass: String = ""
+    var resticBackendPass: String = "",
+    var resticBackendShare: String = ""      // SMB share name
 ) {
     companion object {
         fun fromFile(file: File): BackupConfig {
@@ -125,6 +126,7 @@ data class BackupConfig(
             config.resticBackendUrl = str("restic_backend_url")
             config.resticBackendUser = str("restic_backend_user")
             config.resticBackendPass = str("restic_backend_pass")
+            config.resticBackendShare = str("restic_backend_share")
 
             return config
         }
@@ -173,6 +175,7 @@ data class BackupConfig(
                 appendLine("restic_backend_url=\"${config.resticBackendUrl}\"")
                 appendLine("restic_backend_user=\"${config.resticBackendUser}\"")
                 appendLine("restic_backend_pass=\"${config.resticBackendPass}\"")
+                appendLine("restic_backend_share=\"${config.resticBackendShare}\"")
             })
         }
     }

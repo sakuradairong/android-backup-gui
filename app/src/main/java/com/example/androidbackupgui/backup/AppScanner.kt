@@ -1,5 +1,7 @@
 package com.example.androidbackupgui.backup
 
+import android.content.Context
+import android.content.pm.PackageManager
 import com.example.androidbackupgui.root.RootShell
 import com.example.androidbackupgui.root.shellEscape
 import kotlinx.coroutines.Dispatchers
@@ -7,7 +9,7 @@ import kotlinx.coroutines.withContext
 
 data class AppInfo(
     val packageName: String,
-    val label: String = "",
+    var label: String = "",
     val isSystem: Boolean = false,
     val apkPaths: List<String> = emptyList(),
     val hasObb: Boolean = false,
@@ -18,19 +20,20 @@ data class AppInfo(
 object AppScanner {
 
     /** Scan all third-party installed packages. */
-    suspend fun scanThirdParty(): List<AppInfo> = withContext(Dispatchers.IO) {
+    suspend fun scanThirdParty(context: Context): List<AppInfo> = withContext(Dispatchers.IO) {
         val result = RootShell.exec("pm list packages -3")
         if (!result.isSuccess) return@withContext emptyList()
 
-        result.output.lines()
+        val packages = result.output.lines()
             .filter { it.startsWith("package:") }
             .map { it.removePrefix("package:").trim() }
             .filter { it.isNotEmpty() }
             .map { AppInfo(packageName = it) }
+        resolveLabels(context, packages)
     }
 
     /** Scan all system packages. */
-    suspend fun scanSystem(config: BackupConfig): List<AppInfo> = withContext(Dispatchers.IO) {
+    suspend fun scanSystem(context: Context, config: BackupConfig): List<AppInfo> = withContext(Dispatchers.IO) {
         val result = RootShell.exec("pm list packages -s")
         if (!result.isSuccess) return@withContext emptyList()
 
@@ -38,7 +41,7 @@ object AppScanner {
         val dataWhitelist = config.whitelist.toSet()
         val blacklist = config.blacklist.toSet()
 
-        result.output.lines()
+        val packages = result.output.lines()
             .filter { it.startsWith("package:") }
             .map { it.removePrefix("package:").trim() }
             .filter { it.isNotEmpty() }
@@ -51,6 +54,27 @@ object AppScanner {
                 if (config.blacklistMode == 1) pkg !in blacklist else true
             }
             .map { AppInfo(packageName = it, isSystem = true) }
+        resolveLabels(context, packages)
+    }
+
+    /**
+     * Resolve human-readable app labels using PackageManager (fast, no root).
+     * Falls back to dumpsys for packages that PackageManager can't resolve.
+     * Modifies the list in-place and returns it.
+     */
+    fun resolveLabels(context: Context, packages: List<AppInfo>): List<AppInfo> {
+        val pm = context.packageManager
+        for (app in packages) {
+            app.label = try {
+                val ai = pm.getApplicationInfo(app.packageName, 0)
+                pm.getApplicationLabel(ai).toString()
+            } catch (_: PackageManager.NameNotFoundException) {
+                // PackageManager can't resolve (e.g. some system packages) —
+                // leave empty; caller can use getAppLabel() for root-based fallback
+                ""
+            }
+        }
+        return packages
     }
 
     /** Get APK paths for a package. */

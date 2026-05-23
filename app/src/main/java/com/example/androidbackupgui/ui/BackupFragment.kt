@@ -4,16 +4,9 @@ import android.os.Bundle
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
-import android.widget.CheckBox
-import android.widget.LinearLayout
-import android.widget.TextView
-import com.google.android.material.card.MaterialCardView
-import com.google.android.material.color.MaterialColors
 import androidx.fragment.app.Fragment
 import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.LinearLayoutManager
-import androidx.recyclerview.widget.RecyclerView
-import com.example.androidbackupgui.R
 import com.example.androidbackupgui.backup.AppInfo
 import com.example.androidbackupgui.backup.AppScanner
 import com.example.androidbackupgui.backup.BackupConfig
@@ -58,8 +51,9 @@ class BackupFragment : Fragment() {
         binding.statusText.text = "正在掃描應用…"
 
         viewLifecycleOwner.lifecycleScope.launch {
-            val thirdParty = AppScanner.scanThirdParty()
-            val system = AppScanner.scanSystem(config)
+            val ctx = requireContext()
+            val thirdParty = AppScanner.scanThirdParty(ctx)
+            val system = AppScanner.scanSystem(ctx, config)
             apps = thirdParty + system
             selectedApps.clear()
             selectedApps.addAll(apps.map { it.packageName })
@@ -73,7 +67,7 @@ class BackupFragment : Fragment() {
     }
 
     private fun setupAppList() {
-        binding.appList.adapter = AppAdapter(apps, selectedApps) { pkg, checked ->
+        binding.appList.adapter = PackageListAdapter(apps, selectedApps) { pkg, checked ->
             if (checked) selectedApps.add(pkg) else selectedApps.remove(pkg)
             binding.statusText.text = "已選擇 ${selectedApps.size}/${apps.size} 個應用"
         }
@@ -97,8 +91,10 @@ class BackupFragment : Fragment() {
                 config = config,
                 outputDir = outputDir,
                 onProgress = { progress ->
+                    val label = toBackup.find { it.packageName == progress.packageName }?.label
+                    val name = label?.ifEmpty { progress.packageName } ?: progress.packageName
                     binding.statusText.text =
-                        "[${progress.current}/${progress.total}] ${progress.packageName}: ${progress.message}"
+                        "[${progress.current}/${progress.total}] $name: ${progress.message}"
                 }
             )
 
@@ -108,7 +104,7 @@ class BackupFragment : Fragment() {
                 val binaryPath = ResticBinary.prepare(requireContext())
                 if (binaryPath != null) {
                     ResticWrapper.binaryPath = binaryPath
-                    ResticWrapper.rcloneBinaryPath = ResticBinary.prepareRclone(requireContext()) ?: "rclone"
+                    ResticWrapper.tempRepoDir = ResticBinary.getTempRepoDir(requireContext())
                     binding.statusText.text = "正在寫入 restic 去重倉庫…"
                     val resticResult = ResticWrapper.backup(
                         repoPath = config.resticRepo,
@@ -120,6 +116,7 @@ class BackupFragment : Fragment() {
                         backendUrl = config.resticBackendUrl,
                         backendUser = config.resticBackendUser,
                         backendPass = config.resticBackendPass,
+                        backendShare = config.resticBackendShare,
                         onProgress = { progress ->
                             if (progress.messageType == "status") {
                                 binding.statusText.text = "restic: %.0f%% (%d/%d files)".format(
@@ -164,62 +161,5 @@ class BackupFragment : Fragment() {
     override fun onDestroyView() {
         super.onDestroyView()
         _binding = null
-    }
-
-    /** Simple RecyclerView adapter for app list with checkboxes. */
-    private class AppAdapter(
-        private val apps: List<AppInfo>,
-        private val selected: Set<String>,
-        private val onToggle: (String, Boolean) -> Unit
-    ) : RecyclerView.Adapter<AppAdapter.ViewHolder>() {
-
-        class ViewHolder(view: View) : RecyclerView.ViewHolder(view) {
-            val checkbox: CheckBox = view.findViewById(R.id.checkbox)
-            val textView: TextView = view.findViewById(R.id.appName)
-        }
-
-        override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): ViewHolder {
-            val ctx = parent.context
-            val card = MaterialCardView(ctx).apply {
-                layoutParams = ViewGroup.MarginLayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.WRAP_CONTENT
-                ).apply { setMargins(0, 0, 0, 8) }
-                radius = 12f
-                cardElevation = 0f
-                strokeWidth = 0
-                setCardBackgroundColor(
-                    MaterialColors.getColor(ctx, com.google.android.material.R.attr.colorSurfaceContainer, 0)
-                )
-            }
-            val layout = LinearLayout(ctx).apply {
-                orientation = LinearLayout.HORIZONTAL
-                setPadding(16, 12, 16, 12)
-            }
-            val cb = CheckBox(ctx).apply { id = R.id.checkbox }
-            val tv = TextView(ctx).apply {
-                id = R.id.appName
-                setPadding(16, 0, 0, 0)
-                textSize = 15f
-                setTextColor(
-                    MaterialColors.getColor(ctx, com.google.android.material.R.attr.colorOnSurface, 0)
-                )
-            }
-            layout.addView(cb)
-            layout.addView(tv)
-            card.addView(layout)
-            return ViewHolder(card)
-        }
-
-        override fun onBindViewHolder(holder: ViewHolder, position: Int) {
-            val app = apps[position]
-            holder.textView.text = app.packageName
-            holder.checkbox.isChecked = app.packageName in selected
-            holder.checkbox.setOnCheckedChangeListener { _, checked ->
-                onToggle(app.packageName, checked)
-            }
-        }
-
-        override fun getItemCount() = apps.size
     }
 }

@@ -45,4 +45,8 @@ dependencies {
     implementation 'androidx.fragment:fragment-ktx:1.6.2'
     implementation 'androidx.viewpager2:viewpager2:1.0.0'
 
+    // 方案A: jcifs-ng (SMB) + sardine-android (WebDAV) 替代 rclone serve
+    implementation "eu.agno3.jcifs:jcifs-ng:2.1.10"
+    implementation "com.github.thegrizzlylabs:sardine-android:v0.9"
+    implementation "org.slf4j:slf4j-android:1.7.36"
 }

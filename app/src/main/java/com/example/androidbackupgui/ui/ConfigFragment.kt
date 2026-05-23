@@ -5,6 +5,7 @@ import android.util.Log
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
+import androidx.core.widget.doAfterTextChanged
 import androidx.fragment.app.Fragment
 import androidx.lifecycle.lifecycleScope
 import com.example.androidbackupgui.R
@@ -42,6 +43,10 @@ class ConfigFragment : Fragment() {
 
         binding.saveConfigButton.setOnClickListener { saveConfig() }
         binding.resticBackendGroup.addOnButtonCheckedListener { _, _, _ -> updateBackendFieldVisibility() }
+        binding.resticEnabledSwitch.setOnCheckedChangeListener { _, _ -> refreshResticStatus() }
+        binding.resticRepoEdit.doAfterTextChanged { refreshResticStatus(); updateComputedUrl() }
+        binding.resticBackendUrlEdit.doAfterTextChanged { updateComputedUrl() }
+        binding.resticPasswordEdit.doAfterTextChanged { refreshResticStatus() }
         binding.initResticButton.setOnClickListener { initResticRepo() }
         binding.resticStatsButton.setOnClickListener { showResticStats() }
         binding.resticPruneButton.setOnClickListener { pruneResticSnapshots() }
@@ -63,12 +68,14 @@ class ConfigFragment : Fragment() {
         binding.resticBackendUrlEdit.setText(config.resticBackendUrl)
         binding.resticBackendUserEdit.setText(config.resticBackendUser)
         binding.resticBackendPassEdit.setText(config.resticBackendPass)
+        binding.resticBackendShareEdit.setText(config.resticBackendShare)
 
         // Restore backend selector
         binding.resticBackendGroup.check(
             when (config.resticBackend) {
                 "webdav" -> R.id.resticBackendWebdav
                 "smb" -> R.id.resticBackendSmb
+                "rest-server" -> R.id.resticBackendRestServer
                 else -> R.id.resticBackendLocal
             }
         )
@@ -93,11 +100,13 @@ class ConfigFragment : Fragment() {
         config.resticBackend = when (binding.resticBackendGroup.checkedButtonId) {
             R.id.resticBackendWebdav -> "webdav"
             R.id.resticBackendSmb -> "smb"
+            R.id.resticBackendRestServer -> "rest-server"
             else -> "local"
         }
         config.resticBackendUrl = binding.resticBackendUrlEdit.text?.toString()?.trim() ?: ""
         config.resticBackendUser = binding.resticBackendUserEdit.text?.toString()?.trim() ?: ""
         config.resticBackendPass = binding.resticBackendPassEdit.text?.toString() ?: ""
+        config.resticBackendShare = binding.resticBackendShareEdit.text?.toString()?.trim() ?: ""
 
         viewLifecycleOwner.lifecycleScope.launch {
             withContext(Dispatchers.IO) {
@@ -111,7 +120,8 @@ class ConfigFragment : Fragment() {
     private data class ResticUiState(
         val repo: String, val password: String,
         val backend: String, val backendUrl: String,
-        val backendUser: String, val backendPass: String
+        val backendUser: String, val backendPass: String,
+        val backendShare: String
     )
 
     private fun readResticUiState() = ResticUiState(
@@ -120,11 +130,13 @@ class ConfigFragment : Fragment() {
         backend = when (binding.resticBackendGroup.checkedButtonId) {
             R.id.resticBackendWebdav -> "webdav"
             R.id.resticBackendSmb -> "smb"
+            R.id.resticBackendRestServer -> "rest-server"
             else -> "local"
         },
         backendUrl = binding.resticBackendUrlEdit.text?.toString()?.trim() ?: "",
         backendUser = binding.resticBackendUserEdit.text?.toString()?.trim() ?: "",
-        backendPass = binding.resticBackendPassEdit.text?.toString() ?: ""
+        backendPass = binding.resticBackendPassEdit.text?.toString() ?: "",
+        backendShare = binding.resticBackendShareEdit.text?.toString()?.trim() ?: ""
     )
 
     private fun initResticRepo() {
@@ -137,9 +149,9 @@ class ConfigFragment : Fragment() {
         }
         Log.i(TAG, "initResticRepo: binaryPath=$binaryPath")
         ResticWrapper.binaryPath = binaryPath
-        ResticWrapper.rcloneBinaryPath = ResticBinary.prepareRclone(requireContext()) ?: "rclone"
+        ResticWrapper.tempRepoDir = ResticBinary.getTempRepoDir(requireContext())
         val ui = readResticUiState()
-        Log.i(TAG, "initResticRepo: repo=${ui.repo} backend=${ui.backend} backendUrl=${ui.backendUrl}")
+        Log.i(TAG, "initResticRepo: repo=${ui.repo} backend=${ui.backend} backendUrl=${ui.backendUrl} share=${ui.backendShare} user=${ui.backendUser}")
         if (ui.repo.isEmpty() || ui.password.isEmpty()) {
             binding.resticStatusText.text = "請填寫倉庫路徑和密碼"
             return
@@ -153,7 +165,8 @@ class ConfigFragment : Fragment() {
                 backend = ui.backend,
                 backendUrl = ui.backendUrl,
                 backendUser = ui.backendUser,
-                backendPass = ui.backendPass)
+                backendPass = ui.backendPass,
+                backendShare = ui.backendShare)
             result.fold(
                 onSuccess = {
                     Log.i(TAG, "initResticRepo: SUCCESS")
@@ -172,7 +185,7 @@ class ConfigFragment : Fragment() {
     /** Refresh the restic management buttons visibility based on repo state. */
     private fun refreshResticStatus() {
         // If restic is disabled entirely, hide everything
-        if (config.resticEnabled != 1) {
+        if (!binding.resticEnabledSwitch.isChecked) {
             binding.initResticButton.visibility = View.GONE
             binding.resticStatsButton.visibility = View.GONE
             binding.resticPruneButton.visibility = View.GONE
@@ -201,14 +214,15 @@ class ConfigFragment : Fragment() {
         }
 
         ResticWrapper.binaryPath = binaryPath
-        ResticWrapper.rcloneBinaryPath = ResticBinary.prepareRclone(requireContext()) ?: "rclone"
+        ResticWrapper.tempRepoDir = ResticBinary.getTempRepoDir(requireContext())
         // Check if repo is initialized by listing snapshots
         viewLifecycleOwner.lifecycleScope.launch {
             val snapshotsResult = ResticWrapper.listSnapshots(ui.repo, ui.password,
                 backend = ui.backend,
                 backendUrl = ui.backendUrl,
                 backendUser = ui.backendUser,
-                backendPass = ui.backendPass)
+                backendPass = ui.backendPass,
+                backendShare = ui.backendShare)
             if (snapshotsResult.isSuccess) {
                 val snapshots = snapshotsResult.getOrDefault(emptyList())
                 binding.initResticButton.visibility = View.GONE
@@ -233,12 +247,14 @@ class ConfigFragment : Fragment() {
                 backend = ui.backend,
                 backendUrl = ui.backendUrl,
                 backendUser = ui.backendUser,
-                backendPass = ui.backendPass)
+                backendPass = ui.backendPass,
+                backendShare = ui.backendShare)
             val snapshotsResult = ResticWrapper.listSnapshots(ui.repo, ui.password,
                 backend = ui.backend,
                 backendUrl = ui.backendUrl,
                 backendUser = ui.backendUser,
-                backendPass = ui.backendPass)
+                backendPass = ui.backendPass,
+                backendShare = ui.backendShare)
             binding.resticStatsButton.isEnabled = true
 
             val snapshotCount = snapshotsResult.getOrDefault(emptyList()).size
@@ -264,7 +280,8 @@ class ConfigFragment : Fragment() {
                 backend = ui.backend,
                 backendUrl = ui.backendUrl,
                 backendUser = ui.backendUser,
-                backendPass = ui.backendPass
+                backendPass = ui.backendPass,
+                backendShare = ui.backendShare
             )
             if (forgetResult.isFailure) {
                 binding.resticStatusText.text = "forget 失敗: ${forgetResult.exceptionOrNull()?.message}"
@@ -277,7 +294,8 @@ class ConfigFragment : Fragment() {
                 backend = ui.backend,
                 backendUrl = ui.backendUrl,
                 backendUser = ui.backendUser,
-                backendPass = ui.backendPass)
+                backendPass = ui.backendPass,
+                backendShare = ui.backendShare)
             binding.resticPruneButton.isEnabled = true
 
             if (pruneResult.isSuccess) {
@@ -294,17 +312,22 @@ class ConfigFragment : Fragment() {
         val backend = when (binding.resticBackendGroup.checkedButtonId) {
             R.id.resticBackendWebdav -> "webdav"
             R.id.resticBackendSmb -> "smb"
+            R.id.resticBackendRestServer -> "rest-server"
             else -> "local"
         }
         val isRemote = backend != "local"
+        val needsAuth = backend == "webdav" || backend == "smb"
+        val isSmb = backend == "smb"
         binding.resticBackendUrlLayout.visibility = if (isRemote) View.VISIBLE else View.GONE
-        binding.resticBackendUserLayout.visibility = if (isRemote) View.VISIBLE else View.GONE
-        binding.resticBackendPassLayout.visibility = if (isRemote) View.VISIBLE else View.GONE
+        binding.resticBackendShareLayout.visibility = if (isSmb) View.VISIBLE else View.GONE
+        binding.resticBackendUserLayout.visibility = if (needsAuth) View.VISIBLE else View.GONE
+        binding.resticBackendPassLayout.visibility = if (needsAuth) View.VISIBLE else View.GONE
 
         // Update URL field hint
         binding.resticBackendUrlLayout.hint = when (backend) {
             "webdav" -> "WebDAV 地址 (https://host:port/path)"
             "smb" -> "SMB 主機位址 (host 或 host:port)"
+            "rest-server" -> "rest-server 地址 (http://host:port)"
             else -> ""
         }
         updateComputedUrl()
@@ -315,6 +338,7 @@ class ConfigFragment : Fragment() {
         val backend = when (binding.resticBackendGroup.checkedButtonId) {
             R.id.resticBackendWebdav -> "webdav"
             R.id.resticBackendSmb -> "smb"
+            R.id.resticBackendRestServer -> "rest-server"
             else -> "local"
         }
         val repo = binding.resticRepoEdit.text?.toString()?.trim() ?: ""

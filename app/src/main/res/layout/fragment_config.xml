@@ -194,6 +194,14 @@
                         android:text="SMB"
                         style="@style/Widget.Material3.Button.TonalButton" />
 
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/resticBackendRestServer"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="REST"
+                        style="@style/Widget.Material3.Button.TonalButton" />
+
                 </com.google.android.material.button.MaterialButtonToggleGroup>
 
                 <!-- Backend URL (WebDAV/SMB only) -->
@@ -211,6 +219,22 @@
                         android:layout_height="wrap_content"
                         android:singleLine="true"
                         android:inputType="textUri" />
+                </com.google.android.material.textfield.TextInputLayout>
+
+                <!-- SMB share name (SMB only) -->
+                <com.google.android.material.textfield.TextInputLayout
+                    android:id="@+id/resticBackendShareLayout"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:hint="SMB 共享名稱 (如 backup、shared)"
+                    android:visibility="gone"
+                    style="@style/Widget.Material3.TextInputLayout.OutlinedBox">
+                    <com.google.android.material.textfield.TextInputEditText
+                        android:id="@+id/resticBackendShareEdit"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:singleLine="true" />
                 </com.google.android.material.textfield.TextInputLayout>
 
                 <!-- Backend user (WebDAV/SMB only) -->

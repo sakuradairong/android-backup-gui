@@ -173,8 +173,9 @@ object RestoreOperation {
     }
 
     /**
-     * Check that a tar archive contains no path traversal (..) entries,
-     * absolute paths, or symbolic links pointing outside the tree.
+     * Check that a tar archive contains no path traversal (..) entries
+     * or symbolic links pointing outside the tree.
+     * Accepts both absolute and relative paths — tar implementations vary.
      */
     private fun isArchiveSafe(archive: File): Boolean {
         val listCmd = if (archive.name.endsWith(".zst")) {
@@ -185,9 +186,12 @@ object RestoreOperation {
         val result = RootShell.exec(listCmd)
         if (!result.isSuccess) return false
         return !result.output.lines().any { line ->
-            line.contains("..") ||
-            line.startsWith("/") ||
-            (line.contains(" -> ") && line.substringAfter(" -> ").startsWith("/"))
+            val path = line.substringBefore(" -> ")
+            val hasTraversal = path.trimStart('/').split("/").any { segment -> segment == ".." }
+            val symlinkTarget = if (" -> " in line) line.substringAfter(" -> ") else ""
+            val unsafeSymlink = symlinkTarget.isNotEmpty() &&
+                (symlinkTarget.startsWith("/") || symlinkTarget.split("/").any { segment -> segment == ".." })
+            hasTraversal || unsafeSymlink
         }
     }
 
@@ -243,15 +247,18 @@ object RestoreOperation {
             .filter { it.contains("granted=true") }
             .mapNotNull { line ->
                 // Extract permission name from dumpsys output
-                val perm = line.substringBefore(":")
+                // Format: "permission.name: granted=true" or similar
+                line.substringBefore(":")
                     .trim()
-                    .takeIf { it.startsWith("android.permission.") }
-                perm
+                    .takeIf { it.isNotEmpty() && it.contains(".") }
             }
 
         val pkgEsc = packageName.shellEscape()
         for (perm in perms) {
-            RootShell.exec("pm grant '$pkgEsc' '${perm.shellEscape()}' 2>/dev/null")
+            val result = RootShell.exec("pm grant '$pkgEsc' '${perm.shellEscape()}' 2>&1")
+            if (!result.isSuccess) {
+                android.util.Log.w("RestoreOperation", "pm grant failed for $packageName: $perm — ${result.output}")
+            }
         }
     }
 

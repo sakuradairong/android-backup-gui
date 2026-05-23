@@ -4,16 +4,11 @@ import android.os.Bundle
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
-import android.widget.CheckBox
-import android.widget.LinearLayout
-import android.widget.TextView
-import com.google.android.material.card.MaterialCardView
-import com.google.android.material.color.MaterialColors
 import androidx.fragment.app.Fragment
 import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.LinearLayoutManager
-import androidx.recyclerview.widget.RecyclerView
-import com.example.androidbackupgui.R
+import com.example.androidbackupgui.backup.AppInfo
+import com.example.androidbackupgui.backup.AppScanner
 import com.example.androidbackupgui.backup.BackupConfig
 import com.example.androidbackupgui.backup.RestoreOperation
 import com.example.androidbackupgui.backup.ResticBinary
@@ -29,6 +24,7 @@ class RestoreFragment : Fragment() {
     private val binding get() = _binding!!
     private var backupDir: File? = null
     private var packages: List<String> = emptyList()
+    private var appInfos: List<AppInfo> = emptyList()
     private var selectedPackages = mutableSetOf<String>()
     private var resticConfig: BackupConfig? = null
     private var selectedSnapshot: ResticWrapper.ResticSnapshot? = null
@@ -54,7 +50,7 @@ class RestoreFragment : Fragment() {
             val binaryPath = ResticBinary.prepare(requireContext())
             if (binaryPath != null) {
                 ResticWrapper.binaryPath = binaryPath
-                ResticWrapper.rcloneBinaryPath = ResticBinary.prepareRclone(requireContext()) ?: "rclone"
+                ResticWrapper.tempRepoDir = ResticBinary.getTempRepoDir(requireContext())
                 binding.selectResticButton.visibility = View.VISIBLE
             }
         }
@@ -97,6 +93,9 @@ class RestoreFragment : Fragment() {
         selectedPackages.clear()
         selectedPackages.addAll(packages)
 
+        // Resolve app labels for display
+        appInfos = AppScanner.resolveLabels(requireContext(), packages.map { AppInfo(packageName = it) })
+
         binding.statusText.text = "共 ${packages.size} 個備份應用"
         binding.restoreButton.isEnabled = packages.isNotEmpty()
 
@@ -114,7 +113,8 @@ class RestoreFragment : Fragment() {
                 backend = config.resticBackend,
                 backendUrl = config.resticBackendUrl,
                 backendUser = config.resticBackendUser,
-                backendPass = config.resticBackendPass
+                backendPass = config.resticBackendPass,
+                backendShare = config.resticBackendShare
             )
             if (snapshotsResult.isFailure) {
                 binding.statusText.text = "讀取快照失敗: ${snapshotsResult.exceptionOrNull()?.message}"
@@ -155,6 +155,10 @@ class RestoreFragment : Fragment() {
             binding.backupDirText.text = "restic: ${selectedSnapshot!!.time.take(19)} (${snapshots.size} 個快照可用)"
             selectedPackages.clear()
             selectedPackages.addAll(packages)
+
+            // Resolve app labels for display
+            appInfos = AppScanner.resolveLabels(requireContext(), packages.map { AppInfo(packageName = it) })
+
             binding.statusText.text = "restic 快照共 ${packages.size} 個應用，點擊恢復開始"
             binding.restoreButton.isEnabled = true
             setRunning(false)
@@ -168,39 +172,20 @@ class RestoreFragment : Fragment() {
         snapshotId: String,
         filePath: String
     ): String? {
-        return try {
-            val env = ResticWrapper.buildFullEnv(
-                config.resticRepo,
-                config.resticPassword,
-                config.resticBackend,
-                config.resticBackendUrl,
-                config.resticBackendUser,
-                config.resticBackendPass
-            )
-
-            val cmd = ResticWrapper.buildCommandArgs(listOf("dump", snapshotId, filePath))
-            val process = ProcessBuilder(cmd)
-                .apply { environment().putAll(env) }
-                .redirectErrorStream(false)
-                .start()
-
-            // Drain stderr in background FIRST to prevent pipe-buffer deadlock
-            val stderrDrain = Thread({
-                try { process.errorStream.bufferedReader().use { while (it.readLine() != null) {} } } catch (_: Exception) {}
-            }, "restic-dump-stderr").apply { isDaemon = true; start() }
-
-            val stdout = process.inputStream.bufferedReader().use { it.readText() }
-            stderrDrain.join(5000)
-            process.waitFor()
-
-            if (process.exitValue() == 0) stdout else null
-        } catch (_: Exception) {
-            null
-        }
+        val result = ResticWrapper.dump(
+            config.resticRepo, config.resticPassword,
+            snapshotId, filePath,
+            backend = config.resticBackend,
+            backendUrl = config.resticBackendUrl,
+            backendUser = config.resticBackendUser,
+            backendPass = config.resticBackendPass,
+            backendShare = config.resticBackendShare
+        )
+        return result.getOrNull()
     }
 
     private fun setupAppList() {
-        binding.appList.adapter = PackageAdapter(packages, selectedPackages) { pkg, checked ->
+        binding.appList.adapter = PackageListAdapter(appInfos, selectedPackages) { pkg, checked ->
             if (checked) selectedPackages.add(pkg) else selectedPackages.remove(pkg)
             binding.statusText.text = "已選擇 ${selectedPackages.size}/${packages.size} 個應用"
         }
@@ -234,6 +219,7 @@ class RestoreFragment : Fragment() {
                     backendUrl = config.resticBackendUrl,
                     backendUser = config.resticBackendUser,
                     backendPass = config.resticBackendPass,
+                    backendShare = config.resticBackendShare,
                     onProgress = { msg -> binding.statusText.text = msg }
                 )
 
@@ -252,8 +238,10 @@ class RestoreFragment : Fragment() {
                     backupDir = restoredBackupDir,
                     filterPkgs = selectedPackages,
                     onProgress = { progress ->
+                        val label = appInfos.find { it.packageName == progress.packageName }?.label
+                        val name = label?.ifEmpty { progress.packageName } ?: progress.packageName
                         binding.statusText.text =
-                            "[${progress.current}/${progress.total}] ${progress.packageName}: ${progress.message}"
+                            "[${progress.current}/${progress.total}] $name: ${progress.message}"
                     }
                 )
                 // Cleanup staging
@@ -266,8 +254,10 @@ class RestoreFragment : Fragment() {
                     backupDir = dir,
                     filterPkgs = selectedPackages,
                     onProgress = { progress ->
+                        val label = appInfos.find { it.packageName == progress.packageName }?.label
+                        val name = label?.ifEmpty { progress.packageName } ?: progress.packageName
                         binding.statusText.text =
-                            "[${progress.current}/${progress.total}] ${progress.packageName}: ${progress.message}"
+                            "[${progress.current}/${progress.total}] $name: ${progress.message}"
                     }
                 )
                 // Also restore WiFi if backup exists locally
@@ -293,61 +283,5 @@ class RestoreFragment : Fragment() {
     override fun onDestroyView() {
         super.onDestroyView()
         _binding = null
-    }
-
-    private class PackageAdapter(
-        private val packages: List<String>,
-        private val selected: Set<String>,
-        private val onToggle: (String, Boolean) -> Unit
-    ) : RecyclerView.Adapter<PackageAdapter.ViewHolder>() {
-
-        class ViewHolder(view: View) : RecyclerView.ViewHolder(view) {
-            val checkbox: CheckBox = view.findViewById(R.id.checkbox)
-            val textView: TextView = view.findViewById(R.id.appName)
-        }
-
-        override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): ViewHolder {
-            val ctx = parent.context
-            val card = MaterialCardView(ctx).apply {
-                layoutParams = ViewGroup.MarginLayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.WRAP_CONTENT
-                ).apply { setMargins(0, 0, 0, 8) }
-                radius = 12f
-                cardElevation = 0f
-                strokeWidth = 0
-                setCardBackgroundColor(
-                    MaterialColors.getColor(ctx, com.google.android.material.R.attr.colorSurfaceContainer, 0)
-                )
-            }
-            val layout = LinearLayout(ctx).apply {
-                orientation = LinearLayout.HORIZONTAL
-                setPadding(16, 12, 16, 12)
-            }
-            val cb = CheckBox(ctx).apply { id = R.id.checkbox }
-            val tv = TextView(ctx).apply {
-                id = R.id.appName
-                setPadding(16, 0, 0, 0)
-                textSize = 15f
-                setTextColor(
-                    MaterialColors.getColor(ctx, com.google.android.material.R.attr.colorOnSurface, 0)
-                )
-            }
-            layout.addView(cb)
-            layout.addView(tv)
-            card.addView(layout)
-            return ViewHolder(card)
-        }
-
-        override fun onBindViewHolder(holder: ViewHolder, position: Int) {
-            val pkg = packages[position]
-            holder.textView.text = pkg
-            holder.checkbox.isChecked = pkg in selected
-            holder.checkbox.setOnCheckedChangeListener { _, checked ->
-                onToggle(pkg, checked)
-            }
-        }
-
-        override fun getItemCount() = packages.size
     }
 }

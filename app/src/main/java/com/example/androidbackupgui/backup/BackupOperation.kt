@@ -184,7 +184,7 @@ object BackupOperation {
     }
 
     private fun backupPermissions(packageName: String, appDir: File) {
-        val result = RootShell.exec("dumpsys package '${packageName.shellEscape()}' | grep -E 'granted=true|permission' | head -50")
+        val result = RootShell.exec("dumpsys package '${packageName.shellEscape()}' | grep -E 'granted=(true|false)'")
         if (result.output.isNotBlank()) {
             File(appDir, "permissions.txt").writeText(result.output)
         }
@@ -199,12 +199,5 @@ object BackupOperation {
             root.put(app.packageName, entry)
         }
         return root.toString(2)
-    }
-    private fun captureSsaid(packageName: String, userId: String): String {
-        return RootShell.exec("grep '${packageName.shellEscape()}' '/data/system/users/${userId.shellEscape()}/settings_ssaid.xml' 2>/dev/null").output
-    }
-
-    private fun capturePermissions(packageName: String): String {
-        return RootShell.exec("dumpsys package '${packageName.shellEscape()}' | grep -E 'granted=true|permission' | head -50").output
     }
 }
