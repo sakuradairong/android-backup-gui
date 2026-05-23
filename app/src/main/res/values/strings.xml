@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Android 备份工具</string>
+    <string name="script_label">选择脚本</string>
+    <string name="param_label">脚本参数</string>
+    <string name="param_hint">输入命令行参数</string>
+    <string name="run_button">▶ 执行</string>
+    <string name="stop_button">■ 停止</string>
+    <string name="clear_button">清空输出</string>
+    <string name="root_toggle">Root 权限</string>
+    <string name="status_ready">就绪</string>
+    <string name="status_running">执行中…</string>
+    <string name="status_done">完成 (退出码: %d)</string>
+    <string name="status_error">执行失败: %s</string>
+    <string name="status_cancelled">已取消</string>
+</resources>

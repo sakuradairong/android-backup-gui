@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- MD3 Primary (dark) -->
+    <color name="primary">#9ECAFF</color>
+    <color name="onPrimary">#003258</color>
+    <color name="primaryContainer">#00497D</color>
+    <color name="onPrimaryContainer">#D1E4FF</color>
+
+    <!-- MD3 Secondary (dark) -->
+    <color name="secondary">#FFB870</color>
+    <color name="onSecondary">#4A2800</color>
+    <color name="secondaryContainer">#6A3C00</color>
+    <color name="onSecondaryContainer">#FFDCB5</color>
+
+    <!-- MD3 Tertiary (dark) -->
+    <color name="tertiary">#8CD4C4</color>
+    <color name="onTertiary">#00382F</color>
+    <color name="tertiaryContainer">#005045</color>
+    <color name="onTertiaryContainer">#A7F0DE</color>
+
+    <!-- MD3 Error (dark) -->
+    <color name="error">#FFB4AB</color>
+    <color name="onError">#690005</color>
+    <color name="errorContainer">#93000A</color>
+    <color name="onErrorContainer">#FFDAD6</color>
+
+    <!-- MD3 Surface / Background (dark) -->
+    <color name="background">#1A1C1E</color>
+    <color name="onBackground">#E2E2E6</color>
+    <color name="surface">#1A1C1E</color>
+    <color name="onSurface">#E2E2E6</color>
+    <color name="surfaceVariant">#43474E</color>
+    <color name="onSurfaceVariant">#C3C6CF</color>
+    <color name="inverseSurface">#E2E2E6</color>
+    <color name="inverseOnSurface">#2F3033</color>
+
+    <!-- MD3 Outline (dark) -->
+    <color name="outline">#8D9199</color>
+    <color name="outlineVariant">#43474E</color>
+
+    <!-- Surface container hierarchy (dark) -->
+    <color name="surfaceContainerLowest">#0E1114</color>
+    <color name="surfaceContainerLow">#1A1C1E</color>
+    <color name="surfaceContainer">#1E2023</color>
+    <color name="surfaceContainerHigh">#292A2E</color>
+    <color name="surfaceContainerHighest">#333539</color>
+
+    <!-- Legacy console colors -->
+    <color name="consoleBg">#102027</color>
+    <color name="consoleText">#ECEFF1</color>
+</resources>
