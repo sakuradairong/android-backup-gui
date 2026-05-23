@@ -6,14 +6,18 @@ import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.fragment.app.Fragment
+import androidx.lifecycle.lifecycleScope
 import androidx.fragment.app.FragmentActivity
 import androidx.viewpager2.adapter.FragmentStateAdapter
 import androidx.viewpager2.widget.ViewPager2
 import com.example.androidbackupgui.databinding.ActivityMainBinding
+import com.example.androidbackupgui.root.RootShell
 import com.example.androidbackupgui.ui.BackupFragment
 import com.example.androidbackupgui.ui.ConfigFragment
 import com.example.androidbackupgui.ui.RestoreFragment
 import com.google.android.material.color.DynamicColors
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 
 class MainActivity : AppCompatActivity() {
 
@@ -29,6 +33,11 @@ class MainActivity : AppCompatActivity() {
 
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
+
+        // Request root access on startup
+        lifecycleScope.launch(Dispatchers.IO) {
+            RootShell.ensureSession()
+        }
 
         // Edge-to-edge: pad toolbar below status bar
         ViewCompat.setOnApplyWindowInsetsListener(binding.topAppBar) { view, insets ->
