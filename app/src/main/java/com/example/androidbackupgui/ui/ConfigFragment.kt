@@ -137,7 +137,7 @@ class ConfigFragment : Fragment() {
         }
         Log.i(TAG, "initResticRepo: binaryPath=$binaryPath")
         ResticWrapper.binaryPath = binaryPath
-
+        ResticWrapper.rcloneBinaryPath = ResticBinary.prepareRclone(requireContext()) ?: "rclone"
         val ui = readResticUiState()
         Log.i(TAG, "initResticRepo: repo=${ui.repo} backend=${ui.backend} backendUrl=${ui.backendUrl}")
         if (ui.repo.isEmpty() || ui.password.isEmpty()) {
@@ -201,7 +201,7 @@ class ConfigFragment : Fragment() {
         }
 
         ResticWrapper.binaryPath = binaryPath
-
+        ResticWrapper.rcloneBinaryPath = ResticBinary.prepareRclone(requireContext()) ?: "rclone"
         // Check if repo is initialized by listing snapshots
         viewLifecycleOwner.lifecycleScope.launch {
             val snapshotsResult = ResticWrapper.listSnapshots(ui.repo, ui.password,

@@ -31,5 +31,16 @@ object ResticBinary {
         return path.absolutePath
     }
 
+    fun prepareRclone(context: Context): String? {
+        val path = File(context.applicationInfo.nativeLibraryDir, "librclone.so")
+        Log.d(TAG, "rclone path = ${path.absolutePath}, exists=${path.isFile}, len=${path.length()}")
+        if (!path.isFile) {
+            Log.e(TAG, "librclone.so NOT FOUND at ${path.absolutePath}")
+            return null
+        }
+        Log.i(TAG, "librclone.so ready at ${path.absolutePath} (${path.length()} bytes)")
+        return path.absolutePath
+    }
+
     fun isReady(): Boolean = false // call prepare() instead
 }

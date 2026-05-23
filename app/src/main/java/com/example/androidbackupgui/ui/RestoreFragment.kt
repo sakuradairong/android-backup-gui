@@ -54,6 +54,7 @@ class RestoreFragment : Fragment() {
             val binaryPath = ResticBinary.prepare(requireContext())
             if (binaryPath != null) {
                 ResticWrapper.binaryPath = binaryPath
+                ResticWrapper.rcloneBinaryPath = ResticBinary.prepareRclone(requireContext()) ?: "rclone"
                 binding.selectResticButton.visibility = View.VISIBLE
             }
         }

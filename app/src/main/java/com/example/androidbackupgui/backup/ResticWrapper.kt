@@ -26,6 +26,9 @@ object ResticWrapper {
     /** Path to the restic binary. Default assumes it's on PATH (e.g. Termux). */
     var binaryPath: String = "restic"
 
+    /** Path to the rclone binary (required for rclone: backends). */
+    var rcloneBinaryPath: String = "rclone"
+
     // ── Progress data ──────────────────────────────────
 
     data class ResticProgress(
@@ -342,6 +345,7 @@ object ResticWrapper {
         pass: String
     ): Map<String, String> {
         val env = HashMap<String, String>()
+        env["RCLONE_PROGRAM"] = rcloneBinaryPath
         when (backend) {
             "webdav" -> {
                 env["RCLONE_CONFIG_MYREMOTE_TYPE"] = "webdav"

@@ -108,6 +108,7 @@ class BackupFragment : Fragment() {
                 val binaryPath = ResticBinary.prepare(requireContext())
                 if (binaryPath != null) {
                     ResticWrapper.binaryPath = binaryPath
+                    ResticWrapper.rcloneBinaryPath = ResticBinary.prepareRclone(requireContext()) ?: "rclone"
                     binding.statusText.text = "正在寫入 restic 去重倉庫…"
                     val resticResult = ResticWrapper.backup(
                         repoPath = config.resticRepo,
