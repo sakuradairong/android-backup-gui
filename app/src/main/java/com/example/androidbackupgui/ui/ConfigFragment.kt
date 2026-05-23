@@ -160,11 +160,23 @@ class ConfigFragment : Fragment() {
 
     /** Refresh the restic management buttons visibility based on repo state. */
     private fun refreshResticStatus() {
-        val ui = readResticUiState()
-        if (config.resticEnabled != 1 || ui.repo.isBlank()) {
+        // If restic is disabled entirely, hide everything
+        if (config.resticEnabled != 1) {
             binding.initResticButton.visibility = View.GONE
             binding.resticStatsButton.visibility = View.GONE
             binding.resticPruneButton.visibility = View.GONE
+            binding.resticStatusText.text = ""
+            return
+        }
+
+        val ui = readResticUiState()
+
+        // Repo path not filled yet — show init button so user can get started
+        if (ui.repo.isBlank()) {
+            binding.initResticButton.visibility = View.VISIBLE
+            binding.resticStatsButton.visibility = View.GONE
+            binding.resticPruneButton.visibility = View.GONE
+            binding.resticStatusText.text = "請填寫倉庫路徑和密碼後初始化"
             return
         }
 
