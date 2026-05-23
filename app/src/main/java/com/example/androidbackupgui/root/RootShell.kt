@@ -54,7 +54,8 @@ object RootShell {
     }
 
     fun isAlive(): Boolean = synchronized(lock) {
-        process?.isAlive == true
+        val p = process ?: return false
+        try { p.exitValue(); false } catch (_: IllegalThreadStateException) { true }
     }
 
     fun close() = synchronized(lock) {
