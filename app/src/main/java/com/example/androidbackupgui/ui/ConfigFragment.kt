@@ -104,6 +104,26 @@ class ConfigFragment : Fragment() {
         }
     }
 
+    /** Read restic credentials from current UI state (always fresh, avoids stale config). */
+    private data class ResticUiState(
+        val repo: String, val password: String,
+        val backend: String, val backendUrl: String,
+        val backendUser: String, val backendPass: String
+    )
+
+    private fun readResticUiState() = ResticUiState(
+        repo = binding.resticRepoEdit.text?.toString()?.trim() ?: "",
+        password = binding.resticPasswordEdit.text?.toString() ?: "",
+        backend = when (binding.resticBackendGroup.checkedButtonId) {
+            R.id.resticBackendWebdav -> "webdav"
+            R.id.resticBackendSmb -> "smb"
+            else -> "local"
+        },
+        backendUrl = binding.resticBackendUrlEdit.text?.toString()?.trim() ?: "",
+        backendUser = binding.resticBackendUserEdit.text?.toString()?.trim() ?: "",
+        backendPass = binding.resticBackendPassEdit.text?.toString() ?: ""
+    )
+
     private fun initResticRepo() {
         val binaryPath = ResticBinary.prepare(requireContext())
         if (binaryPath == null) {
@@ -112,9 +132,8 @@ class ConfigFragment : Fragment() {
         }
         ResticWrapper.binaryPath = binaryPath
 
-        val repo = binding.resticRepoEdit.text?.toString()?.trim() ?: ""
-        val password = binding.resticPasswordEdit.text?.toString() ?: ""
-        if (repo.isEmpty() || password.isEmpty()) {
+        val ui = readResticUiState()
+        if (ui.repo.isEmpty() || ui.password.isEmpty()) {
             binding.resticStatusText.text = "請填寫倉庫路徑和密碼"
             return
         }
@@ -123,14 +142,14 @@ class ConfigFragment : Fragment() {
         binding.resticStatusText.text = "正在初始化 restic 倉庫…"
 
         viewLifecycleOwner.lifecycleScope.launch {
-            val result = ResticWrapper.init(repo, password,
-                backend = config.resticBackend,
-                backendUrl = config.resticBackendUrl,
-                backendUser = config.resticBackendUser,
-                backendPass = config.resticBackendPass)
+            val result = ResticWrapper.init(ui.repo, ui.password,
+                backend = ui.backend,
+                backendUrl = ui.backendUrl,
+                backendUser = ui.backendUser,
+                backendPass = ui.backendPass)
             result.fold(
                 onSuccess = {
-                    binding.resticStatusText.text = "倉庫初始化成功: $repo"
+                    binding.resticStatusText.text = "倉庫初始化成功: ${ui.repo}"
                     refreshResticStatus()
                 },
                 onFailure = { e -> binding.resticStatusText.text = "初始化失敗: ${e.message}" }
@@ -141,7 +160,8 @@ class ConfigFragment : Fragment() {
 
     /** Refresh the restic management buttons visibility based on repo state. */
     private fun refreshResticStatus() {
-        if (config.resticEnabled != 1 || config.resticRepo.isBlank()) {
+        val ui = readResticUiState()
+        if (config.resticEnabled != 1 || ui.repo.isBlank()) {
             binding.initResticButton.visibility = View.GONE
             binding.resticStatsButton.visibility = View.GONE
             binding.resticPruneButton.visibility = View.GONE
@@ -161,11 +181,11 @@ class ConfigFragment : Fragment() {
 
         // Check if repo is initialized by listing snapshots
         viewLifecycleOwner.lifecycleScope.launch {
-            val snapshotsResult = ResticWrapper.listSnapshots(config.resticRepo, config.resticPassword,
-                backend = config.resticBackend,
-                backendUrl = config.resticBackendUrl,
-                backendUser = config.resticBackendUser,
-                backendPass = config.resticBackendPass)
+            val snapshotsResult = ResticWrapper.listSnapshots(ui.repo, ui.password,
+                backend = ui.backend,
+                backendUrl = ui.backendUrl,
+                backendUser = ui.backendUser,
+                backendPass = ui.backendPass)
             if (snapshotsResult.isSuccess) {
                 val snapshots = snapshotsResult.getOrDefault(emptyList())
                 binding.initResticButton.visibility = View.GONE
@@ -184,17 +204,18 @@ class ConfigFragment : Fragment() {
     private fun showResticStats() {
         binding.resticStatsButton.isEnabled = false
         binding.resticStatusText.text = "正在讀取統計…"
+        val ui = readResticUiState()
         viewLifecycleOwner.lifecycleScope.launch {
-            val statsResult = ResticWrapper.stats(config.resticRepo, config.resticPassword,
-                backend = config.resticBackend,
-                backendUrl = config.resticBackendUrl,
-                backendUser = config.resticBackendUser,
-                backendPass = config.resticBackendPass)
-            val snapshotsResult = ResticWrapper.listSnapshots(config.resticRepo, config.resticPassword,
-                backend = config.resticBackend,
-                backendUrl = config.resticBackendUrl,
-                backendUser = config.resticBackendUser,
-                backendPass = config.resticBackendPass)
+            val statsResult = ResticWrapper.stats(ui.repo, ui.password,
+                backend = ui.backend,
+                backendUrl = ui.backendUrl,
+                backendUser = ui.backendUser,
+                backendPass = ui.backendPass)
+            val snapshotsResult = ResticWrapper.listSnapshots(ui.repo, ui.password,
+                backend = ui.backend,
+                backendUrl = ui.backendUrl,
+                backendUser = ui.backendUser,
+                backendPass = ui.backendPass)
             binding.resticStatsButton.isEnabled = true
 
             val snapshotCount = snapshotsResult.getOrDefault(emptyList()).size
@@ -212,14 +233,15 @@ class ConfigFragment : Fragment() {
     private fun pruneResticSnapshots() {
         binding.resticPruneButton.isEnabled = false
         binding.resticStatusText.text = "正在清理舊快照 (保留 7 天 / 4 週 / 3 月)…"
+        val ui = readResticUiState()
         viewLifecycleOwner.lifecycleScope.launch {
             val forgetResult = ResticWrapper.forget(
-                config.resticRepo, config.resticPassword,
+                ui.repo, ui.password,
                 keepDaily = 7, keepWeekly = 4, keepMonthly = 3,
-                backend = config.resticBackend,
-                backendUrl = config.resticBackendUrl,
-                backendUser = config.resticBackendUser,
-                backendPass = config.resticBackendPass
+                backend = ui.backend,
+                backendUrl = ui.backendUrl,
+                backendUser = ui.backendUser,
+                backendPass = ui.backendPass
             )
             if (forgetResult.isFailure) {
                 binding.resticStatusText.text = "forget 失敗: ${forgetResult.exceptionOrNull()?.message}"
@@ -228,11 +250,11 @@ class ConfigFragment : Fragment() {
             }
 
             binding.resticStatusText.text = "正在回收空間…"
-            val pruneResult = ResticWrapper.prune(config.resticRepo, config.resticPassword,
-                backend = config.resticBackend,
-                backendUrl = config.resticBackendUrl,
-                backendUser = config.resticBackendUser,
-                backendPass = config.resticBackendPass)
+            val pruneResult = ResticWrapper.prune(ui.repo, ui.password,
+                backend = ui.backend,
+                backendUrl = ui.backendUrl,
+                backendUser = ui.backendUser,
+                backendPass = ui.backendPass)
             binding.resticPruneButton.isEnabled = true
 
             if (pruneResult.isSuccess) {

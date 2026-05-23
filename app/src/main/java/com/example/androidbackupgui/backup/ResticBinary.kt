@@ -32,14 +32,15 @@ object ResticBinary {
      */
     fun prepare(context: Context): String? {
         extractedPath?.let { path ->
-            if (File(path).exists() && File(path).canExecute()) return path
+            val f = File(path)
+            if (f.exists() && f.length() > 0) return path
         }
 
         val abi = detectAbi()
         val destFile = File(context.filesDir, BINARY_NAME)
 
-        // If already extracted and executable for this ABI, reuse
-        if (destFile.exists() && destFile.canExecute()) {
+        // Already extracted — executable not required (linker trampoline)
+        if (destFile.exists() && destFile.length() > 0) {
             extractedPath = destFile.absolutePath
             return extractedPath
         }
@@ -51,14 +52,13 @@ object ResticBinary {
                     input.copyTo(output)
                 }
             }
-            // Set executable (may need root on some devices)
-            destFile.setExecutable(true, false)
             destFile.setReadable(true, false)
+            // setExecutable may fail on modern Android (W^X) — that's fine,
+            // the linker trampoline only needs read permission
+            destFile.setExecutable(true, false)
 
-            // Verify
-            destFile.canExecute() && destFile.length() > 0
+            destFile.length() > 0
         } catch (e: Exception) {
-            // Asset not found for this ABI — try fallback
             tryFallbackExtraction(context, destFile)
         }
 
@@ -78,9 +78,9 @@ object ResticBinary {
                         input.copyTo(output)
                     }
                 }
-                destFile.setExecutable(true, false)
                 destFile.setReadable(true, false)
-                if (destFile.canExecute() && destFile.length() > 0) return true
+                destFile.setExecutable(true, false)
+                if (destFile.length() > 0) return true
             } catch (_: Exception) {
                 // try next
             }
@@ -89,11 +89,12 @@ object ResticBinary {
     }
 
     /**
-     * Check if the binary is ready. Does NOT extract.
+     * Check if the binary is ready (extracted and readable). Does NOT extract.
      */
     fun isReady(): Boolean {
         val path = extractedPath ?: return false
-        return File(path).canExecute()
+        val f = File(path)
+        return f.exists() && f.length() > 0
     }
 
     /** Detect the device ABI from Build.SUPPORTED_ABIS. */
