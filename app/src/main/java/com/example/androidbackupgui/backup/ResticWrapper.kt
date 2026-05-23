@@ -300,24 +300,9 @@ object ResticWrapper {
 
     // ── Internal helpers ───────────────────────────────
 
-    /**
-     * Build the full command list to run restic.
-     * On Android 10+ the app's data directory is noexec; we use the system
-     * linker as a trampoline to load the binary.
-     */
-    fun buildCommandArgs(args: List<String>): List<String> {
-        val isAndroid = try {
-            Class.forName("android.os.Build")
-            true
-        } catch (_: ClassNotFoundException) {
-            false
-        }
-        if (!isAndroid) return listOf(binaryPath) + args
-
-        val linker = if (File("/system/bin/linker64").exists()) "/system/bin/linker64"
-                     else "/system/bin/linker"
-        return listOf(linker, binaryPath) + args
-    }
+    /** Build the full command list to run restic. */
+    fun buildCommandArgs(args: List<String>): List<String> =
+        listOf(binaryPath) + args
 
     /** Build environment for restic, with optional rclone backend config. */
     fun buildFullEnv(
