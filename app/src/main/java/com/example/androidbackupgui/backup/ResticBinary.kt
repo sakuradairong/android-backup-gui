@@ -1,29 +1,34 @@
 package com.example.androidbackupgui.backup
 
 import android.content.Context
+import android.util.Log
 import java.io.File
 
-/**
- * Provides the path to the restic binary on the device.
- *
- * The binary is packaged as a native library in jniLibs/<abi>/librestic.so.
- * The Android package manager extracts it to nativeLibDir which is executable
- * (unlike filesDir which is mounted noexec on API 29+).
- *
- * The binary is statically linked (Go) so it runs directly without a
- * dynamic linker trampoline.
- */
 object ResticBinary {
 
+    private const val TAG = "ResticBinary"
     private const val BINARY_NAME = "librestic.so"
 
-    /**
-     * Return the absolute path to the restic binary, or null if not found.
-     */
     fun prepare(context: Context): String? {
-        val path = File(context.applicationInfo.nativeLibraryDir, BINARY_NAME).absolutePath
-        if (!File(path).isFile) return null
-        return path
+        val nativeLibDir = context.applicationInfo.nativeLibraryDir
+        Log.d(TAG, "nativeLibraryDir = $nativeLibDir")
+
+        val path = File(nativeLibDir, BINARY_NAME)
+        Log.d(TAG, "checking path = ${path.absolutePath}")
+        Log.d(TAG, "exists = ${path.exists()}, isFile = ${path.isFile}, length = ${path.length()}, canExecute = ${path.canExecute()}, canRead = ${path.canRead()}")
+
+        // List what's actually in the native lib dir
+        File(nativeLibDir).listFiles()?.let { files ->
+            Log.d(TAG, "nativeLibDir contents: ${files.joinToString { it.name }}")
+        } ?: Log.d(TAG, "nativeLibDir listFiles returned null")
+
+        if (!path.isFile) {
+            Log.e(TAG, "librestic.so NOT FOUND at ${path.absolutePath}")
+            return null
+        }
+
+        Log.i(TAG, "librestic.so ready at ${path.absolutePath} (${path.length()} bytes)")
+        return path.absolutePath
     }
 
     fun isReady(): Boolean = false // call prepare() instead

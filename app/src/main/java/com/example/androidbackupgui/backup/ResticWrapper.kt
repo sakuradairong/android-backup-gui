@@ -1,5 +1,6 @@
 package com.example.androidbackupgui.backup
 
+import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
@@ -19,6 +20,8 @@ import kotlin.coroutines.coroutineContext
  * All public methods are suspend and run on Dispatchers.IO.
  */
 object ResticWrapper {
+
+    private const val TAG = "ResticWrapper"
 
     /** Path to the restic binary. Default assumes it's on PATH (e.g. Termux). */
     var binaryPath: String = "restic"
@@ -301,8 +304,11 @@ object ResticWrapper {
     // ── Internal helpers ───────────────────────────────
 
     /** Build the full command list to run restic. */
-    fun buildCommandArgs(args: List<String>): List<String> =
-        listOf(binaryPath) + args
+    fun buildCommandArgs(args: List<String>): List<String> {
+        val cmd = listOf(binaryPath) + args
+        Log.d(TAG, "buildCommandArgs: binaryPath=$binaryPath args=$args → cmd=$cmd")
+        return cmd
+    }
 
     /** Build environment for restic, with optional rclone backend config. */
     fun buildFullEnv(
@@ -362,8 +368,11 @@ object ResticWrapper {
 
     /** Run restic and capture full output. */
     private fun runRestic(env: Map<String, String>, args: List<String>): CommandResult {
+        val cmdArgs = buildCommandArgs(args)
+        Log.i(TAG, "runRestic cmd=${cmdArgs.joinToString(" ")}")
+        // Log env keys (but NOT values, which may contain passwords)
+        Log.d(TAG, "runRestic env keys: ${env.keys}")
         return try {
-            val cmdArgs = buildCommandArgs(args)
             val pb = ProcessBuilder(cmdArgs)
             pb.environment().putAll(env)
             pb.redirectErrorStream(false)
@@ -376,6 +385,7 @@ object ResticWrapper {
                     process.errorStream.bufferedReader().use { reader ->
                         var line: String?
                         while (reader.readLine().also { line = it } != null) {
+                            Log.d(TAG, "restic stderr: $line")
                             stderrText.appendLine(line)
                         }
                     }
@@ -385,8 +395,11 @@ object ResticWrapper {
             val stdout = process.inputStream.bufferedReader().use(BufferedReader::readText)
             stderrThread.join(5000)
             val exitCode = process.waitFor()
+            Log.i(TAG, "runRestic exitCode=$exitCode stdout_len=${stdout.length} stderr_len=${stderrText.length}")
+            if (stderrText.isNotEmpty()) Log.w(TAG, "runRestic stderr: ${stderrText}")
             CommandResult(stdout.trim(), stderrText.toString().trim(), exitCode)
         } catch (e: Exception) {
+            Log.e(TAG, "runRestic exception", e)
             CommandResult("", e.message ?: "Unknown error", -1)
         }
     }
@@ -402,8 +415,10 @@ object ResticWrapper {
         args: List<String>,
         onLine: suspend (String) -> Unit
     ): CommandResult = withContext(Dispatchers.IO) {
+        val cmdArgs = buildCommandArgs(args)
+        Log.i(TAG, "runResticStreaming cmd=${cmdArgs.joinToString(" ")}")
+        Log.d(TAG, "runResticStreaming env keys: ${env.keys}")
         try {
-            val cmdArgs = buildCommandArgs(args)
             val pb = ProcessBuilder(cmdArgs)
             pb.environment().putAll(env)
             pb.redirectErrorStream(false)
@@ -434,8 +449,11 @@ object ResticWrapper {
             val exitCode = try { process.waitFor() } catch (_: Exception) { -1 }
             reader.close()
 
+            Log.i(TAG, "runResticStreaming exitCode=$exitCode stdout_len=${stdoutLines.length}")
+            if (stderrText.isNotEmpty()) Log.w(TAG, "runResticStreaming stderr: ${stderrText}")
             CommandResult(stdoutLines.toString().trim(), stderrText.toString().trim(), exitCode)
         } catch (e: Exception) {
+            Log.e(TAG, "runResticStreaming exception", e)
             CommandResult("", e.message ?: "Unknown error", -1)
         }
     }

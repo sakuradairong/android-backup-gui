@@ -1,6 +1,7 @@
 package com.example.androidbackupgui.ui
 
 import android.os.Bundle
+import android.util.Log
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
@@ -17,6 +18,8 @@ import kotlinx.coroutines.withContext
 import java.io.File
 
 class ConfigFragment : Fragment() {
+
+    companion object { private const val TAG = "ConfigFragment" }
 
     private var _binding: FragmentConfigBinding? = null
     private val binding get() = _binding!!
@@ -125,14 +128,18 @@ class ConfigFragment : Fragment() {
     )
 
     private fun initResticRepo() {
+        Log.i(TAG, "initResticRepo called")
         val binaryPath = ResticBinary.prepare(requireContext())
         if (binaryPath == null) {
+            Log.e(TAG, "initResticRepo: binaryPath is null, showing error to user")
             binding.resticStatusText.text = "restic 二進制未就緒，請確保已安裝 restic 於 Termux 或 APK 內置版本可用"
             return
         }
+        Log.i(TAG, "initResticRepo: binaryPath=$binaryPath")
         ResticWrapper.binaryPath = binaryPath
 
         val ui = readResticUiState()
+        Log.i(TAG, "initResticRepo: repo=${ui.repo} backend=${ui.backend} backendUrl=${ui.backendUrl}")
         if (ui.repo.isEmpty() || ui.password.isEmpty()) {
             binding.resticStatusText.text = "請填寫倉庫路徑和密碼"
             return
@@ -149,10 +156,14 @@ class ConfigFragment : Fragment() {
                 backendPass = ui.backendPass)
             result.fold(
                 onSuccess = {
+                    Log.i(TAG, "initResticRepo: SUCCESS")
                     binding.resticStatusText.text = "倉庫初始化成功: ${ui.repo}"
                     refreshResticStatus()
                 },
-                onFailure = { e -> binding.resticStatusText.text = "初始化失敗: ${e.message}" }
+                onFailure = { e ->
+                    Log.e(TAG, "initResticRepo: FAILED ${e.message}", e)
+                    binding.resticStatusText.text = "初始化失敗: ${e.message}"
+                }
             )
             binding.initResticButton.isEnabled = true
         }
