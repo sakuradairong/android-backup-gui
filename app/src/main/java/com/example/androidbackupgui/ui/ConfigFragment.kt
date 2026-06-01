@@ -1,22 +1,19 @@
 package com.example.androidbackupgui.ui
 
 import android.os.Bundle
-import android.util.Log
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
 import androidx.core.widget.doAfterTextChanged
 import androidx.fragment.app.Fragment
+import androidx.fragment.app.viewModels
+import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
 import com.example.androidbackupgui.R
 import com.example.androidbackupgui.backup.BackupConfig
-import com.example.androidbackupgui.backup.ResticBinary
-import com.example.androidbackupgui.backup.ResticWrapper
 import com.example.androidbackupgui.databinding.FragmentConfigBinding
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
-import java.io.File
 
 class ConfigFragment : Fragment() {
 
@@ -24,8 +21,8 @@ class ConfigFragment : Fragment() {
 
     private var _binding: FragmentConfigBinding? = null
     private val binding get() = _binding!!
-    private lateinit var config: BackupConfig
-    private lateinit var configFile: File
+    private val vm: ConfigViewModel by viewModels()
+    private var formLoading = false
 
     override fun onCreateView(
         inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?
@@ -37,22 +34,52 @@ class ConfigFragment : Fragment() {
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
 
-        configFile = File(requireContext().filesDir, "backup_settings.conf")
-        config = BackupConfig.fromFile(configFile)
-        loadConfig()
+        // Load config from file into ViewModel state
+        vm.load()
 
+        // Populate form fields from initial state (prevents listener chain)
+        loadForm()
+
+        // ── Change listeners ─────────────────────────────────────────
         binding.saveConfigButton.setOnClickListener { saveConfig() }
-        binding.resticBackendGroup.addOnButtonCheckedListener { _, _, _ -> updateBackendFieldVisibility() }
+        binding.resticBackendGroup.addOnButtonCheckedListener { _, _, _ ->
+            onBackendChanged(); refreshResticStatus()
+        }
         binding.resticEnabledSwitch.setOnCheckedChangeListener { _, _ -> refreshResticStatus() }
-        binding.resticRepoEdit.doAfterTextChanged { refreshResticStatus(); updateComputedUrl() }
-        binding.resticBackendUrlEdit.doAfterTextChanged { updateComputedUrl() }
-        binding.resticPasswordEdit.doAfterTextChanged { refreshResticStatus() }
+        binding.resticRepoEdit.doAfterTextChanged {
+            if (formLoading) return@doAfterTextChanged
+            onFormChanged()
+            refreshResticStatus()
+        }
+        binding.resticBackendUrlEdit.doAfterTextChanged {
+            if (formLoading) return@doAfterTextChanged
+            onFormChanged()
+        }
+        binding.resticPasswordEdit.doAfterTextChanged {
+            if (formLoading) return@doAfterTextChanged
+            refreshResticStatus()
+        }
         binding.initResticButton.setOnClickListener { initResticRepo() }
         binding.resticStatsButton.setOnClickListener { showResticStats() }
         binding.resticPruneButton.setOnClickListener { pruneResticSnapshots() }
+
+        // Initial async status check
+        refreshResticStatus()
+
+        // Observe ViewModel state for derived UI updates
+        viewLifecycleOwner.lifecycleScope.launch {
+            viewLifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
+                vm.uiState.collect { state -> applyState(state) }
+            }
+        }
     }
 
-    private fun loadConfig() {
+    // ── Initial form population ──────────────────────────────────────
+
+    /** Populate EditTexts from ViewModel's current config. */
+    private fun loadForm() {
+        formLoading = true
+        val config = vm.uiState.value.config
         binding.backupModeSwitch.isChecked = config.backupMode == 1
         binding.backupUserDataSwitch.isChecked = config.backupUserData == 1
         binding.backupObbSwitch.isChecked = config.backupObbData == 1
@@ -61,7 +88,6 @@ class ConfigFragment : Fragment() {
         binding.outputPathEdit.setText(config.outputPath)
         binding.compressionEdit.setText(config.compressionMethod)
 
-        // Restic settings
         binding.resticEnabledSwitch.isChecked = config.resticEnabled == 1
         binding.resticRepoEdit.setText(config.resticRepo)
         binding.resticPasswordEdit.setText(config.resticPassword)
@@ -69,8 +95,8 @@ class ConfigFragment : Fragment() {
         binding.resticBackendUserEdit.setText(config.resticBackendUser)
         binding.resticBackendPassEdit.setText(config.resticBackendPass)
         binding.resticBackendShareEdit.setText(config.resticBackendShare)
+        binding.resticBackendDomainEdit.setText(config.resticBackendDomain)
 
-        // Restore backend selector
         binding.resticBackendGroup.check(
             when (config.resticBackend) {
                 "webdav" -> R.id.resticBackendWebdav
@@ -79,280 +105,111 @@ class ConfigFragment : Fragment() {
                 else -> R.id.resticBackendLocal
             }
         )
-        updateBackendFieldVisibility()
-        updateComputedUrl()
-        refreshResticStatus()
+        formLoading = false
     }
 
-    private fun saveConfig() {
-        config.backupMode = if (binding.backupModeSwitch.isChecked) 1 else 0
-        config.backupUserData = if (binding.backupUserDataSwitch.isChecked) 1 else 0
-        config.backupObbData = if (binding.backupObbSwitch.isChecked) 1 else 0
-        config.backgroundAppsIgnore = if (binding.ignoreRunningSwitch.isChecked) 1 else 0
-        config.outputPath = binding.outputPathEdit.text?.toString() ?: ""
-        config.compressionMethod = binding.compressionEdit.text?.toString()?.ifEmpty { "zstd" } ?: "zstd"
-        config.backupWifi = if (binding.backupWifiSwitch.isChecked) 1 else 0
+    // ── StateFlow observer ───────────────────────────────────────────
 
-        // Restic settings
-        config.resticEnabled = if (binding.resticEnabledSwitch.isChecked) 1 else 0
-        config.resticRepo = binding.resticRepoEdit.text?.toString()?.trim() ?: ""
-        config.resticPassword = binding.resticPasswordEdit.text?.toString() ?: ""
-        config.resticBackend = when (binding.resticBackendGroup.checkedButtonId) {
-            R.id.resticBackendWebdav -> "webdav"
-            R.id.resticBackendSmb -> "smb"
-            R.id.resticBackendRestServer -> "rest-server"
-            else -> "local"
+    /** Apply ViewModel state to non-form views (visibility, text, enabled). */
+    private fun applyState(state: ConfigUiState) {
+        with(state.backendDisplay) {
+            binding.resticBackendUrlLayout.visibility = if (isRemote) View.VISIBLE else View.GONE
+            binding.resticBackendShareLayout.visibility = if (isSmb) View.VISIBLE else View.GONE
+            binding.resticBackendDomainLayout.visibility = if (isSmb) View.VISIBLE else View.GONE
+            binding.resticBackendUserLayout.visibility = if (needsAuth) View.VISIBLE else View.GONE
+            binding.resticBackendPassLayout.visibility = if (needsAuth) View.VISIBLE else View.GONE
+            binding.resticBackendUrlLayout.hint = urlHint
+            binding.resticComputedUrlText.text = if (state.config.resticRepo.isNotEmpty())
+                "实际仓库: $computedUrl" else ""
         }
-        config.resticBackendUrl = binding.resticBackendUrlEdit.text?.toString()?.trim() ?: ""
-        config.resticBackendUser = binding.resticBackendUserEdit.text?.toString()?.trim() ?: ""
-        config.resticBackendPass = binding.resticBackendPassEdit.text?.toString() ?: ""
-        config.resticBackendShare = binding.resticBackendShareEdit.text?.toString()?.trim() ?: ""
-
-        viewLifecycleOwner.lifecycleScope.launch {
-            withContext(Dispatchers.IO) {
-                BackupConfig.toFile(config, configFile)
-            }
-            binding.configStatusText.text = "配置已保存到 ${configFile.absolutePath}"
+        with(state.resticStatus) {
+            binding.resticStatusText.text = message
+            binding.initResticButton.isEnabled = initButtonEnabled
+            binding.initResticButton.visibility = if (initButtonVisible) View.VISIBLE else View.GONE
+            binding.resticStatsButton.isEnabled = statsButtonEnabled
+            binding.resticStatsButton.visibility = if (statsButtonVisible) View.VISIBLE else View.GONE
+            binding.resticPruneButton.isEnabled = pruneButtonEnabled
+            binding.resticPruneButton.visibility = if (pruneButtonVisible) View.VISIBLE else View.GONE
         }
     }
 
-    /** Read restic credentials from current UI state (always fresh, avoids stale config). */
-    private data class ResticUiState(
-        val repo: String, val password: String,
-        val backend: String, val backendUrl: String,
-        val backendUser: String, val backendPass: String,
-        val backendShare: String
-    )
+    // ── Form building helpers ────────────────────────────────────────
 
-    private fun readResticUiState() = ResticUiState(
+    private fun readBackend(): String = when (binding.resticBackendGroup.checkedButtonId) {
+        R.id.resticBackendWebdav -> "webdav"
+        R.id.resticBackendSmb -> "smb"
+        R.id.resticBackendRestServer -> "rest-server"
+        else -> "local"
+    }
+
+    private fun readResticForm() = ResticForm(
         repo = binding.resticRepoEdit.text?.toString()?.trim() ?: "",
         password = binding.resticPasswordEdit.text?.toString() ?: "",
-        backend = when (binding.resticBackendGroup.checkedButtonId) {
-            R.id.resticBackendWebdav -> "webdav"
-            R.id.resticBackendSmb -> "smb"
-            R.id.resticBackendRestServer -> "rest-server"
-            else -> "local"
-        },
+        backend = readBackend(),
         backendUrl = binding.resticBackendUrlEdit.text?.toString()?.trim() ?: "",
         backendUser = binding.resticBackendUserEdit.text?.toString()?.trim() ?: "",
         backendPass = binding.resticBackendPassEdit.text?.toString() ?: "",
-        backendShare = binding.resticBackendShareEdit.text?.toString()?.trim() ?: ""
+        backendShare = binding.resticBackendShareEdit.text?.toString()?.trim() ?: "",
+        backendDomain = binding.resticBackendDomainEdit.text?.toString()?.trim() ?: ""
     )
 
-    private fun initResticRepo() {
-        Log.i(TAG, "initResticRepo called")
-        val binaryPath = ResticBinary.prepare(requireContext())
-        if (binaryPath == null) {
-            Log.e(TAG, "initResticRepo: binaryPath is null, showing error to user")
-            binding.resticStatusText.text = "restic 二进制未就绪，请确保已安装 restic 于 Termux 或 APK 内置版本可用"
-            return
-        }
-        Log.i(TAG, "initResticRepo: binaryPath=$binaryPath")
-        ResticWrapper.binaryPath = binaryPath
-        ResticWrapper.tempRepoDir = ResticBinary.getTempRepoDir(requireContext())
-        val ui = readResticUiState()
-        Log.i(TAG, "initResticRepo: repo=${ui.repo} backend=${ui.backend} backendUrl=${ui.backendUrl} share=${ui.backendShare} user=${ui.backendUser}")
-        if (ui.repo.isEmpty() || ui.password.isEmpty()) {
-            binding.resticStatusText.text = "请填写仓库路径和密码"
-            return
-        }
+    // ── User actions ─────────────────────────────────────────────────
 
-        binding.initResticButton.isEnabled = false
-        binding.resticStatusText.text = "正在初始化 restic 仓库…"
+    private fun saveConfig() {
+        vm.save(BackupConfig().also { config ->
+            config.backupMode = if (binding.backupModeSwitch.isChecked) 1 else 0
+            config.backupUserData = if (binding.backupUserDataSwitch.isChecked) 1 else 0
+            config.backupObbData = if (binding.backupObbSwitch.isChecked) 1 else 0
+            config.backgroundAppsIgnore = if (binding.ignoreRunningSwitch.isChecked) 1 else 0
+            config.outputPath = binding.outputPathEdit.text?.toString() ?: ""
+            config.compressionMethod = binding.compressionEdit.text?.toString()?.ifEmpty { "zstd" } ?: "zstd"
+            config.backupWifi = if (binding.backupWifiSwitch.isChecked) 1 else 0
 
-        viewLifecycleOwner.lifecycleScope.launch {
-            val result = ResticWrapper.init(ui.repo, ui.password,
-                backend = ui.backend,
-                backendUrl = ui.backendUrl,
-                backendUser = ui.backendUser,
-                backendPass = ui.backendPass,
-                backendShare = ui.backendShare)
-            result.fold(
-                onSuccess = {
-                    Log.i(TAG, "initResticRepo: SUCCESS")
-                    binding.resticStatusText.text = "仓库初始化成功: ${ui.repo}"
-                    refreshResticStatus()
-                },
-                onFailure = { e ->
-                    Log.e(TAG, "initResticRepo: FAILED ${e.message}", e)
-                    binding.resticStatusText.text = "初始化失败: ${e.message}"
-                }
-            )
-            binding.initResticButton.isEnabled = true
-        }
+            config.resticEnabled = if (binding.resticEnabledSwitch.isChecked) 1 else 0
+            config.resticRepo = binding.resticRepoEdit.text?.toString()?.trim() ?: ""
+            config.resticPassword = binding.resticPasswordEdit.text?.toString() ?: ""
+            config.resticBackend = readBackend()
+            config.resticBackendUrl = binding.resticBackendUrlEdit.text?.toString()?.trim() ?: ""
+            config.resticBackendUser = binding.resticBackendUserEdit.text?.toString()?.trim() ?: ""
+            config.resticBackendPass = binding.resticBackendPassEdit.text?.toString() ?: ""
+            config.resticBackendShare = binding.resticBackendShareEdit.text?.toString()?.trim() ?: ""
+            config.resticBackendDomain = binding.resticBackendDomainEdit.text?.toString()?.trim() ?: ""
+        })
     }
 
-    /** Refresh the restic management buttons visibility based on repo state. */
+    private fun onFormChanged() {
+        val backend = readBackend()
+        val repo = binding.resticRepoEdit.text?.toString()?.trim() ?: ""
+        val url = binding.resticBackendUrlEdit.text?.toString()?.trim() ?: ""
+        vm.onFormChanged(backend, repo, url)
+    }
+
+    private fun onBackendChanged() {
+        val backend = readBackend()
+        val repo = binding.resticRepoEdit.text?.toString()?.trim() ?: ""
+        val url = binding.resticBackendUrlEdit.text?.toString()?.trim() ?: ""
+        vm.onFormChanged(backend, repo, url)
+    }
+
     private fun refreshResticStatus() {
-        // If restic is disabled entirely, hide everything
-        if (!binding.resticEnabledSwitch.isChecked) {
-            binding.initResticButton.visibility = View.GONE
-            binding.resticStatsButton.visibility = View.GONE
-            binding.resticPruneButton.visibility = View.GONE
-            binding.resticStatusText.text = ""
-            return
-        }
+        vm.refreshResticStatus(readResticForm())
+    }
 
-        val ui = readResticUiState()
-
-        // Repo path not filled yet — show init button so user can get started
-        if (ui.repo.isBlank()) {
-            binding.initResticButton.visibility = View.VISIBLE
-            binding.resticStatsButton.visibility = View.GONE
-            binding.resticPruneButton.visibility = View.GONE
-            binding.resticStatusText.text = "请填写仓库路径和密码后初始化"
-            return
-        }
-
-        val binaryPath = ResticBinary.prepare(requireContext())
-        if (binaryPath == null) {
-            binding.initResticButton.visibility = View.VISIBLE
-            binding.resticStatsButton.visibility = View.GONE
-            binding.resticPruneButton.visibility = View.GONE
-            binding.resticStatusText.text = "restic 二进制未就绪"
-            return
-        }
-
-        ResticWrapper.binaryPath = binaryPath
-        ResticWrapper.tempRepoDir = ResticBinary.getTempRepoDir(requireContext())
-        // Check if repo is initialized by listing snapshots
-        viewLifecycleOwner.lifecycleScope.launch {
-            val snapshotsResult = ResticWrapper.listSnapshots(ui.repo, ui.password,
-                backend = ui.backend,
-                backendUrl = ui.backendUrl,
-                backendUser = ui.backendUser,
-                backendPass = ui.backendPass,
-                backendShare = ui.backendShare)
-            if (snapshotsResult.isSuccess) {
-                val snapshots = snapshotsResult.getOrDefault(emptyList())
-                binding.initResticButton.visibility = View.GONE
-                binding.resticStatsButton.visibility = View.VISIBLE
-                binding.resticPruneButton.visibility = View.VISIBLE
-                binding.resticStatusText.text = "仓库就绪，${snapshots.size} 个快照"
-            } else {
-                binding.initResticButton.visibility = View.VISIBLE
-                binding.resticStatsButton.visibility = View.GONE
-                binding.resticPruneButton.visibility = View.GONE
-                binding.resticStatusText.text = "仓库未初始化或认证失败"
-            }
-        }
+    private fun initResticRepo() {
+        vm.initResticRepo(readResticForm())
     }
 
     private fun showResticStats() {
-        binding.resticStatsButton.isEnabled = false
-        binding.resticStatusText.text = "正在读取统计…"
-        val ui = readResticUiState()
-        viewLifecycleOwner.lifecycleScope.launch {
-            val statsResult = ResticWrapper.stats(ui.repo, ui.password,
-                backend = ui.backend,
-                backendUrl = ui.backendUrl,
-                backendUser = ui.backendUser,
-                backendPass = ui.backendPass,
-                backendShare = ui.backendShare)
-            val snapshotsResult = ResticWrapper.listSnapshots(ui.repo, ui.password,
-                backend = ui.backend,
-                backendUrl = ui.backendUrl,
-                backendUser = ui.backendUser,
-                backendPass = ui.backendPass,
-                backendShare = ui.backendShare)
-            binding.resticStatsButton.isEnabled = true
-
-            val snapshotCount = snapshotsResult.getOrDefault(emptyList()).size
-            binding.resticStatusText.text = buildString {
-                appendLine("快照数: $snapshotCount")
-                if (statsResult.isSuccess) {
-                    appendLine(statsResult.getOrDefault(""))
-                } else {
-                    appendLine("统计读取失败: ${statsResult.exceptionOrNull()?.message}")
-                }
-            }
-        }
+        vm.showResticStats(readResticForm())
     }
 
     private fun pruneResticSnapshots() {
-        binding.resticPruneButton.isEnabled = false
-        binding.resticStatusText.text = "正在清理旧快照 (保留 7 天 / 4 周 / 3 月)…"
-        val ui = readResticUiState()
-        viewLifecycleOwner.lifecycleScope.launch {
-            val forgetResult = ResticWrapper.forget(
-                ui.repo, ui.password,
-                keepDaily = 7, keepWeekly = 4, keepMonthly = 3,
-                backend = ui.backend,
-                backendUrl = ui.backendUrl,
-                backendUser = ui.backendUser,
-                backendPass = ui.backendPass,
-                backendShare = ui.backendShare
-            )
-            if (forgetResult.isFailure) {
-                binding.resticStatusText.text = "forget 失败: ${forgetResult.exceptionOrNull()?.message}"
-                binding.resticPruneButton.isEnabled = true
-                return@launch
-            }
-
-            binding.resticStatusText.text = "正在回收空间…"
-            val pruneResult = ResticWrapper.prune(ui.repo, ui.password,
-                backend = ui.backend,
-                backendUrl = ui.backendUrl,
-                backendUser = ui.backendUser,
-                backendPass = ui.backendPass,
-                backendShare = ui.backendShare)
-            binding.resticPruneButton.isEnabled = true
-
-            if (pruneResult.isSuccess) {
-                binding.resticStatusText.text = "清理完成！\n${pruneResult.getOrDefault("")}"
-                refreshResticStatus()
-            } else {
-                binding.resticStatusText.text = "prune 失败: ${pruneResult.exceptionOrNull()?.message}"
-            }
-        }
-    }
-
-    /** Show/hide backend URL/user/pass fields based on selected backend. */
-    private fun updateBackendFieldVisibility() {
-        val backend = when (binding.resticBackendGroup.checkedButtonId) {
-            R.id.resticBackendWebdav -> "webdav"
-            R.id.resticBackendSmb -> "smb"
-            R.id.resticBackendRestServer -> "rest-server"
-            else -> "local"
-        }
-        val isRemote = backend != "local"
-        val needsAuth = backend == "webdav" || backend == "smb"
-        val isSmb = backend == "smb"
-        binding.resticBackendUrlLayout.visibility = if (isRemote) View.VISIBLE else View.GONE
-        binding.resticBackendShareLayout.visibility = if (isSmb) View.VISIBLE else View.GONE
-        binding.resticBackendUserLayout.visibility = if (needsAuth) View.VISIBLE else View.GONE
-        binding.resticBackendPassLayout.visibility = if (needsAuth) View.VISIBLE else View.GONE
-
-        // Update URL field hint
-        binding.resticBackendUrlLayout.hint = when (backend) {
-            "webdav" -> "WebDAV 地址 (https://host:port/path)"
-            "smb" -> "SMB 主机地址 (host 或 host:port)"
-            "rest-server" -> "rest-server 地址 (http://host:port)"
-            else -> ""
-        }
-        updateComputedUrl()
-    }
-
-    /** Show the computed restic repo URL. */
-    private fun updateComputedUrl() {
-        val backend = when (binding.resticBackendGroup.checkedButtonId) {
-            R.id.resticBackendWebdav -> "webdav"
-            R.id.resticBackendSmb -> "smb"
-            R.id.resticBackendRestServer -> "rest-server"
-            else -> "local"
-        }
-        val repo = binding.resticRepoEdit.text?.toString()?.trim() ?: ""
-        val url = binding.resticBackendUrlEdit.text?.toString()?.trim() ?: ""
-        val repoUrl = ResticWrapper.buildRepoUrl(backend, repo, url)
-        binding.resticComputedUrlText.text = if (repo.isNotEmpty())
-            "实际仓库: $repoUrl" else ""
+        vm.pruneResticSnapshots(readResticForm())
     }
 
     override fun onDestroyView() {
-        viewLifecycleOwner.lifecycleScope.launch(Dispatchers.IO) {
-            ResticWrapper.cleanup()
-        }
         super.onDestroyView()
         _binding = null
+        // cleanup is handled by ViewModel.onCleared()
     }
 }
