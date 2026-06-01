@@ -1,12 +1,5 @@
-# 用户偏好
-- 交流语言：所有回复必须使用中文。这是核心要求，新对话需自动加载。
-- 项目：Android Backup GUI（Kotlin 应用）
-- 工作目录：~/github_projects/android-backup-gui
+User has two main areas: Android Backup GUI (Kotlin app with native root execution, SMB/WebDAV remote storage, WiFi backup) and CodeGraph global setup (MCP server for code intelligence, auto-init prompt in CLAUDE.md). Key technical lessons: root shell persistence, SMB troubleshooting (ECONNREFUSED), and project build commands. The term 'modelRoles' remains unresolved.
 
-# 项目背景
-Android Backup GUI（Kotlin app with native root execution, SMB/WebDAV remote storage, WiFi backup）和 CodeGraph global setup（MCP server for code intelligence, auto-init prompt in CLAUDE.md）。
+## Workflow conventions
 
-# 技术要点
-- root shell persistence
-- SMB troubleshooting (ECONNREFUSED)
-- 构建命令: ./gradlew assembleDebug
+- **Per-change commits**: every logical change is committed as a separate, atomic commit — no batch commits that mix concerns. Each commit has a descriptive message following Conventional Commits format.
