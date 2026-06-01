@@ -1,6 +1,7 @@
 package com.example.androidbackupgui.backup
 import com.example.androidbackupgui.root.RootShell
 import com.example.androidbackupgui.root.shellEscape
+import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
@@ -17,6 +18,8 @@ import kotlinx.serialization.Serializable
  * Mirrors the logic from backup_script's modules/restore.sh.
  */
 object RestoreOperation {
+
+    private const val TAG = "RestoreOperation"
 
     @Serializable
     data class RestoreProgress(
@@ -161,26 +164,34 @@ object RestoreOperation {
     }
 
     private suspend fun restoreData(appDir: File) {
-
-        // Find data archive
         val dataFiles = appDir.listFiles()
             ?.filter { it.name.contains("_data.tar") }
-            ?: return
+            ?: run {
+                Log.w(TAG, "restoreData: no _data.tar files in ${appDir.absolutePath}")
+                return
+            }
 
         for (archive in dataFiles) {
             val archivePath = archive.absolutePath.shellEscape()
-            // Verify archive doesn't contain path traversal before extracting
-            if (!isArchiveSafe(archive)) continue
-            when {
-                archive.name.endsWith(".zst") -> {
-                    RootShell.exec("zstd -d -c '$archivePath' | tar -xf - -C / 2>/dev/null")
-                }
-                archive.name.endsWith(".gz") -> {
-                    RootShell.exec("tar -xzf '$archivePath' -C / 2>/dev/null")
-                }
-                archive.name.endsWith(".tar") -> {
-                    RootShell.exec("tar -xf '$archivePath' -C / 2>/dev/null")
-                }
+            Log.d(TAG, "restoreData: found archive ${archive.name}")
+            if (!isArchiveSafe(archive)) {
+                Log.w(TAG, "restoreData: archive NOT SAFE, skipping: ${archive.name}")
+                continue
+            }
+            val cmd = when {
+                archive.name.endsWith(".zst") ->
+                    "zstd -d -c '$archivePath' | tar -xf - -C / 2>/dev/null"
+                archive.name.endsWith(".gz") ->
+                    "tar -xzf '$archivePath' -C / 2>/dev/null"
+                archive.name.endsWith(".tar") ->
+                    "tar -xf '$archivePath' -C / 2>/dev/null"
+                else -> { Log.w(TAG, "restoreData: unknown archive type ${archive.name}"); continue }
+            }
+            val result = RootShell.exec(cmd)
+            if (result.isSuccess) {
+                Log.i(TAG, "restoreData: extracted ${archive.name}")
+            } else {
+                Log.e(TAG, "restoreData: FAILED ${archive.name}: exit=${result.exitCode} err=${result.error}")
             }
         }
     }
