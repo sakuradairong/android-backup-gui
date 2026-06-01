@@ -18,18 +18,31 @@ object ResticBinary {
         synchronized(this) {
             if (cacheInit) return cachedBinaryPath
             val nativeLibDir = context.applicationInfo.nativeLibraryDir
-            Log.d(TAG, "nativeLibraryDir = $nativeLibDir")
+            val source = File(nativeLibDir, BINARY_NAME)
+            Log.d(TAG, "nativeLibraryDir=$nativeLibDir srcExists=${source.isFile} srcLen=${source.length()} srcCanExec=${source.canExecute()}")
 
-            val path = File(nativeLibDir, BINARY_NAME)
-            Log.d(TAG, "restic: exists=${path.isFile} len=${path.length()} canExec=${path.canExecute()}")
-
-            cachedBinaryPath = if (path.isFile) {
-                Log.i(TAG, "librestic.so ready at ${path.absolutePath} (${path.length()} bytes)")
-                path.absolutePath
-            } else {
-                Log.e(TAG, "librestic.so NOT FOUND at ${path.absolutePath}")
-                null
+            if (!source.isFile) {
+                Log.e(TAG, "librestic.so NOT FOUND at ${source.absolutePath}")
+                cacheInit = true
+                cachedBinaryPath = null
+                return null
             }
+
+            // Copy to app-private dir: native lib dir may be mounted noexec on
+            // Android 10+, preventing direct ProcessBuilder execution.
+            val dest = File(context.filesDir, "restic_bin/librestic")
+            if (!dest.exists() || dest.length() != source.length() || !dest.canExecute()) {
+                dest.parentFile?.mkdirs()
+                if (dest.exists()) dest.delete()
+                source.inputStream().use { src ->
+                    dest.outputStream().use { out ->
+                        src.copyTo(out)
+                    }
+                }
+            }
+            dest.setExecutable(true)
+            Log.i(TAG, "restic ready: src=${source.absolutePath} dest=${dest.absolutePath} (${dest.length()} bytes) canExec=${dest.canExecute()}")
+            cachedBinaryPath = dest.absolutePath
             cacheInit = true
             return cachedBinaryPath
         }
