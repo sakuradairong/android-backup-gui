@@ -5,6 +5,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import java.io.File
+import kotlinx.serialization.Serializable
 
 /** Thrown by transports when a remote directory genuinely does not exist (HTTP 404). */
 class FileNotFoundException(path: String) : Exception("Directory not found: $path")
@@ -15,14 +16,30 @@ class FileNotFoundException(path: String) : Exception("Directory not found: $pat
  */
 interface RemoteTransport {
 
+    @Serializable
     data class RemoteFileInfo(
         val name: String,
         val size: Long,
         val isDirectory: Boolean = false
     )
 
-    suspend fun upload(localPath: String, remotePath: String): Result<Unit>
-    suspend fun download(remotePath: String, localPath: String): Result<Unit>
+    @Serializable
+    data class TransferProgress(
+        val phase: String,
+        val current: Int,
+        val total: Int,
+        val currentFile: String = ""
+    )
+
+    @Serializable
+    data class ByteProgress(
+        val bytesTransferred: Long,
+        val totalBytes: Long,
+        val currentFile: String
+    )
+
+    suspend fun upload(localPath: String, remotePath: String, onProgress: suspend (TransferProgress) -> Unit = {}, onByteProgress: suspend (ByteProgress) -> Unit = {}): Result<Unit>
+    suspend fun download(remotePath: String, localPath: String, onProgress: suspend (TransferProgress) -> Unit = {}, onByteProgress: suspend (ByteProgress) -> Unit = {}): Result<Unit>
 
     /** List entries in a remote directory (files and subdirectories). */
     suspend fun listFiles(remoteDir: String): Result<List<RemoteFileInfo>>
@@ -88,7 +105,8 @@ interface RemoteTransport {
             url: String,
             user: String,
             pass: String,
-            share: String
+            share: String,
+            domain: String = ""
         ): RemoteTransport? {
             return when (backend) {
                 "webdav" -> {
@@ -97,7 +115,7 @@ interface RemoteTransport {
                 }
                 "smb" -> {
                     val host = url.trimEnd('/')
-                    SmbTransport(host, share, user, pass)
+                    SmbTransport(host, share, user, pass, domain)
                 }
                 else -> null
             }
@@ -112,7 +130,9 @@ interface RemoteTransport {
         suspend fun syncFromRemote(
             transport: RemoteTransport,
             localDir: File,
-            remoteDir: String
+            remoteDir: String,
+            onProgress: suspend (TransferProgress) -> Unit = {},
+            onByteProgress: suspend (ByteProgress) -> Unit = {}
         ): Result<Unit> = withContext(Dispatchers.IO) {
             try {
                 localDir.mkdirs()
@@ -123,11 +143,16 @@ interface RemoteTransport {
                     Log.w(TAG, "syncFromRemote: remote dir '$remoteDir' not accessible, treating as empty")
                     return@withContext Result.success(Unit)
                 }
+                onProgress(TransferProgress("list", 0, remoteFiles.size))
                 val remoteByPath = remoteFiles.associateBy { it.path }
                 val errors = mutableListOf<String>()
 
                 // Download remote files that are new or have different size
+                var downloaded = 0
+                val syncTotal = remoteFiles.size
                 for ((relPath, info) in remoteByPath) {
+                    downloaded++
+                    onProgress(TransferProgress("download", downloaded, syncTotal, relPath))
                     val localFile = File(localDir, relPath)
                     if (localFile.isFile && localFile.length() == info.size) {
                         Log.d(TAG, "syncFromRemote skip (same size): $relPath")
@@ -137,7 +162,7 @@ interface RemoteTransport {
                     val fullRemotePath = "$remoteDir/$relPath"
                     Log.i(TAG, "syncFromRemote downloading: $fullRemotePath (${info.size} bytes)")
                     val result = withRetry("download($fullRemotePath)") {
-                        transport.download(fullRemotePath, localFile.absolutePath)
+                        transport.download(fullRemotePath, localFile.absolutePath, onProgress, onByteProgress)
                     }
                     if (result.isFailure) {
                         errors.add("$fullRemotePath: ${result.exceptionOrNull()?.message}")
@@ -154,13 +179,15 @@ interface RemoteTransport {
 
                 // Delete local files not on remote (e.g. after prune on another client)
                 val localFiles = walkLocalFiles(localDir)
-                for (relPath in localFiles.keys) {
-                    if (relPath !in remoteByPath) {
-                        val localFile = localFiles[relPath]!!
-                        Log.i(TAG, "syncFromRemote deleting stale local: $relPath")
-                        try { localFile.delete() } catch (_: Exception) {}
-                    }
+                val staleLocalPaths = localFiles.keys.filter { it !in remoteByPath }
+                val staleCount = staleLocalPaths.size
+                for ((staleIdx, relPath) in staleLocalPaths.withIndex()) {
+                    onProgress(TransferProgress("delete_stale", staleIdx + 1, staleCount))
+                    val localFile = localFiles[relPath]!!
+                    Log.i(TAG, "syncFromRemote deleting stale local: $relPath")
+                    try { localFile.delete() } catch (_: Exception) {}
                 }
+                onProgress(TransferProgress("complete", syncTotal, syncTotal))
                 Result.success(Unit)
             } catch (e: Exception) {
                 Result.failure(Exception("syncFromRemote failed: ${e.message}", e))
@@ -176,10 +203,13 @@ interface RemoteTransport {
         suspend fun syncToRemote(
             transport: RemoteTransport,
             localDir: File,
-            remoteDir: String
+            remoteDir: String,
+            onProgress: suspend (TransferProgress) -> Unit = {},
+            onByteProgress: suspend (ByteProgress) -> Unit = {}
         ): Result<Unit> = withContext(Dispatchers.IO) {
             try {
                 val localFiles = walkLocalFiles(localDir)
+                onProgress(TransferProgress("list", 0, localFiles.size))
                 val remoteResult = listRemoteRecursive(transport, remoteDir)
                 // If the remote dir is not accessible (404 or network error), treat as empty.
                 // Any real upload errors will surface during the actual file uploads below.
@@ -202,7 +232,11 @@ interface RemoteTransport {
                 }
 
                 // Upload new or changed local files
+                var uploaded = 0
+                val syncTotal = localFiles.size
                 for ((relPath, localFile) in localFiles) {
+                    uploaded++
+                    onProgress(TransferProgress("upload", uploaded, syncTotal, relPath))
                     val remoteInfo = remoteByPath[relPath]
                     if (remoteInfo != null && remoteInfo.size == localFile.length()) {
                         Log.d(TAG, "syncToRemote skip (same size): $relPath")
@@ -211,7 +245,7 @@ interface RemoteTransport {
                     val fullRemotePath = "$remoteDir/$relPath"
                     Log.i(TAG, "syncToRemote uploading: $fullRemotePath (${localFile.length()} bytes)")
                     val result = withRetry("upload($fullRemotePath)") {
-                        transport.upload(localFile.absolutePath, fullRemotePath)
+                        transport.upload(localFile.absolutePath, fullRemotePath, onProgress, onByteProgress)
                     }
                     if (result.isFailure) {
                         errors.add("$fullRemotePath: ${result.exceptionOrNull()?.message}")
@@ -227,19 +261,20 @@ interface RemoteTransport {
                 }
 
                 // Delete remote files no longer present locally
-                for (relPath in remoteByPath.keys) {
-                    if (relPath !in localFiles) {
-                        Log.i(TAG, "syncToRemote deleting stale: $relPath")
-                        transport.delete("$remoteDir/$relPath")
-                    }
+                val staleRemotePaths = remoteByPath.keys.filter { it !in localFiles }
+                val staleCount = staleRemotePaths.size
+                for ((staleIdx, relPath) in staleRemotePaths.withIndex()) {
+                    onProgress(TransferProgress("delete_stale", staleIdx + 1, staleCount))
+                    Log.i(TAG, "syncToRemote deleting stale: $relPath")
+                    transport.delete("$remoteDir/$relPath")
                 }
+                onProgress(TransferProgress("complete", localFiles.size, localFiles.size))
                 Result.success(Unit)
             } catch (e: Exception) {
                 Result.failure(Exception("syncToRemote failed: ${e.message}", e))
             }
         }
 
-        // ── Recursive helpers ──────────────────────────────────
 
 
 
