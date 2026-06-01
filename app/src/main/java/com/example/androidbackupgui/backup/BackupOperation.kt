@@ -200,6 +200,23 @@ object BackupOperation {
             archiveCreated = result?.isSuccess == true || (archiveRaw.exists() && archiveRaw.length() > 0)
         }
 
+        // 4. Last resort: try su -mm (Magisk mount namespace master) for devices where
+        //    the app's su session is confined to an isolated mount namespace.
+        if (!archiveCreated) {
+            Log.w(TAG, "backupUserData: $packageName /proc/1/root failed, trying su -mm")
+            val excludeArgs = "--exclude='cache' --exclude='code_cache' --exclude='lib' --exclude='no_backup'"
+            val dirList = dataPaths.joinToString(" ")
+            val rawOut = appDir.absolutePath + "/" + packageName + "_data.tar"
+            val innerCmd = if (isZstd) {
+                "tar $excludeArgs -cf - $dirList 2>/dev/null | zstd -T0 -o '${rawOut}.zst'"
+            } else {
+                "tar $excludeArgs -czf '${rawOut}.gz' $dirList 2>/dev/null"
+            }
+            // Use double quotes for su -mm -c so inner single quotes work
+            result = RootShell.exec("su -mm -c \"$innerCmd\" 2>/dev/null")
+            archiveCreated = result?.isSuccess == true || (archiveRaw.exists() && archiveRaw.length() > 0)
+        }
+
         if (!archiveCreated) {
             Log.w(TAG, "backupUserData: $packageName all methods failed — no data dirs to backup (or inaccessible)")
             return true
