@@ -166,53 +166,45 @@ object BackupOperation {
 
         Log.d(TAG, "backupUserData: $packageName checking dirs")
 
-        // Package names (e.g. com.example.app) contain only safe chars — no shell escaping needed
         val rawPkg = packageName
+        val dataPaths = listOf("/data/data/$rawPkg", "/data/user_de/$userId/$rawPkg")
 
-        // Try `test -d` first (with raw unescaped paths to avoid libsu quoting issues)
-        val dirs = mutableListOf<String>()
-        if (RootShell.exec("test -d /data/data/$rawPkg").isSuccess) dirs.add("/data/data/$rawPkg")
-        if (RootShell.exec("test -d /data/user_de/$userId/$rawPkg").isSuccess) dirs.add("/data/user_de/$userId/$rawPkg")
-
+        // 1. Try direct paths (app's mount namespace)
+        val dirs = dataPaths.filter { RootShell.exec("test -d $it").isSuccess }.toMutableList()
         var result: RootShell.ShellResult? = null
-        var ranFallback = false
+        var archiveCreated = false
 
         if (dirs.isNotEmpty()) {
-            // Normal path: test -d found directories
             Log.d(TAG, "backupUserData: $packageName test -d found dirs=$dirs")
-            val dirList = dirs.joinToString(" ")
-            val excludeArgs = "--exclude='cache' --exclude='code_cache' --exclude='lib' --exclude='no_backup'"
-            result = if (isZstd) {
-                RootShell.exec("tar $excludeArgs -cf - $dirList 2>/dev/null | zstd -T0 -o '$outputFile.zst'")
-            } else {
-                RootShell.exec("tar $excludeArgs -czf '$outputFile.gz' $dirList 2>/dev/null")
-            }
+            result = runTar(dirs, outputFile, isZstd)
+            archiveCreated = result?.isSuccess == true
         } else {
-            // Fallback: test -d failed. Try tar directly — the dirs may exist
-            // but test -d through libsu may return incorrect exit code (quoting issue).
-            Log.d(TAG, "backupUserData: $packageName test -d failed, trying tar directly")
-            val tarCmd = if (isZstd) {
-                "tar -cf - /data/data/$rawPkg /data/user_de/$userId/$rawPkg 2>/dev/null | zstd -T0 -o '$outputFile.zst' 2>/dev/null"
-            } else {
-                "tar -czf '$outputFile.gz' /data/data/$rawPkg /data/user_de/$userId/$rawPkg 2>/dev/null"
-            }
-            result = RootShell.exec(tarCmd)
-            ranFallback = true
-
-            if (result.isSuccess || (archiveRaw.exists() && archiveRaw.length() > 0)) {
-                Log.i(TAG, "backupUserData: $packageName tar fallback succeeded — dirs exist despite test -d failure")
-            } else {
-                Log.w(TAG, "backupUserData: $packageName tar fallback failed — no data dirs to backup")
-                return true
-            }
+            // 2. Try tar directly on direct paths (may fail in isolated namespace)
+            Log.d(TAG, "backupUserData: $packageName test -d all failed, trying tar directly")
+            result = runTar(dataPaths, outputFile, isZstd)
+            archiveCreated = result?.isSuccess == true || (archiveRaw.exists() && archiveRaw.length() > 0)
         }
 
-        if (!result!!.isSuccess && (!archiveRaw.exists() || archiveRaw.length() == 0L)) {
-            Log.e(TAG, "backupUserData: $packageName failed: exit=${result!!.exitCode} err=${result!!.error}")
-            return false
+        // 3. If still failed, try via /proc/1/root (global mount namespace)
+        //    Use cd to avoid tar packing the /proc/1/root/ prefix into the archive.
+        if (!archiveCreated) {
+            Log.w(TAG, "backupUserData: $packageName direct access failed, trying via /proc/1/root (global namespace)")
+            val globalRelPaths = dataPaths.map { it.removePrefix("/") }  // e.g. "data/data/tv.danmaku.bili"
+            val excludeArgs = "--exclude='cache' --exclude='code_cache' --exclude='lib' --exclude='no_backup'"
+            val globalCmd = if (isZstd) {
+                "cd /proc/1/root && tar $excludeArgs -cf - ${globalRelPaths.joinToString(" ")} 2>/dev/null | zstd -T0 -o '$outputFile.zst'"
+            } else {
+                "cd /proc/1/root && tar $excludeArgs -czf '$outputFile.gz' ${globalRelPaths.joinToString(" ")} 2>/dev/null"
+            }
+            result = RootShell.exec(globalCmd)
+            archiveCreated = result?.isSuccess == true || (archiveRaw.exists() && archiveRaw.length() > 0)
         }
 
-        // Verify archive integrity
+        if (!archiveCreated) {
+            Log.w(TAG, "backupUserData: $packageName all methods failed — no data dirs to backup (or inaccessible)")
+            return true
+        }
+        // Verify integrity
         val verifyOk = if (isZstd) {
             RootShell.exec("zstd -t '$outputFile.zst' 2>/dev/null").isSuccess
         } else {
@@ -220,9 +212,23 @@ object BackupOperation {
         }
         if (!verifyOk) {
             Log.e(TAG, "backupUserData: $packageName integrity check FAILED")
-            if (!ranFallback) return false // fallback already created the archive, non-fatal
         }
-        return verifyOk || ranFallback
+        return verifyOk
+    }
+
+    /** Run tar for given paths, building the appropriate zstd/gzip command. */
+    private suspend fun runTar(
+        dirs: List<String>,
+        outputFile: String,
+        isZstd: Boolean
+    ): RootShell.ShellResult {
+        val excludeArgs = "--exclude='cache' --exclude='code_cache' --exclude='lib' --exclude='no_backup'"
+        val dirList = dirs.joinToString(" ")
+        return if (isZstd) {
+            RootShell.exec("tar $excludeArgs -cf - $dirList 2>/dev/null | zstd -T0 -o '$outputFile.zst'")
+        } else {
+            RootShell.exec("tar $excludeArgs -czf '$outputFile.gz' $dirList 2>/dev/null")
+        }
     }
 
     private suspend fun backupObb(packageName: String, appDir: File, compression: String): Boolean {
