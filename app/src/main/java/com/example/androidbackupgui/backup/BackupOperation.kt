@@ -177,12 +177,14 @@ object BackupOperation {
         if (dirs.isNotEmpty()) {
             Log.d(TAG, "backupUserData: $packageName test -d found dirs=$dirs")
             result = runTar(dirs, outputFile, isZstd)
-            archiveCreated = result?.isSuccess == true
+            archiveCreated = archiveCreated || (archiveRaw.exists() && archiveRaw.length() > 0)
+            Log.d(TAG, "backupUserData: $packageName step1 tar exit=${result?.exitCode} err='${result?.error?.take(100)}'")
         } else {
             // 2. Try tar directly on direct paths (may fail in isolated namespace)
             Log.d(TAG, "backupUserData: $packageName test -d all failed, trying tar directly")
             result = runTar(dataPaths, outputFile, isZstd)
-            archiveCreated = result?.isSuccess == true || (archiveRaw.exists() && archiveRaw.length() > 0)
+            archiveCreated = archiveCreated || (archiveRaw.exists() && archiveRaw.length() > 0)
+            Log.d(TAG, "backupUserData: $packageName step2 tar exit=${result?.exitCode} err='${result?.error?.take(100)}'")
         }
 
         // 3. If still failed, try via /proc/1/root (global mount namespace)
@@ -197,7 +199,8 @@ object BackupOperation {
                 "cd /proc/1/root && tar $excludeArgs -czf '$outputFile.gz' ${globalRelPaths.joinToString(" ")} 2>/dev/null"
             }
             result = RootShell.exec(globalCmd)
-            archiveCreated = result?.isSuccess == true || (archiveRaw.exists() && archiveRaw.length() > 0)
+            archiveCreated = archiveCreated || (archiveRaw.exists() && archiveRaw.length() > 0)
+            Log.d(TAG, "backupUserData: $packageName step3 /proc/1/root exit=${result?.exitCode} err='${result?.error?.take(100)}'")
         }
 
         // 4. Last resort: use magiskpolicy to relax SELinux for untrusted_app,
@@ -207,9 +210,9 @@ object BackupOperation {
             Log.w(TAG, "backupUserData: $packageName all direct methods failed, trying magiskpolicy SELinux relax")
             RootShell.exec("magiskpolicy --live 'allow untrusted_app data_file dir { read search open getattr }' 2>/dev/null")
             RootShell.exec("magiskpolicy --live 'allow untrusted_app data_file file { read getattr open }' 2>/dev/null")
-            // Retry direct tar after SELinux relax
             result = runTar(dataPaths, outputFile, isZstd)
-            archiveCreated = result?.isSuccess == true || (archiveRaw.exists() && archiveRaw.length() > 0)
+            archiveCreated = archiveCreated || (archiveRaw.exists() && archiveRaw.length() > 0)
+            Log.d(TAG, "backupUserData: $packageName step4 magiskpolicy exit=${result?.exitCode} err='${result?.error?.take(100)}'")
             if (archiveCreated) {
                 Log.i(TAG, "backupUserData: $packageName magiskpolicy relax succeeded")
             } else {
