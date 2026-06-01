@@ -98,6 +98,7 @@ class BackupFragment : Fragment() {
             })
             WifiManager.backup(outputDir)
             val result = BackupOperation.backupApps(
+                context = requireContext(),
                 apps = toBackup,
                 config = config,
                 outputDir = outputDir,

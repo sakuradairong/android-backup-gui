@@ -51,6 +51,7 @@ object BackupOperation {
      * @param onProgress callback for UI updates
      */
     suspend fun backupApps(
+        context: android.content.Context,
         apps: List<AppInfo>,
         config: BackupConfig,
         outputDir: File,
@@ -105,7 +106,7 @@ object BackupOperation {
                         // 2. Backup user data (if configured)
                         if (config.backupMode == 1 && config.backupUserData == 1) {
                             emit(BackupProgress(index + 1, apps.size, app.packageName, "data", "正在备份数据…"))
-                            if (!backupUserData(app.packageName, appDir, userId, config.compressionMethod)) {
+                            if (!backupUserData(context, app.packageName, appDir, userId, config.compressionMethod)) {
                                 failAtomic.incrementAndGet()
                                 emit(BackupProgress(index + 1, apps.size, app.packageName, "done", "数据备份失败"))
                                 return@withPermit
@@ -153,6 +154,7 @@ object BackupOperation {
 
 
     private suspend fun backupUserData(
+        context: android.content.Context,
         packageName: String,
         appDir: File,
         userId: String,
@@ -160,80 +162,68 @@ object BackupOperation {
     ): Boolean {
         val pkgEsc = packageName.shellEscape()
         val outputFile = "${appDir.absolutePath.shellEscape()}/${pkgEsc}_data.tar"
+
+        // Resolve bundled binary paths (fall back to system PATH if not bundled)
+        val bundledTar = BinaryResolver.tarPath(context)
+        val tarCmd = bundledTar ?: "tar"
+
         var isZstd = compression == "zstd"
-        if (isZstd) {
-            val zstdCheck = RootShell.exec("zstd --version 2>/dev/null")
+        val bundledZstd = if (isZstd) BinaryResolver.zstdPath(context) else null
+        val zstdCmd = bundledZstd ?: "zstd"
+        if (isZstd && bundledZstd == null) {
+            val zstdCheck = RootShell.exec("$zstdCmd --version 2>/dev/null")
             if (!zstdCheck.isSuccess) {
-                Log.w(TAG, "backupUserData: zstd not available (exit=${zstdCheck.exitCode}), falling back to gzip")
+                Log.w(TAG, "backupUserData: zstd not available, falling back to gzip")
                 isZstd = false
             }
         }
         val archiveExt = if (isZstd) ".zst" else ".gz"
         val archiveRaw = File(appDir, "${packageName}_data.tar$archiveExt")
 
-        Log.d(TAG, "backupUserData: $packageName checking dirs")
+        Log.d(TAG, "backupUserData: $packageName checking dirs (tar=$tarCmd zstd=$zstdCmd)")
 
         val rawPkg = packageName
         val dataPaths = listOf("/data/data/$rawPkg", "/data/user_de/$userId/$rawPkg")
 
-        // 1. Try direct paths (app's mount namespace)
-        val dirs = dataPaths.filter { RootShell.exec("test -d $it").isSuccess }.toMutableList()
-        var result: RootShell.ShellResult? = null
+        // 1. Try direct paths after nsenter namespace switch
         var archiveCreated = false
+        var result: RootShell.ShellResult? = null
 
+        val dirs = dataPaths.filter { RootShell.exec("test -d $it").isSuccess }.toMutableList()
         if (dirs.isNotEmpty()) {
             Log.d(TAG, "backupUserData: $packageName test -d found dirs=$dirs")
-            result = runTar(dirs, outputFile, isZstd)
+            result = runTar(dirs, outputFile, isZstd, tarCmd, zstdCmd)
             archiveCreated = archiveCreated || (archiveRaw.exists() && archiveRaw.length() > 0)
-            Log.d(TAG, "backupUserData: $packageName step1 tar exit=${result?.exitCode} err='${result?.error?.take(100)}'")
+            Log.d(TAG, "backupUserData: $packageName step1 exit=${result?.exitCode} err='${result?.error?.take(100)}'")
         } else {
-            // 2. Try tar directly on direct paths (may fail in isolated namespace)
             Log.d(TAG, "backupUserData: $packageName test -d all failed, trying tar directly")
-            result = runTar(dataPaths, outputFile, isZstd)
+            result = runTar(dataPaths, outputFile, isZstd, tarCmd, zstdCmd)
             archiveCreated = archiveCreated || (archiveRaw.exists() && archiveRaw.length() > 0)
-            Log.d(TAG, "backupUserData: $packageName step2 tar exit=${result?.exitCode} err='${result?.error?.take(100)}'")
+            Log.d(TAG, "backupUserData: $packageName step2 exit=${result?.exitCode} err='${result?.error?.take(100)}'")
         }
 
-        // 3. If still failed, try via /proc/1/root (global mount namespace)
-        //    Use cd to avoid tar packing the /proc/1/root/ prefix into the archive.
+        // 3. Fallback via /proc/1/root (global mount namespace)
         if (!archiveCreated) {
-            Log.w(TAG, "backupUserData: $packageName direct access failed, trying via /proc/1/root (global namespace)")
-            val globalRelPaths = dataPaths.map { it.removePrefix("/") }  // e.g. "data/data/tv.danmaku.bili"
-            val excludeArgs = "--exclude='cache' --exclude='code_cache' --exclude='lib' --exclude='no_backup'"
+            Log.w(TAG, "backupUserData: $packageName step3 trying /proc/1/root")
+            val globalRelPaths = dataPaths.map { it.removePrefix("/") }
             val globalCmd = if (isZstd) {
-                "cd /proc/1/root && tar $excludeArgs -cf - ${globalRelPaths.joinToString(" ")} 2>/dev/null | zstd -T0 -o '$outputFile.zst'"
+                "cd /proc/1/root && $tarCmd --exclude='cache' --exclude='code_cache' --exclude='lib' --exclude='no_backup' -cf - ${globalRelPaths.joinToString(" ")} 2>/dev/null | $zstdCmd -T0 -o '$outputFile.zst'"
             } else {
-                "cd /proc/1/root && tar $excludeArgs -czf '$outputFile.gz' ${globalRelPaths.joinToString(" ")} 2>/dev/null"
+                "cd /proc/1/root && $tarCmd --exclude='cache' --exclude='code_cache' --exclude='lib' --exclude='no_backup' -czf '$outputFile.gz' ${globalRelPaths.joinToString(" ")} 2>/dev/null"
             }
             result = RootShell.exec(globalCmd)
             archiveCreated = archiveCreated || (archiveRaw.exists() && archiveRaw.length() > 0)
-            Log.d(TAG, "backupUserData: $packageName step3 /proc/1/root exit=${result?.exitCode} err='${result?.error?.take(100)}'")
-        }
-
-        // 4. Last resort: use magiskpolicy to relax SELinux for untrusted_app,
-        //    then retry direct tar. This is needed on Magisk devices where even
-        //    su -Z u:r:magisk:s0 is blocked from untrusted_app context.
-        if (!archiveCreated) {
-            Log.w(TAG, "backupUserData: $packageName all direct methods failed, trying magiskpolicy SELinux relax")
-            RootShell.exec("magiskpolicy --live 'allow untrusted_app data_file dir { read search open getattr }' 2>/dev/null")
-            RootShell.exec("magiskpolicy --live 'allow untrusted_app data_file file { read getattr open }' 2>/dev/null")
-            result = runTar(dataPaths, outputFile, isZstd)
-            archiveCreated = archiveCreated || (archiveRaw.exists() && archiveRaw.length() > 0)
-            Log.d(TAG, "backupUserData: $packageName step4 magiskpolicy exit=${result?.exitCode} err='${result?.error?.take(100)}'")
-            if (archiveCreated) {
-                Log.i(TAG, "backupUserData: $packageName magiskpolicy relax succeeded")
-            } else {
-                Log.w(TAG, "backupUserData: $packageName magiskpolicy relax also failed")
-            }
+            Log.d(TAG, "backupUserData: $packageName step3 exit=${result?.exitCode} err='${result?.error?.take(100)}'")
         }
 
         if (!archiveCreated) {
-            Log.w(TAG, "backupUserData: $packageName all methods failed — no data dirs to backup (or inaccessible)")
+            Log.w(TAG, "backupUserData: $packageName all methods failed — no data dirs (or inaccessible)")
             return true
         }
+
         // Verify integrity
         val verifyOk = if (isZstd) {
-            RootShell.exec("zstd -t '$outputFile.zst' 2>/dev/null").isSuccess
+            RootShell.exec("$zstdCmd -t '$outputFile.zst' 2>/dev/null").isSuccess
         } else {
             RootShell.exec("gzip -t '$outputFile.gz' 2>/dev/null").isSuccess
         }
@@ -247,17 +237,18 @@ object BackupOperation {
     private suspend fun runTar(
         dirs: List<String>,
         outputFile: String,
-        isZstd: Boolean
+        isZstd: Boolean,
+        tarCmd: String = "tar",
+        zstdCmd: String = "zstd"
     ): RootShell.ShellResult {
         val excludeArgs = "--exclude='cache' --exclude='code_cache' --exclude='lib' --exclude='no_backup'"
         val dirList = dirs.joinToString(" ")
         return if (isZstd) {
-            RootShell.exec("tar $excludeArgs -cf - $dirList 2>/dev/null | zstd -T0 -o '$outputFile.zst'")
+            RootShell.exec("$tarCmd $excludeArgs -cf - $dirList 2>/dev/null | $zstdCmd -T0 -o '$outputFile.zst'")
         } else {
-            RootShell.exec("tar $excludeArgs -czf '$outputFile.gz' $dirList 2>/dev/null")
+            RootShell.exec("$tarCmd $excludeArgs -czf '$outputFile.gz' $dirList 2>/dev/null")
         }
     }
-
     private suspend fun backupObb(packageName: String, appDir: File, compression: String): Boolean {
         val obbDir = "/storage/emulated/0/Android/obb/${packageName.shellEscape()}"
         val escapedAppDir = appDir.absolutePath.shellEscape()
