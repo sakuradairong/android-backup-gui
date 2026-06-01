@@ -23,7 +23,7 @@ object WifiManager {
     /**
      * Find the active WiFi config file path. Public for use by BackupOperation.
      */
-    fun findWifiConfigPath(): String? {
+    suspend fun findWifiConfigPath(): String? {
         for (path in WIFI_PATHS) {
             val result = RootShell.exec("test -f '$path' && echo 'FOUND'")
             if (result.output.contains("FOUND")) return path
