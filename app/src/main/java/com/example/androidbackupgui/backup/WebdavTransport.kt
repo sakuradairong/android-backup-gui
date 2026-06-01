@@ -37,6 +37,11 @@ class WebdavTransport(
                 val url = buildUrl(remotePath)
                 val file = File(localPath)
                 val fileSize = file.length()
+                if (fileSize > 50 * 1024 * 1024L) {
+                    return@withContext Result.failure(
+                        Exception("WebDAV upload: file too large (${fileSize / 1024 / 1024}MB), max 50MB")
+                    )
+                }
                 Log.d(TAG, "upload $localPath -> $url ($fileSize bytes)")
                 onProgress(RemoteTransport.TransferProgress("connecting", 0, 1, remotePath))
                 // Read file into ByteArray with progress (sardine.put lacks InputStream variant)
