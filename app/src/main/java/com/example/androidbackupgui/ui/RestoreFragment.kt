@@ -68,6 +68,21 @@ class RestoreFragment : Fragment() {
         binding.restoreButton.setOnClickListener { startRestore() }
     }
 
+    override fun onResume() {
+        super.onResume()
+        // Re-read config so changes from ConfigFragment take effect immediately
+        val configFile = File(requireContext().filesDir, "backup_settings.conf")
+        val config = BackupConfig.fromFile(configFile)
+        resticConfig = if (config.resticEnabled == 1 && config.resticRepo.isNotBlank()) config else null
+        val binaryPath = ResticBinary.prepare(requireContext())
+        if (binaryPath != null && resticConfig != null) {
+            ResticWrapper.binaryPath = binaryPath
+            ResticWrapper.tempRepoDir = ResticBinary.getTempRepoDir(requireContext())
+            ResticWrapper.backendDomain = config.resticBackendDomain
+            binding.selectResticButton.visibility = View.VISIBLE
+        }
+    }
+
     private fun selectBackupDir() {
         val defaultDir = File(requireContext().filesDir.absolutePath)
         val backupDirs = defaultDir.listFiles()

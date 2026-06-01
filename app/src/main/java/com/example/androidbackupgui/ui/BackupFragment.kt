@@ -49,6 +49,13 @@ class BackupFragment : Fragment() {
         binding.backupButton.setOnClickListener { startBackup() }
     }
 
+    override fun onResume() {
+        super.onResume()
+        // Re-read config so changes from ConfigFragment take effect immediately
+        val configFile = File(requireContext().filesDir, "backup_settings.conf")
+        config = BackupConfig.fromFile(configFile)
+    }
+
     private fun scanApps() {
         binding.backupButton.isEnabled = false
         setRunning(true)
