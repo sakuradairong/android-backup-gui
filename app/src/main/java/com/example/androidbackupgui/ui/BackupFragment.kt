@@ -14,10 +14,13 @@ import com.example.androidbackupgui.backup.BackupOperation
 import com.example.androidbackupgui.backup.ResticBinary
 import com.example.androidbackupgui.backup.ResticWrapper
 import com.example.androidbackupgui.backup.WifiManager
+import com.example.androidbackupgui.backup.RemoteTransport
 import com.example.androidbackupgui.databinding.FragmentBackupBinding
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
+import java.util.Locale
 
 class BackupFragment : Fragment() {
 
@@ -106,6 +109,7 @@ class BackupFragment : Fragment() {
                 if (binaryPath != null) {
                     ResticWrapper.binaryPath = binaryPath
                     ResticWrapper.tempRepoDir = ResticBinary.getTempRepoDir(requireContext())
+                    ResticWrapper.backendDomain = config.resticBackendDomain
                     binding.statusText.text = "正在写入 restic 去重仓库…"
                     val resticResult = ResticWrapper.backup(
                         repoPath = config.resticRepo,
@@ -118,9 +122,25 @@ class BackupFragment : Fragment() {
                         backendUser = config.resticBackendUser,
                         backendPass = config.resticBackendPass,
                         backendShare = config.resticBackendShare,
+                        onSyncProgress = { progress: RemoteTransport.TransferProgress ->
+                            withContext(Dispatchers.Main) {
+                                when (progress.phase) {
+                                    "list", "download", "upload", "delete_stale" ->
+                                        binding.statusText.text = "同步中: ${progress.current}/${progress.total} 个文件"
+                                }
+                            }
+                        },
+                        onByteSyncProgress = { progress ->
+                            withContext(Dispatchers.Main) {
+                                binding.progressBar.max = progress.totalBytes.toInt().coerceAtLeast(1)
+                                binding.progressBar.progress = progress.bytesTransferred.toInt()
+                                binding.statusText.text = "同步中: ${progress.currentFile}\n" +
+                                    "${formatSize(progress.bytesTransferred)} / ${formatSize(progress.totalBytes)}"
+                            }
+                        },
                         onProgress = { progress ->
                             if (progress.messageType == "status") {
-                                binding.statusText.text = "restic: %.0f%% (%d/%d files)".format(
+                                binding.statusText.text = "去重仓库: %.0f%% (%d/%d 个文件)".format(
                                     progress.percentDone * 100,
                                     progress.filesDone,
                                     progress.totalFiles
@@ -153,6 +173,14 @@ class BackupFragment : Fragment() {
             setRunning(false)
             binding.scanButton.isEnabled = true
         }
+    }
+
+    private fun formatSize(bytes: Long): String {
+        if (bytes < 1024) return "$bytes B"
+        val units = arrayOf("KB", "MB", "GB", "TB")
+        val exp = (63 - bytes.countLeadingZeroBits()) / 10
+        val value = bytes.toDouble() / (1L shl (exp * 10))
+        return "%.1f %s".format(Locale.US, value, units[exp - 1].coerceAtMost(units.last()))
     }
 
     private fun setRunning(running: Boolean) {
