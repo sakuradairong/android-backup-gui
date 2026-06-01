@@ -126,7 +126,7 @@ class RestoreFragment : Fragment() {
     private fun selectResticSnapshot() {
         val config = resticConfig ?: return
         setRunning(true)
-        binding.statusText.text = "正在读取 restic 快照列表…"
+        binding.statusText.text = "正在同步远程仓库到本地…"
 
         viewLifecycleOwner.lifecycleScope.launch {
             val snapshotsResult = ResticWrapper.listSnapshots(
@@ -135,7 +135,13 @@ class RestoreFragment : Fragment() {
                 backendUrl = config.resticBackendUrl,
                 backendUser = config.resticBackendUser,
                 backendPass = config.resticBackendPass,
-                backendShare = config.resticBackendShare
+                backendShare = config.resticBackendShare,
+                onSyncProgress = { p ->
+                    binding.statusText.text = "同步中: ${p.current}/${p.total} (${p.name})"
+                },
+                onByteSyncProgress = { bp ->
+                    binding.statusText.text = "下载中: ${bp.transferred / 1024 / 1024} MB / ${bp.total / 1024 / 1024} MB"
+                }
             )
             if (snapshotsResult.isFailure) {
                 binding.statusText.text = "读取快照失败: ${snapshotsResult.exceptionOrNull()?.message}"
