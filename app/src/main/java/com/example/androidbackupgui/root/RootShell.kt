@@ -35,8 +35,8 @@ object RootShell {
 
     /**
      * libsu shell initializer: enter global mount namespace via nsenter.
-     * This ensures we can see the REAL /data (not the isolated per-app namespace).
-     * Ref: DataBackup (XayahSuSuSu) uses the same pattern.
+     * Preserves the original PATH so that tar/zstd (from Termux etc.) remain accessible.
+     * Ref: DataBackup (XayahSuSuSu) uses the same nsenter pattern.
      */
     private class GlobalNamespaceInitializer : Shell.Initializer() {
         override fun onInit(context: android.content.Context, shell: Shell): Boolean {

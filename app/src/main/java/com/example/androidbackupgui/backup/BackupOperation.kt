@@ -160,7 +160,14 @@ object BackupOperation {
     ): Boolean {
         val pkgEsc = packageName.shellEscape()
         val outputFile = "${appDir.absolutePath.shellEscape()}/${pkgEsc}_data.tar"
-        val isZstd = compression == "zstd"
+        var isZstd = compression == "zstd"
+        if (isZstd) {
+            val zstdCheck = RootShell.exec("zstd --version 2>/dev/null")
+            if (!zstdCheck.isSuccess) {
+                Log.w(TAG, "backupUserData: zstd not available (exit=${zstdCheck.exitCode}), falling back to gzip")
+                isZstd = false
+            }
+        }
         val archiveExt = if (isZstd) ".zst" else ".gz"
         val archiveRaw = File(appDir, "${packageName}_data.tar$archiveExt")
 
