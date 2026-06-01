@@ -1,12 +1,11 @@
 package com.example.androidbackupgui.root
 
-import kotlinx.coroutines.*
-import kotlinx.coroutines.sync.*
-import java.io.BufferedReader
-import java.io.InputStreamReader
-import java.io.OutputStreamWriter
-import java.io.InputStream
 import android.util.Log
+import com.topjohnwu.superuser.Shell
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 
 /**
  * Escape a string for safe use inside single-quoted shell strings.
@@ -15,22 +14,15 @@ import android.util.Log
 fun String.shellEscape(): String = this.replace("'", "'\\''")
 
 /**
- * Persistent root shell session via `su`.
- * Manages a single su process and executes commands sequentially.
- * Thread-safe via Mutex — all session state is guarded by the mutex.
+ * Root shell access via libsu.
+ * Shell.cmd internally manages su sessions, compatible with Magisk/KernelSU/APatch.
+ * All shell operations are thread-safe through coroutine dispatchers.
  */
 object RootShell {
-
-    private var process: Process? = null
-    private var writer: OutputStreamWriter? = null
-    private var reader: BufferedReader? = null
-    private var errReader: BufferedReader? = null
 
     private const val TAG = "RootShell"
     /** Default command timeout in milliseconds. */
     private const val COMMAND_TIMEOUT_MS = 120_000L
-
-    private val mutex = Mutex()
 
     /** Result of a shell command execution. */
     data class ShellResult(
@@ -41,134 +33,40 @@ object RootShell {
         val isSuccess get() = exitCode == 0
     }
 
-    /** Quick process-alive check. Caller MUST hold the mutex. */
-    private fun isAliveUnsafe(): Boolean {
-        val p = process ?: return false
-        return try { p.exitValue(); false } catch (_: IllegalThreadStateException) { true }
-    }
-
     /**
-     * Open (or re-open) the su session and verify root access.
-     * Caller MUST hold the mutex.
+     * Trigger root shell pre-initialization.
+     * Returns true if root is available.
+     * Note: Shell.cmd() also auto-initializes on first use, so this is optional.
      */
-    private fun ensureSessionUnsafe(): Boolean {
-        if (isAliveUnsafe()) return true
-        return try {
-            val p = Runtime.getRuntime().exec(arrayOf("su"))
-            writer = OutputStreamWriter(p.outputStream)
-            reader = BufferedReader(InputStreamReader(p.inputStream))
-            errReader = BufferedReader(InputStreamReader(p.errorStream))
-            process = p
-            // Drain stderr in background to prevent pipe-buffer deadlock
-            Thread({
-                try { while (errReader?.readLine() != null) {} } catch (_: Exception) {}
-            }, "su-stderr-drain").apply { isDaemon = true; start() }
-            // Inline verification — cannot call exec() which would deadlock on mutex
-            val sentinel = "ROOT_OK_${System.nanoTime()}"
-            writer?.write("echo $sentinel\n"); writer?.flush()
-            var line: String?
-            while (reader?.readLine().also { line = it } != null) {
-                if (line!!.contains(sentinel)) return true
-            }
-            false
-        } catch (_: Exception) {
-            false
-        }
-    }
-
-    /** Ensure a root shell is open. Returns true if root is available. */
-    suspend fun ensureSession(): Boolean = mutex.withLock {
-        ensureSessionUnsafe()
-    }
-
-    /** Cleanup all session state. Caller MUST hold the mutex. */
-    private fun closeUnsafe() {
-        try { writer?.close() } catch (_: Exception) {}
-        try { reader?.close() } catch (_: Exception) {}
-        try { errReader?.close() } catch (_: Exception) {}
-        try { process?.destroy() } catch (_: Exception) {}
-        process = null
-        writer = null
-        reader = null
-        errReader = null
-    }
-
-    /** Close the root shell session. */
-    suspend fun close() = mutex.withLock {
-        closeUnsafe()
-    }
-
-    /**
-     * Execute a command and return the output.
-     * Uses a sentinel delimiter to identify end of output.
-     * Timeout is enforced via structured coroutine cancellation:
-     * `withTimeout(timeoutMs)` cancels the coroutine, interrupting the
-     * blocking readLine() on Dispatchers.IO. If the process cannot be
-     * interrupted, closeUnsafe() destroys it in the catch handler.
-     */
-suspend fun exec(command: String, timeoutMs: Long = COMMAND_TIMEOUT_MS): ShellResult = mutex.withLock {
-        if (!isAliveUnsafe() && !ensureSessionUnsafe()) {
-            return@exec ShellResult("", "No root access", -1)
-        }
-
-        val sentinel = "EXIT_${System.nanoTime()}"
-        writer?.write("$command; echo $sentinel \$?\n")
-        writer?.flush()
-
+    suspend fun ensureSession(): Boolean = withContext(Dispatchers.IO) {
         try {
-            withTimeout(timeoutMs) {
-                withContext(Dispatchers.IO) {
-                    val output = StringBuilder()
-                    var line: String?
-                    while (reader?.readLine().also { line = it } != null) {
-                        val l = line!!
-                        if (l.startsWith(sentinel)) {
-                            val code = l.removePrefix("$sentinel ").trim().toIntOrNull() ?: -1
-                            return@withContext ShellResult(output.toString().trimEnd(), "", code)
-                        }
-                        output.appendLine(l)
-                    }
-                    // Process destroyed or readLine returned null naturally
-                    ShellResult(output.toString().trimEnd(), "", -1)
-                }
-            }
-        } catch (e: TimeoutCancellationException) {
-            Log.w(TAG, "exec timeout (${timeoutMs}ms) destroying process: $command")
-            closeUnsafe()
-            ShellResult("", "Command timed out after ${timeoutMs}ms", -1)
-        }
+            Shell.getShell().isRoot
+        } catch (_: Exception) { false }
     }
 
     /**
-     * Execute a command via `su` and return the stdout as an InputStream
-     * for binary-safe streaming. Caller MUST close the stream and call
-     * waitForStreamResult() or destroy the returned process.
+     * Execute a shell command and return the result.
+     * libsu internally runs via `su`, compatible with Magisk/KernelSU/APatch.
+     * Commands are passed verbatim to `su -c`, so pipes and redirects work normally.
+     * Timeout is enforced via structured coroutine cancellation.
      */
-    class StreamProcess(
-        val process: Process,
-        val inputStream: InputStream,
-        private val command: String
-    ) {
-        fun waitFor(): Int {
-            try { process.waitFor() } catch (_: Exception) {}
-            return process.exitValue()
+    suspend fun exec(command: String, timeoutMs: Long = COMMAND_TIMEOUT_MS): ShellResult =
+        withContext(Dispatchers.IO) {
+            try {
+                val result = withTimeout(timeoutMs) {
+                    Shell.cmd(command).exec()
+                }
+                ShellResult(
+                    output = result.out.joinToString("\n"),
+                    error = result.err.joinToString("\n"),
+                    exitCode = result.code,
+                )
+            } catch (e: TimeoutCancellationException) {
+                Log.w(TAG, "exec timeout (${timeoutMs}ms): $command")
+                ShellResult("", "Command timed out after ${timeoutMs}ms", -1)
+            } catch (e: Exception) {
+                Log.e(TAG, "exec failed: $command", e)
+                ShellResult("", e.message ?: "Unknown error", -1)
+            }
         }
-        fun destroy() {
-            try { process.destroy() } catch (_: Exception) {}
-            try { inputStream.close() } catch (_: Exception) {}
-        }
-    }
-
-    fun execBinary(command: String): StreamProcess? {
-        return try {
-            val p = Runtime.getRuntime().exec(arrayOf("su", "-c", command))
-            // Drain stderr to prevent pipe deadlock
-            Thread({
-                try { p.errorStream.use { it.readBytes() } } catch (_: Exception) {}
-            }, "su-binary-stderr").apply { isDaemon = true }.start()
-            StreamProcess(p, p.inputStream, command)
-        } catch (_: Exception) {
-            null
-        }
-    }
 }

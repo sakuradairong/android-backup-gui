@@ -64,4 +64,7 @@ dependencies {
     implementation "eu.agno3.jcifs:jcifs-ng:2.1.10"
     implementation "com.github.thegrizzlylabs:sardine-android:v0.9"
     implementation "org.slf4j:slf4j-android:1.7.36"
+
+    // root shell via libsu (Magisk/KernelSU/APatch)
+    implementation 'com.github.topjohnwu:libsu:6.0.0'
 }

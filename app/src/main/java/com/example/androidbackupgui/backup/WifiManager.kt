@@ -5,12 +5,15 @@ import com.example.androidbackupgui.root.shellEscape
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
+import android.util.Log
 
 /**
  * Backup and restore WiFi configuration.
  * Mirrors backup_script WiFi backup/restore logic.
  */
 object WifiManager {
+    private const val TAG = "WifiManager"
+
 
     // Possible WiFi config paths on different Android versions
     private val WIFI_PATHS = listOf(
@@ -57,21 +60,27 @@ object WifiManager {
             // Try the most common path
             val fallback = "/data/misc/apexdata/com.android.wifi/WifiConfigStore.xml"
             val parent = File(fallback).parentFile?.absolutePath?.shellEscape() ?: return@withContext false
-            RootShell.exec("mkdir -p '$parent'")
+            val mkdirResult = RootShell.exec("mkdir -p '$parent'")
+            if (!mkdirResult.isSuccess) return@withContext false
             val result = RootShell.exec("cp '$backupPath' '$fallback'")
             if (!result.isSuccess) return@withContext false
-            RootShell.exec("chown system:wifi '$fallback'")
-            RootShell.exec("chmod 0660 '$fallback'")
+            val chownResult = RootShell.exec("chown system:wifi '$fallback'")
+            if (!chownResult.isSuccess) Log.w(TAG, "chown failed: ${chownResult.error}")
+            val chmodResult = RootShell.exec("chmod 0660 '$fallback'")
+            if (!chmodResult.isSuccess) Log.w(TAG, "chmod failed: ${chmodResult.error}")
         } else {
             val result = RootShell.exec("cp '$backupPath' '$wifiTarget'")
             if (!result.isSuccess) return@withContext false
-            RootShell.exec("chown system:wifi '$wifiTarget'")
-            RootShell.exec("chmod 0660 '$wifiTarget'")
+            val chownResult = RootShell.exec("chown system:wifi '$wifiTarget'")
+            if (!chownResult.isSuccess) Log.w(TAG, "chown failed: ${chownResult.error}")
+            val chmodResult = RootShell.exec("chmod 0660 '$wifiTarget'")
+            if (!chmodResult.isSuccess) Log.w(TAG, "chmod failed: ${chmodResult.error}")
         }
 
         // WiFi backup only takes effect after reboot, but we can try reloading
         RootShell.exec("svc wifi disable 2>/dev/null")
         RootShell.exec("svc wifi enable 2>/dev/null")
+        // These are best-effort since reloading WiFi only takes full effect on reboot
         true
     }
 }
