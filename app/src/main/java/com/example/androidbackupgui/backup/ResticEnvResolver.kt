@@ -23,7 +23,8 @@ class ResticEnvResolver {
             buildRepoUrl(backend, repoPath, backendUrl)
         }
         env["RESTIC_PASSWORD"] = password
-        // Provide a cache directory on Android (no $HOME by default)
+        // Restic needs HOME for its cache on Android (no $HOME by default).
+        // Both local and remote backends use the same cache dir (sibling of tempRepoDir).
         if (tempRepoDir.isNotEmpty()) {
             val cacheDir = tempRepoDir.substringBeforeLast("/") + "/restic_cache"
             env["HOME"] = cacheDir
