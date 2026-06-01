@@ -19,3 +19,6 @@ release.keystore
 
 # Memory files from agent harness
 memory:*
+
+# Restic test repository (contains encryption keys)
+test/
