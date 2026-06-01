@@ -316,7 +316,7 @@ class ConfigViewModel(application: Application) : AndroidViewModel(application) 
     private fun onSyncProgress(p: RemoteTransport.TransferProgress) {
         _uiState.update {
             it.copy(resticStatus = it.resticStatus.copy(
-                message = "Syncing: ${p.current}/${p.total} files…"
+                message = "同步中: ${p.current}/${p.total} 个文件"
             ))
         }
     }
@@ -324,7 +324,7 @@ class ConfigViewModel(application: Application) : AndroidViewModel(application) 
     private fun onByteProgress(p: RemoteTransport.ByteProgress) {
         _uiState.update {
             it.copy(resticStatus = it.resticStatus.copy(
-                message = "Syncing: ${p.currentFile}\n${formatSize(p.bytesTransferred)} / ${formatSize(p.totalBytes)}"
+                message = "同步中: ${p.currentFile}\n${formatSize(p.bytesTransferred)} / ${formatSize(p.totalBytes)}"
             ))
         }
     }

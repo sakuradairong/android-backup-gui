@@ -227,7 +227,7 @@ class RestoreFragment : Fragment() {
                         withContext(Dispatchers.Main) {
                             when (progress.phase) {
                                 "list", "download", "upload", "delete_stale" ->
-                                    binding.statusText.text = "Syncing: ${progress.current}/${progress.total} files…"
+                                    binding.statusText.text = "同步中: ${progress.current}/${progress.total} 个文件"
                             }
                         }
                     },
@@ -235,7 +235,7 @@ class RestoreFragment : Fragment() {
                         withContext(Dispatchers.Main) {
                             binding.progressBar.max = progress.totalBytes.toInt().coerceAtLeast(1)
                             binding.progressBar.progress = progress.bytesTransferred.toInt()
-                            binding.statusText.text = "Syncing: ${progress.currentFile}\n" +
+                            binding.statusText.text = "同步中: ${progress.currentFile}\n" +
                                 "${formatSize(progress.bytesTransferred)} / ${formatSize(progress.totalBytes)}"
                         }
                     },

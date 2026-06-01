@@ -20,7 +20,8 @@ class SmbTransport(
     private val username: String,
     private val password: String,
     private val domain: String = "",
-    private val bufferSize: Int = 8192
+    private val bufferSize: Int = 8192,
+    private val smbSigning: Boolean = true
 ): RemoteTransport {
     companion object { private const val TAG = "SmbTransport" }
     private val context: CIFSContext by lazy {
@@ -31,10 +32,11 @@ class SmbTransport(
             // Shorter timeouts for Android
             setProperty("jcifs.smb.client.responseTimeout", "15000")
             setProperty("jcifs.smb.client.connTimeout", "10000")
-            // Enable SMB signing for security (prevents tampering)
-            setProperty("jcifs.smb.client.signingEnabled", "true")
-            // Prefer SMB 3.x encryption when available
-            setProperty("jcifs.smb.client.encryptionEnabled", "true")
+            // Enable SMB signing for security (prevents tampering) — disable for legacy servers
+            if (smbSigning) {
+                setProperty("jcifs.smb.client.signingEnabled", "true")
+                setProperty("jcifs.smb.client.encryptionEnabled", "true")
+            }
         }
         val base = BaseContext(PropertyConfiguration(props))
         if (username.isNotEmpty()) {
