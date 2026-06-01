@@ -164,13 +164,16 @@ object RestoreOperation {
     }
 
     private suspend fun restoreData(appDir: File) {
-        val dataFiles = appDir.listFiles()
-            ?.filter { it.name.contains("_data.tar") }
-            ?: run {
-                Log.w(TAG, "restoreData: no _data.tar files in ${appDir.absolutePath}")
-                return
-            }
-
+        val files = appDir.listFiles()
+        if (files.isNullOrEmpty()) {
+            Log.w(TAG, "restoreData: appDir empty or null: ${appDir.absolutePath}")
+            return
+        }
+        val dataFiles = files.filter { it.name.contains("_data.tar") }
+        if (dataFiles.isEmpty()) {
+            Log.w(TAG, "restoreData: no _data.tar in ${appDir.name}, found: ${files.map { it.name }}")
+            return
+        }
         for (archive in dataFiles) {
             val archivePath = archive.absolutePath.shellEscape()
             Log.d(TAG, "restoreData: found archive ${archive.name}")
