@@ -200,21 +200,21 @@ object BackupOperation {
             archiveCreated = result?.isSuccess == true || (archiveRaw.exists() && archiveRaw.length() > 0)
         }
 
-        // 4. Last resort: try su -Z (Magisk SELinux context switch) — on Magisk 30+,
-        //    the app's su context (untrusted_app) cannot see other apps' /data/data/.
-        //    Switching to u:r:magisk:s0 lifts the SELinux restriction.
+        // 4. Last resort: use magiskpolicy to relax SELinux for untrusted_app,
+        //    then retry direct tar. This is needed on Magisk devices where even
+        //    su -Z u:r:magisk:s0 is blocked from untrusted_app context.
         if (!archiveCreated) {
-            Log.w(TAG, "backupUserData: $packageName /proc/1/root failed, trying su -Z magisk context")
-            val excludeArgs = "--exclude='cache' --exclude='code_cache' --exclude='lib' --exclude='no_backup'"
-            val dirList = dataPaths.joinToString(" ")
-            val rawOut = appDir.absolutePath + "/" + packageName + "_data.tar"
-            val innerCmd = if (isZstd) {
-                "tar $excludeArgs -cf - $dirList 2>/dev/null | zstd -T0 -o '${rawOut}.zst'"
-            } else {
-                "tar $excludeArgs -czf '${rawOut}.gz' $dirList 2>/dev/null"
-            }
-            result = RootShell.exec("su -Z u:r:magisk:s0 -c \"$innerCmd\" 2>/dev/null")
+            Log.w(TAG, "backupUserData: $packageName all direct methods failed, trying magiskpolicy SELinux relax")
+            RootShell.exec("magiskpolicy --live 'allow untrusted_app data_file dir { read search open getattr }' 2>/dev/null")
+            RootShell.exec("magiskpolicy --live 'allow untrusted_app data_file file { read getattr open }' 2>/dev/null")
+            // Retry direct tar after SELinux relax
+            result = runTar(dataPaths, outputFile, isZstd)
             archiveCreated = result?.isSuccess == true || (archiveRaw.exists() && archiveRaw.length() > 0)
+            if (archiveCreated) {
+                Log.i(TAG, "backupUserData: $packageName magiskpolicy relax succeeded")
+            } else {
+                Log.w(TAG, "backupUserData: $packageName magiskpolicy relax also failed")
+            }
         }
 
         if (!archiveCreated) {
