@@ -7,6 +7,15 @@ import com.example.androidbackupgui.root.shellEscape
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
+@Serializable
+data class DataSizes(
+    val apkBytes: Long = 0,
+    val userBytes: Long = 0,
+    val userDeBytes: Long = 0,
+    val dataBytes: Long = 0,
+    val obbBytes: Long = 0,
+    val mediaBytes: Long = 0,
+)
 
 @Serializable
 data class AppInfo(
@@ -16,27 +25,32 @@ data class AppInfo(
     val apkPaths: List<String> = emptyList(),
     val hasObb: Boolean = false,
     val isRunning: Boolean = false,
-    val backupSize: Long = 0  // estimated from last backup
+    val backupSize: Long = 0,  // estimated from last backup
+    // Enhanced fields (multi-user, keystore, icon)
+    val userId: Int = 0,
+    val hasKeystore: Boolean = false,
+    val iconPath: String? = null,
+    val dataSizes: DataSizes = DataSizes(),
 )
 
 object AppScanner {
 
     /** Scan all third-party installed packages. */
-    suspend fun scanThirdParty(context: Context): List<AppInfo> = withContext(Dispatchers.IO) {
-        val result = RootShell.exec("pm list packages -3")
+    suspend fun scanThirdParty(context: Context, userId: Int = 0): List<AppInfo> = withContext(Dispatchers.IO) {
+        val result = RootShell.exec("pm list packages -3 --user $userId")
         if (!result.isSuccess) return@withContext emptyList()
 
         val packages = result.output.lines()
             .filter { it.startsWith("package:") }
             .map { it.removePrefix("package:").trim() }
             .filter { it.isNotEmpty() }
-            .map { AppInfo(packageName = it) }
+            .map { AppInfo(packageName = it, userId = userId) }
         resolveLabels(context, packages)
     }
 
     /** Scan all system packages. */
-    suspend fun scanSystem(context: Context, config: BackupConfig): List<AppInfo> = withContext(Dispatchers.IO) {
-        val result = RootShell.exec("pm list packages -s")
+    suspend fun scanSystem(context: Context, config: BackupConfig, userId: Int = 0): List<AppInfo> = withContext(Dispatchers.IO) {
+        val result = RootShell.exec("pm list packages -s --user $userId")
         if (!result.isSuccess) return@withContext emptyList()
 
         val systemWhitelist = config.system.toSet()
@@ -48,14 +62,12 @@ object AppScanner {
             .map { it.removePrefix("package:").trim() }
             .filter { it.isNotEmpty() }
             .filter { pkg ->
-                // Allow if in system whitelist or data whitelist
                 pkg in systemWhitelist || pkg in dataWhitelist
             }
             .filter { pkg ->
-                // Exclude if in blacklist (when blacklistMode=1, full ignore)
                 if (config.blacklistMode == 1) pkg !in blacklist else true
             }
-            .map { AppInfo(packageName = it, isSystem = true) }
+            .map { AppInfo(packageName = it, isSystem = true, userId = userId) }
         resolveLabels(context, packages)
     }
 
@@ -112,7 +124,69 @@ object AppScanner {
         val result = RootShell.exec("pidof '${packageName.shellEscape()}'")
         result.output.isNotBlank()
     }
+    /** Check if an app has keystore entries (critical — keystore keys can be lost on backup). */
+    suspend fun hasKeystore(packageName: String): Boolean = withContext(Dispatchers.IO) {
+        // Resolve the app's UID first
+        val uidResult = RootShell.exec("dumpsys package '$packageName' | grep 'userId=' | head -1")
+        val uid = uidResult.output
+            .substringAfter("userId=", "")
+            .substringBefore(" ")
+            .substringBefore(",")
+            .trim()
+            .toIntOrNull() ?: return@withContext false
+        // keystore_cli_v2 list as app UID — more than 1 line means has keystore entries
+        val ksResult = RootShell.exec("su $uid -c 'keystore_cli_v2 list' 2>/dev/null")
+        ksResult.output.lines().count { it.isNotBlank() } > 1
+    }
+    /** Enumerate all user profiles on the device for multi-user support. */
+    suspend fun enumerateUsers(): List<Pair<Int, String>> = withContext(Dispatchers.IO) {
+        val result = RootShell.exec("pm list users")
+        if (!result.isSuccess) return@withContext listOf(0 to "Owner")
 
+        result.output.lines()
+            .filter { it.contains("UserInfo") }
+            .mapNotNull { line ->
+                val id = line.substringBefore(":").trim().toIntOrNull()
+                val name = line.substringAfter(":").substringBefore(":").trim()
+                if (id != null) id to name else null
+            }
+    }
+
+    /** Extract and save an app's icon to the given directory. */
+    suspend fun extractIcon(packageName: String, destDir: java.io.File, userId: Int = 0): String? = withContext(Dispatchers.IO) {
+        // Try snapshot cache first
+        val snapshotDir = "/data/system_ce/$userId/snapshots/$packageName"
+        val snapshotResult = RootShell.exec("ls '$snapshotDir/' 2>/dev/null | head -1")
+        if (snapshotResult.isSuccess && snapshotResult.output.isNotBlank()) {
+            val iconName = snapshotResult.output.trim()
+            val iconFile = java.io.File(destDir, "app_icon.png")
+            val copyResult = RootShell.exec("cp '${snapshotDir}/${iconName.shellEscape()}' '${iconFile.absolutePath.shellEscape()}' 2>/dev/null")
+            if (copyResult.isSuccess && iconFile.exists()) {
+                return@withContext iconFile.absolutePath
+            }
+        }
+        // Fallback: extract from APK using aapt
+        val apkPaths = getApkPaths(packageName)
+        if (apkPaths.isNotEmpty()) {
+            val primaryApk = apkPaths.first()
+            val badgeResult = RootShell.exec("aapt d badging '$primaryApk' 2>/dev/null | grep '^application:.*icon=' | head -1")
+            if (badgeResult.isSuccess) {
+                val iconPath = badgeResult.output
+                    .substringAfter("icon='")
+                    .substringBefore("'")
+                    .takeIf { it.isNotBlank() }
+                if (iconPath != null) {
+                    // The icon path is relative inside the APK, extract using aapt
+                    val iconFile = java.io.File(destDir, "app_icon.png")
+                    RootShell.exec("aapt d raw '$primaryApk' '$iconPath' > '${iconFile.absolutePath.shellEscape()}' 2>/dev/null")
+                    if (iconFile.exists()) {
+                        return@withContext iconFile.absolutePath
+                    }
+                }
+            }
+        }
+        null
+    }
     /** Apply appList.txt-style filters. Lines starting with # are ignored, ! means apk-only. */
     fun parseAppList(content: String): List<Pair<String, Boolean>> {
         return content.lines()

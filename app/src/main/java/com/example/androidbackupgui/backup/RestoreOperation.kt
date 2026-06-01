@@ -69,6 +69,7 @@ object RestoreOperation {
         } else {
             allPackages
         }
+        LogUtil.i(TAG, "restoreApps: starting restore of ${packages.size} packages from ${backupDir.absolutePath}")
 
         val successAtomic = AtomicInteger(0)
         val failAtomic = AtomicInteger(0)
@@ -125,7 +126,10 @@ object RestoreOperation {
         }
 
         val elapsed = System.currentTimeMillis() - startTime
-        RestoreResult(successAtomic.get(), failAtomic.get(), elapsed)
+        val successCount = successAtomic.get()
+        val failCount = failAtomic.get()
+        LogUtil.i(TAG, "restoreApps: completed — success=$successCount fail=$failCount elapsed=${elapsed}ms")
+        RestoreResult(successCount, failCount, elapsed)
     }
 
     private suspend fun installApk(appDir: File): Boolean {
@@ -251,19 +255,36 @@ object RestoreOperation {
         val ssaidFile = File(appDir, "ssaid.txt")
         if (!ssaidFile.exists()) return
 
-        val ssaidLine = ssaidFile.readText().trim()
-        if (ssaidLine.isBlank()) return
+        val ssaidValue = ssaidFile.readText().trim()
+        if (ssaidValue.isBlank()) return
 
-        val targetFile = "/data/system/users/${userId.shellEscape()}/settings_ssaid.xml"
-        val pkgEsc = packageName.shellEscape()
-        val ssaidEsc = ssaidLine.shellEscape()
+        // Resolve the app's UID
+        val uidResult = RootShell.exec("dumpsys package '${packageName.shellEscape()}' | grep 'userId=' | head -1")
+        val uid = uidResult.output
+            .substringAfter("userId=", "")
+            .substringBefore(" ")
+            .substringBefore(",")
+            .trim()
+            .toIntOrNull()
 
-        // Remove existing entry for this package, insert new one before </settings>
-        RootShell.exec(
-            "grep -v '${pkgEsc}' '$targetFile' > '$targetFile.tmp' && " +
-            "sed -i '\$ i ${ssaidEsc}' '$targetFile.tmp' && " +
-            "mv '$targetFile.tmp' '$targetFile'"
-        )
+        if (uid != null) {
+            // Use settings put secure to set SSAID (more reliable than XML manipulation)
+            val result = RootShell.exec("settings put secure ssaid_$uid '$ssaidValue'")
+            if (result.isSuccess) {
+                Log.i(TAG, "restoreSsaid: restored SSAID for $packageName (uid=$uid)")
+            } else {
+                Log.w(TAG, "restoreSsaid: failed to set SSAID for $packageName: ${result.error}")
+            }
+        } else {
+            Log.w(TAG, "restoreSsaid: could not resolve UID for $packageName, falling back to XML edit")
+            // Fallback: edit settings_ssaid.xml directly
+            val targetFile = "/data/system/users/${userId.shellEscape()}/settings_ssaid.xml"
+            RootShell.exec(
+                "grep -v '${packageName.shellEscape()}' '$targetFile' > '$targetFile.tmp' && " +
+                "sed -i '\$ i ${ssaidValue.shellEscape()}' '$targetFile.tmp' && " +
+                "mv '$targetFile.tmp' '$targetFile'"
+            )
+        }
     }
 
     private suspend fun restorePermissions(packageName: String, appDir: File) {

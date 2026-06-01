@@ -64,6 +64,7 @@ object BackupOperation {
         // Create backup structure
         val backupRoot = File(outputDir, "Backup_${config.compressionMethod}_$userId")
         backupRoot.mkdirs()
+        LogUtil.i(TAG, "backupApps: starting backup of ${apps.size} apps to ${backupRoot.absolutePath}")
 
         // Write app list
         val appListFile = File(backupRoot, "appList.txt")
@@ -103,6 +104,12 @@ object BackupOperation {
                             return@withPermit
                         }
 
+                        // 1.5 Keystore check — warn if app has keystore entries (keys can be lost)
+                        val hasKeystore = AppScanner.hasKeystore(app.packageName)
+                        if (hasKeystore) {
+                            emit(BackupProgress(index + 1, apps.size, app.packageName, "data", "⚠ 此应用包含密钥库条目，备份后密钥可能会丢失"))
+                        }
+
                         // 2. Backup user data (if configured)
                         if (config.backupMode == 1 && config.backupUserData == 1) {
                             emit(BackupProgress(index + 1, apps.size, app.packageName, "data", "正在备份数据…"))
@@ -130,6 +137,12 @@ object BackupOperation {
                         emit(BackupProgress(index + 1, apps.size, app.packageName, "ssaid", "正在备份 SSAID…"))
                         backupSsaid(app.packageName, appDir, userId)
 
+                        // 4.5 Backup app icon
+                        val iconPath = AppScanner.extractIcon(app.packageName, appDir, app.userId)
+                        if (iconPath != null) {
+                            Log.d(TAG, "backupApps: saved icon for ${app.packageName} -> $iconPath")
+                        }
+
                         // 5. Backup runtime permissions
                         backupPermissions(app.packageName, appDir)
 
@@ -137,16 +150,22 @@ object BackupOperation {
                         emit(BackupProgress(index + 1, apps.size, app.packageName, "done", "完成"))
                     }
                 }
-            }
+        }
         }
 
         val elapsed = System.currentTimeMillis() - startTime
         RootShell.exec("chmod -R 0755 '${backupRoot.absolutePath}'")
 
+        val successCount = successAtomic.get()
+        val failCount = failAtomic.get()
+        val skippedCount = skippedAtomic.get()
+
+        LogUtil.i(TAG, "backupApps: completed — success=$successCount fail=$failCount skipped=$skippedCount elapsed=${elapsed}ms")
+
         BackupResult(
-            successCount = successAtomic.get(),
-            failCount = failAtomic.get(),
-            skippedCount = skippedAtomic.get(),
+            successCount = successCount,
+            failCount = failCount,
+            skippedCount = skippedCount,
             outputDir = backupRoot.absolutePath,
             elapsedMs = elapsed
         )
@@ -184,6 +203,7 @@ object BackupOperation {
 
         val rawPkg = packageName
         val dataPaths = listOf("/data/data/$rawPkg", "/data/user_de/$userId/$rawPkg")
+        val dataExcludes = listOf(".ota", "cache", "lib", "code_cache", "no_backup")
 
         // 1. Try direct paths after nsenter namespace switch
         var archiveCreated = false
@@ -192,12 +212,12 @@ object BackupOperation {
         val dirs = dataPaths.filter { RootShell.exec("test -d $it").isSuccess }.toMutableList()
         if (dirs.isNotEmpty()) {
             Log.d(TAG, "backupUserData: $packageName test -d found dirs=$dirs")
-            result = runTar(dirs, outputFile, isZstd, tarCmd, zstdCmd)
+            result = runTar(dirs, outputFile, isZstd, tarCmd, zstdCmd, excludes = dataExcludes)
             archiveCreated = archiveCreated || (archiveRaw.exists() && archiveRaw.length() > 0)
             Log.d(TAG, "backupUserData: $packageName step1 exit=${result?.exitCode} err='${result?.error?.take(100)}'")
         } else {
             Log.d(TAG, "backupUserData: $packageName test -d all failed, trying tar directly")
-            result = runTar(dataPaths, outputFile, isZstd, tarCmd, zstdCmd)
+            result = runTar(dataPaths, outputFile, isZstd, tarCmd, zstdCmd, excludes = dataExcludes)
             archiveCreated = archiveCreated || (archiveRaw.exists() && archiveRaw.length() > 0)
             Log.d(TAG, "backupUserData: $packageName step2 exit=${result?.exitCode} err='${result?.error?.take(100)}'")
         }
@@ -207,9 +227,9 @@ object BackupOperation {
             Log.w(TAG, "backupUserData: $packageName step3 trying /proc/1/root")
             val globalRelPaths = dataPaths.map { it.removePrefix("/") }
             val globalCmd = if (isZstd) {
-                "cd /proc/1/root && $tarCmd --exclude='cache' --exclude='code_cache' --exclude='lib' --exclude='no_backup' -cf - ${globalRelPaths.joinToString(" ")} 2>/dev/null | $zstdCmd -T0 -o '$outputFile.zst'"
+                "cd /proc/1/root && $tarCmd --exclude='.ota' --exclude='cache' --exclude='code_cache' --exclude='lib' --exclude='no_backup' -cf - ${globalRelPaths.joinToString(" ")} 2>/dev/null | $zstdCmd -T0 -o '$outputFile.zst'"
             } else {
-                "cd /proc/1/root && $tarCmd --exclude='cache' --exclude='code_cache' --exclude='lib' --exclude='no_backup' -czf '$outputFile.gz' ${globalRelPaths.joinToString(" ")} 2>/dev/null"
+                "cd /proc/1/root && $tarCmd --exclude='.ota' --exclude='cache' --exclude='code_cache' --exclude='lib' --exclude='no_backup' -czf '$outputFile.gz' ${globalRelPaths.joinToString(" ")} 2>/dev/null"
             }
             result = RootShell.exec(globalCmd)
             archiveCreated = archiveCreated || (archiveRaw.exists() && archiveRaw.length() > 0)
@@ -221,7 +241,7 @@ object BackupOperation {
             return true
         }
 
-        // Verify integrity
+        // Verify compression integrity
         val verifyOk = if (isZstd) {
             RootShell.exec("$zstdCmd -t '$outputFile.zst' 2>/dev/null").isSuccess
         } else {
@@ -229,8 +249,20 @@ object BackupOperation {
         }
         if (!verifyOk) {
             Log.e(TAG, "backupUserData: $packageName integrity check FAILED")
+            return false
         }
-        return verifyOk
+
+        // Validate tar archive structure (Android-DataBackup Tar.test() pattern)
+        val tarValidateOk = if (isZstd) {
+            RootShell.exec("$zstdCmd -d -c '$outputFile.zst' 2>/dev/null | tar -tf - > /dev/null 2>&1").isSuccess
+        } else {
+            RootShell.exec("tar -tf '$outputFile.gz' > /dev/null 2>&1").isSuccess
+        }
+        if (!tarValidateOk) {
+            Log.e(TAG, "backupUserData: $packageName tar archive structure validation FAILED")
+            return false
+        }
+        return true
     }
 
     /** Run tar for given paths, building the appropriate zstd/gzip command. */
@@ -239,23 +271,27 @@ object BackupOperation {
         outputFile: String,
         isZstd: Boolean,
         tarCmd: String = "tar",
-        zstdCmd: String = "zstd"
+        zstdCmd: String = "zstd",
+        excludes: List<String> = emptyList()
     ): RootShell.ShellResult {
-        val excludeArgs = "--exclude='cache' --exclude='code_cache' --exclude='lib' --exclude='no_backup'"
-        val dirList = dirs.joinToString(" ")
+        val excludeArgs = if (excludes.isNotEmpty()) {
+            excludes.joinToString(" ") { "--exclude='$it'" }
+        } else ""
         return if (isZstd) {
-            RootShell.exec("$tarCmd $excludeArgs -cf - $dirList 2>/dev/null | $zstdCmd -T0 -o '$outputFile.zst'")
+            RootShell.exec("$tarCmd -cf - $excludeArgs ${dirs.joinToString(" ")} 2>/dev/null | $zstdCmd -T0 -o '$outputFile.zst'")
         } else {
-            RootShell.exec("$tarCmd $excludeArgs -czf '$outputFile.gz' $dirList 2>/dev/null")
+            RootShell.exec("$tarCmd -czf $excludeArgs '$outputFile.gz' ${dirs.joinToString(" ")} 2>/dev/null")
         }
     }
     private suspend fun backupObb(packageName: String, appDir: File, compression: String): Boolean {
         val obbDir = "/storage/emulated/0/Android/obb/${packageName.shellEscape()}"
         val escapedAppDir = appDir.absolutePath.shellEscape()
         val escapedPkg = packageName.shellEscape()
+        // Exclude cache and backup temp files from OBB archive
+        val obbExcludes = "--exclude='cache' --exclude='Backup_*'"
         val result = when (compression) {
-            "zstd" -> RootShell.exec("tar -cf - '$obbDir' 2>/dev/null | zstd -T0 -o '$escapedAppDir/${escapedPkg}_obb.tar.zst'")
-            else -> RootShell.exec("tar -czf '$escapedAppDir/${escapedPkg}_obb.tar.gz' '$obbDir' 2>/dev/null")
+            "zstd" -> RootShell.exec("tar -cf - $obbExcludes '$obbDir' 2>/dev/null | zstd -T0 -o '$escapedAppDir/${escapedPkg}_obb.tar.zst'")
+            else -> RootShell.exec("tar -czf $obbExcludes '$escapedAppDir/${escapedPkg}_obb.tar.gz' '$obbDir' 2>/dev/null")
         }
         if (!result.isSuccess) {
             Log.e(TAG, "Failed to backup OBB for $packageName: exit=${result.exitCode} err=${result.error}")
@@ -267,14 +303,30 @@ object BackupOperation {
         if (!verificationOk) {
             Log.e(TAG, "OBB archive integrity check FAILED for $packageName")
         }
-        return verificationOk
+        // Validate OBB tar structure
+        val tarListCmd = if (compression == "zstd") "zstd -d -c '$archive' 2>/dev/null | tar -tf - > /dev/null 2>&1" else "tar -tf '$archive' > /dev/null 2>&1"
+        val tarOk = RootShell.exec(tarListCmd).isSuccess
+        if (!tarOk) {
+            Log.e(TAG, "OBB tar structure validation FAILED for $packageName")
+        }
+        return verificationOk && tarOk
     }
 
     private suspend fun backupSsaid(packageName: String, appDir: File, userId: String) {
         val ssaidFile = "/data/system/users/${userId.shellEscape()}/settings_ssaid.xml"
-        val result = RootShell.exec("grep '${packageName.shellEscape()}' '$ssaidFile' 2>/dev/null")
-        if (result.output.isNotBlank()) {
-            File(appDir, "ssaid.txt").writeText(result.output)
+        // Parse XML value attribute for this package's SSAID entry
+        val result = RootShell.exec("cat '$ssaidFile' 2>/dev/null")
+        if (!result.isSuccess || result.output.isBlank()) return
+        val ssaidLine = result.output.lines().firstOrNull { line ->
+            line.contains("packageName=\"$packageName\"") || line.contains("packageName='$packageName'")
+        }
+        val value = ssaidLine
+            ?.substringAfter("value=\"")
+            ?.substringBefore("\"")
+            ?.takeIf { it.isNotBlank() }
+        if (value != null) {
+            File(appDir, "ssaid.txt").writeText(value)
+            Log.d(TAG, "backupSsaid: backed up SSAID for $packageName = $value")
         }
     }
 

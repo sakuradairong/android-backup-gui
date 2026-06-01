@@ -12,6 +12,7 @@ import androidx.viewpager2.adapter.FragmentStateAdapter
 import androidx.viewpager2.widget.ViewPager2
 import com.example.androidbackupgui.databinding.ActivityMainBinding
 import com.example.androidbackupgui.root.RootShell
+import com.example.androidbackupgui.backup.LogUtil
 import com.example.androidbackupgui.ui.BackupFragment
 import com.example.androidbackupgui.ui.ConfigFragment
 import com.example.androidbackupgui.ui.RestoreFragment
@@ -40,6 +41,9 @@ class MainActivity : AppCompatActivity() {
         // Request root access on startup
         lifecycleScope.launch(Dispatchers.IO) {
             RootShell.ensureSession()
+
+        // Initialize file-based logging
+        LogUtil.init(filesDir)
         }
 
         // Edge-to-edge: pad toolbar below status bar

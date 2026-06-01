@@ -29,6 +29,91 @@
             style="@style/Widget.Material3.Button.TonalButton" />
     </LinearLayout>
 
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:gravity="center_vertical"
+        android:orientation="horizontal">
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="用户: "
+            android:textAppearance="@style/TextAppearance.Material3.BodyMedium"
+            android:textColor="?attr/colorOnSurfaceVariant" />
+
+        <Spinner
+            android:id="@+id/userSelector"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1" />
+    </LinearLayout>
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="4dp"
+        android:gravity="center_vertical"
+        android:orientation="horizontal">
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/sortAZButton"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:layout_marginEnd="4dp"
+            android:text="A-Z"
+            android:textSize="12sp"
+            style="@style/Widget.Material3.Button.TonalButton" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/sortSizeButton"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:layout_marginStart="4dp"
+            android:text="大小"
+            android:textSize="12sp"
+            style="@style/Widget.Material3.Button.TonalButton" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/selectAllButton"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:layout_marginStart="4dp"
+            android:text="全选"
+            android:textSize="12sp"
+            style="@style/Widget.Material3.Button.TonalButton" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/deselectAllButton"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:layout_marginStart="4dp"
+            android:text="取消全选"
+            android:textSize="12sp"
+            style="@style/Widget.Material3.Button.TonalButton" />
+    </LinearLayout>
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="4dp"
+        android:gravity="center_vertical"
+        android:orientation="horizontal">
+
+        <com.google.android.material.materialswitch.MaterialSwitch
+            android:id="@+id/showSystemSwitch"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="显示系统应用"
+            android:textAppearance="@style/TextAppearance.Material3.BodySmall"
+            android:checked="false" />
+    </LinearLayout>
+
     <com.google.android.material.progressindicator.LinearProgressIndicator
         android:id="@+id/progressBar"
         android:layout_width="match_parent"

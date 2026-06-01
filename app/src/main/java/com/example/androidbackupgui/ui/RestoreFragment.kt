@@ -4,6 +4,8 @@ import android.os.Bundle
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
+import android.widget.AdapterView
+import android.widget.ArrayAdapter
 import androidx.fragment.app.Fragment
 import android.app.AlertDialog
 import androidx.lifecycle.lifecycleScope
@@ -35,6 +37,8 @@ class RestoreFragment : Fragment() {
     private var selectedPackages = mutableSetOf<String>()
     private var resticConfig: BackupConfig? = null
     private var selectedSnapshot: ResticWrapper.ResticSnapshot? = null
+    private var selectedUserId: Int = 0
+    private var userList: List<Pair<Int, String>> = listOf(0 to "Owner")
 
     override fun onCreateView(
         inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?
@@ -45,6 +49,7 @@ class RestoreFragment : Fragment() {
 
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
+
         binding.appList.layoutManager = LinearLayoutManager(requireContext())
 
         // Load restic config
@@ -66,6 +71,25 @@ class RestoreFragment : Fragment() {
         binding.selectDirButton.setOnClickListener { selectBackupDir() }
         binding.selectResticButton.setOnClickListener { selectResticSnapshot() }
         binding.restoreButton.setOnClickListener { startRestore() }
+
+        // Load user profiles
+        loadUsers()
+    }
+
+    private fun loadUsers() {
+        viewLifecycleOwner.lifecycleScope.launch {
+            userList = AppScanner.enumerateUsers()
+            val names = userList.map { (id, name) -> "$name (ID: $id)" }
+            val adapter = ArrayAdapter(requireContext(), android.R.layout.simple_spinner_item, names)
+            adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+            binding.userSelector.adapter = adapter
+            binding.userSelector.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+                override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                    selectedUserId = userList.getOrNull(position)?.first ?: 0
+                }
+                override fun onNothingSelected(parent: AdapterView<*>?) {}
+            }
+        }
     }
 
     override fun onResume() {
@@ -301,6 +325,7 @@ class RestoreFragment : Fragment() {
 
                     val r = RestoreOperation.restoreApps(
                         backupDir = restoredBackupDir,
+                        userId = selectedUserId.toString(),
                         filterPkgs = selectedPackages,
                         onProgress = { progress ->
                             val label = appInfos.find { it.packageName == progress.packageName }?.label
@@ -320,6 +345,7 @@ class RestoreFragment : Fragment() {
                 val dir = backupDir ?: return@launch
                 val r = RestoreOperation.restoreApps(
                     backupDir = dir,
+                    userId = selectedUserId.toString(),
                     filterPkgs = selectedPackages,
                     onProgress = { progress ->
                         val label = appInfos.find { it.packageName == progress.packageName }?.label
@@ -344,22 +370,18 @@ class RestoreFragment : Fragment() {
         }
     }
 
+    private fun formatSize(bytes: Long): String {
+        if (bytes <= 0) return "0 B"
+        val units = arrayOf("B", "KB", "MB", "GB")
+        val digitGroups = (Math.log10(bytes.toDouble()) / Math.log10(1024.0)).toInt()
+        return String.format(Locale.US, "%.1f %s", bytes / Math.pow(1024.0, digitGroups.toDouble()), units[digitGroups])
+    }
+
     private fun setRunning(running: Boolean) {
         binding.progressBar.visibility = if (running) View.VISIBLE else View.GONE
     }
 
-    private fun formatSize(bytes: Long): String {
-        if (bytes < 1024) return "$bytes B"
-        val units = arrayOf("KB", "MB", "GB", "TB")
-        val exp = (63 - bytes.countLeadingZeroBits()) / 10
-        val value = bytes.toDouble() / (1L shl (exp * 10))
-        return "%.1f %s".format(Locale.US, value, units[exp - 1].coerceAtMost(units.last()))
-    }
-
     override fun onDestroyView() {
-        viewLifecycleOwner.lifecycleScope.launch(Dispatchers.IO) {
-            ResticWrapper.cleanup()
-        }
         super.onDestroyView()
         _binding = null
     }
