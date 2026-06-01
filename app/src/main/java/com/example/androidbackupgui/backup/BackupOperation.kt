@@ -162,11 +162,18 @@ object BackupOperation {
         val dataDir = "/data/data/$pkgEsc"
         val userDeDir = "/data/user_de/${userId.shellEscape()}/$pkgEsc"
         val outputFile = "${appDir.absolutePath.shellEscape()}/${pkgEsc}_data.tar"
-        // Build a list of dirs that exist
+        Log.d(TAG, "backupUserData: $packageName checking dirs")
         val dirs = mutableListOf<String>()
-        if (RootShell.exec("test -d $dataDir").isSuccess) dirs.add(dataDir)
-        if (RootShell.exec("test -d $userDeDir").isSuccess) dirs.add(userDeDir)
-        if (dirs.isEmpty()) return true  // no data to backup is not an error
+        val dataOk = RootShell.exec("test -d $dataDir")
+        val userDeOk = RootShell.exec("test -d $userDeDir")
+        Log.d(TAG, "backupUserData: $packageName test -d dataDir exit=${dataOk.exitCode} userDe exit=${userDeOk.exitCode}")
+        if (dataOk.isSuccess) dirs.add(dataDir)
+        if (userDeOk.isSuccess) dirs.add(userDeDir)
+        Log.d(TAG, "backupUserData: $packageName dirs=$dirs")
+        if (dirs.isEmpty()) {
+            Log.w(TAG, "backupUserData: $packageName no data dirs found, skipping")
+            return true
+        }
         // Exclude cache, code_cache, lib
         val excludeArgs = "--exclude='cache' --exclude='code_cache' --exclude='lib' --exclude='no_backup'"
         val result = when (compression) {
