@@ -270,6 +270,22 @@
                         android:singleLine="true" />
                 </com.google.android.material.textfield.TextInputLayout>
 
+                <!-- SMB domain (SMB only, optional) -->
+                <com.google.android.material.textfield.TextInputLayout
+                    android:id="@+id/resticBackendDomainLayout"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:hint="SMB 域 (可选，如 WORKGROUP)"
+                    android:visibility="gone"
+                    style="@style/Widget.Material3.TextInputLayout.OutlinedBox">
+                    <com.google.android.material.textfield.TextInputEditText
+                        android:id="@+id/resticBackendDomainEdit"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:singleLine="true" />
+                </com.google.android.material.textfield.TextInputLayout>
+
                 <!-- Repo path (always shown) -->
                 <com.google.android.material.textfield.TextInputLayout
                     android:layout_width="match_parent"

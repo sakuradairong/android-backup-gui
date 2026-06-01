@@ -14,10 +14,13 @@ import com.example.androidbackupgui.backup.RestoreOperation
 import com.example.androidbackupgui.backup.ResticBinary
 import com.example.androidbackupgui.backup.ResticWrapper
 import com.example.androidbackupgui.backup.WifiManager
+import com.example.androidbackupgui.backup.RemoteTransport
 import com.example.androidbackupgui.databinding.FragmentRestoreBinding
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
+import java.util.Locale
 
 class RestoreFragment : Fragment() {
 
@@ -52,6 +55,7 @@ class RestoreFragment : Fragment() {
             if (binaryPath != null) {
                 ResticWrapper.binaryPath = binaryPath
                 ResticWrapper.tempRepoDir = ResticBinary.getTempRepoDir(requireContext())
+                ResticWrapper.backendDomain = config.resticBackendDomain
                 binding.selectResticButton.visibility = View.VISIBLE
             }
         }
@@ -219,6 +223,22 @@ class RestoreFragment : Fragment() {
                     backendUser = config.resticBackendUser,
                     backendPass = config.resticBackendPass,
                     backendShare = config.resticBackendShare,
+                    onSyncProgress = { progress: RemoteTransport.TransferProgress ->
+                        withContext(Dispatchers.Main) {
+                            when (progress.phase) {
+                                "list", "download", "upload", "delete_stale" ->
+                                    binding.statusText.text = "Syncing: ${progress.current}/${progress.total} files…"
+                            }
+                        }
+                    },
+                    onByteSyncProgress = { progress ->
+                        withContext(Dispatchers.Main) {
+                            binding.progressBar.max = progress.totalBytes.toInt().coerceAtLeast(1)
+                            binding.progressBar.progress = progress.bytesTransferred.toInt()
+                            binding.statusText.text = "Syncing: ${progress.currentFile}\n" +
+                                "${formatSize(progress.bytesTransferred)} / ${formatSize(progress.totalBytes)}"
+                        }
+                    },
                     onProgress = { msg -> binding.statusText.text = msg }
                 )
 
@@ -277,6 +297,14 @@ class RestoreFragment : Fragment() {
 
     private fun setRunning(running: Boolean) {
         binding.progressBar.visibility = if (running) View.VISIBLE else View.GONE
+    }
+
+    private fun formatSize(bytes: Long): String {
+        if (bytes < 1024) return "$bytes B"
+        val units = arrayOf("KB", "MB", "GB", "TB")
+        val exp = (63 - bytes.countLeadingZeroBits()) / 10
+        val value = bytes.toDouble() / (1L shl (exp * 10))
+        return "%.1f %s".format(Locale.US, value, units[exp - 1].coerceAtMost(units.last()))
     }
 
     override fun onDestroyView() {
