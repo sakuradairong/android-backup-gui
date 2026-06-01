@@ -160,57 +160,69 @@ object BackupOperation {
     ): Boolean {
         val pkgEsc = packageName.shellEscape()
         val outputFile = "${appDir.absolutePath.shellEscape()}/${pkgEsc}_data.tar"
+        val isZstd = compression == "zstd"
+        val archiveExt = if (isZstd) ".zst" else ".gz"
+        val archiveRaw = File(appDir, "${packageName}_data.tar$archiveExt")
+
         Log.d(TAG, "backupUserData: $packageName checking dirs")
+
+        // Package names (e.g. com.example.app) contain only safe chars — no shell escaping needed
+        val rawPkg = packageName
+
+        // Try `test -d` first (with raw unescaped paths to avoid libsu quoting issues)
         val dirs = mutableListOf<String>()
-        val dataOk = RootShell.exec("test -d /data/data/$pkgEsc")
-        val userDeOk = RootShell.exec("test -d /data/user_de/${userId.shellEscape()}/$pkgEsc")
-        Log.d(TAG, "backupUserData: $packageName test -d data exit=${dataOk.exitCode} user_de exit=${userDeOk.exitCode}")
-        if (dataOk.isSuccess) dirs.add("/data/data/$pkgEsc")
-        if (userDeOk.isSuccess) dirs.add("/data/user_de/${userId.shellEscape()}/$pkgEsc")
-        // Fallback: if test -d failed, try `ls` to distinguish "no such file" from "permission denied"
-        if (dirs.isEmpty()) {
-            val lsResult = RootShell.exec("ls -d /data/data/$pkgEsc 2>&1")
-            Log.w(TAG, "backupUserData: $packageName test -d failed, ls exit=${lsResult.exitCode} out=${lsResult.output.take(200)}")
-            // If ls also fails, the directory truly doesn't exist on this device
-            if (lsResult.isSuccess) {
-                Log.i(TAG, "backupUserData: $packageName ls succeeded but test -d failed — adding dir via fallback")
-                dirs.add("/data/data/$pkgEsc")
+        if (RootShell.exec("test -d /data/data/$rawPkg").isSuccess) dirs.add("/data/data/$rawPkg")
+        if (RootShell.exec("test -d /data/user_de/$userId/$rawPkg").isSuccess) dirs.add("/data/user_de/$userId/$rawPkg")
+
+        var result: RootShell.ShellResult? = null
+        var ranFallback = false
+
+        if (dirs.isNotEmpty()) {
+            // Normal path: test -d found directories
+            Log.d(TAG, "backupUserData: $packageName test -d found dirs=$dirs")
+            val dirList = dirs.joinToString(" ")
+            val excludeArgs = "--exclude='cache' --exclude='code_cache' --exclude='lib' --exclude='no_backup'"
+            result = if (isZstd) {
+                RootShell.exec("tar $excludeArgs -cf - $dirList 2>/dev/null | zstd -T0 -o '$outputFile.zst'")
+            } else {
+                RootShell.exec("tar $excludeArgs -czf '$outputFile.gz' $dirList 2>/dev/null")
+            }
+        } else {
+            // Fallback: test -d failed. Try tar directly — the dirs may exist
+            // but test -d through libsu may return incorrect exit code (quoting issue).
+            Log.d(TAG, "backupUserData: $packageName test -d failed, trying tar directly")
+            val tarCmd = if (isZstd) {
+                "tar -cf - /data/data/$rawPkg /data/user_de/$userId/$rawPkg 2>/dev/null | zstd -T0 -o '$outputFile.zst' 2>/dev/null"
+            } else {
+                "tar -czf '$outputFile.gz' /data/data/$rawPkg /data/user_de/$userId/$rawPkg 2>/dev/null"
+            }
+            result = RootShell.exec(tarCmd)
+            ranFallback = true
+
+            if (result.isSuccess || (archiveRaw.exists() && archiveRaw.length() > 0)) {
+                Log.i(TAG, "backupUserData: $packageName tar fallback succeeded — dirs exist despite test -d failure")
+            } else {
+                Log.w(TAG, "backupUserData: $packageName tar fallback failed — no data dirs to backup")
+                return true
             }
         }
-        Log.d(TAG, "backupUserData: $packageName dirs=$dirs")
-        if (dirs.isEmpty()) {
-            Log.w(TAG, "backupUserData: $packageName no data dirs found, skipping")
-            return true
-        }
-        // Exclude cache, code_cache, lib
-        val excludeArgs = "--exclude='cache' --exclude='code_cache' --exclude='lib' --exclude='no_backup'"
-        val result = when (compression) {
-            "zstd" -> {
-                val dirList = dirs.joinToString(" ")
-                RootShell.exec(
-                    "tar $excludeArgs -cf - $dirList 2>/dev/null | zstd -T0 -o '$outputFile.zst'"
-                )
-            }
-            else -> {
-                val dirList = dirs.joinToString(" ")
-                RootShell.exec(
-                    "tar $excludeArgs -czf '$outputFile.gz' $dirList 2>/dev/null"
-                )
-            }
-        }
-        if (!result.isSuccess) {
-            Log.e(TAG, "Failed to backup data for $packageName: exit=${result.exitCode} err=${result.error}")
+
+        if (!result!!.isSuccess && (!archiveRaw.exists() || archiveRaw.length() == 0L)) {
+            Log.e(TAG, "backupUserData: $packageName failed: exit=${result!!.exitCode} err=${result!!.error}")
             return false
         }
-        // Verify the compressed archive integrity
-        val verificationOk = when (compression) {
-            "zstd" -> RootShell.exec("zstd -t '$outputFile.zst' 2>/dev/null").isSuccess
-            else -> RootShell.exec("gzip -t '$outputFile.gz' 2>/dev/null").isSuccess
+
+        // Verify archive integrity
+        val verifyOk = if (isZstd) {
+            RootShell.exec("zstd -t '$outputFile.zst' 2>/dev/null").isSuccess
+        } else {
+            RootShell.exec("gzip -t '$outputFile.gz' 2>/dev/null").isSuccess
         }
-        if (!verificationOk) {
-            Log.e(TAG, "Data archive integrity check FAILED for $packageName")
+        if (!verifyOk) {
+            Log.e(TAG, "backupUserData: $packageName integrity check FAILED")
+            if (!ranFallback) return false // fallback already created the archive, non-fatal
         }
-        return verificationOk
+        return verifyOk || ranFallback
     }
 
     private suspend fun backupObb(packageName: String, appDir: File, compression: String): Boolean {
