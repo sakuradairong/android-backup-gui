@@ -29,6 +29,9 @@ class ResticEnvResolver {
             val cacheDir = tempRepoDir.substringBeforeLast("/") + "/restic_cache"
             env["HOME"] = cacheDir
             env["XDG_CACHE_HOME"] = cacheDir
+            // Restic needs a writable temp dir for pack files. Android has no /tmp.
+            val tmpDir = tempRepoDir.substringBeforeLast("/") + "/restic_tmp"
+            env["TMPDIR"] = tmpDir
         }
         return env
     }

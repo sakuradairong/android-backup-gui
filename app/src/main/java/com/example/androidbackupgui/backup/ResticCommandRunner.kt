@@ -5,6 +5,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
 import java.io.BufferedReader
+import java.io.File
 import kotlin.coroutines.coroutineContext
 import kotlinx.serialization.Serializable
 
@@ -38,7 +39,7 @@ class ResticCommandRunner {
         val cmdArgs = buildCommandArgs(args)
         Log.i(TAG, "runRestic cmd=${cmdArgs.joinToString(" ")}")
         Log.d(TAG, "runRestic REPOSITORY=${env["RESTIC_REPOSITORY"]}")
-
+        env["TMPDIR"]?.let { File(it).mkdirs() }
         return try {
             val pb = ProcessBuilder(cmdArgs)
             pb.environment().putAll(env)
@@ -84,6 +85,7 @@ class ResticCommandRunner {
         val cmdArgs = buildCommandArgs(args)
         Log.i(TAG, "runResticStreaming cmd=${cmdArgs.joinToString(" ")}")
         Log.d(TAG, "runResticStreaming REPOSITORY=${env["RESTIC_REPOSITORY"]}")
+        env["TMPDIR"]?.let { File(it).mkdirs() }
 
         var process: Process? = null
         try {
