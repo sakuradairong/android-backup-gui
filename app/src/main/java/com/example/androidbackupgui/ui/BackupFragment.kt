@@ -111,6 +111,7 @@ class BackupFragment : Fragment() {
 
             // If restic is enabled, snapshot the backup to a restic repository
             var resticSummary: ResticWrapper.BackupSummary? = null
+            var resticError: String? = null
             if (config.resticEnabled == 1 && config.resticRepo.isNotBlank()) {
                 val binaryPath = ResticBinary.prepare(requireContext())
                 if (binaryPath != null) {
@@ -168,6 +169,7 @@ class BackupFragment : Fragment() {
                     resticResult.fold(
                         onSuccess = { resticSummary = it },
                         onFailure = { e ->
+                            resticError = e.message
                             binding.statusText.text = "restic 快照失败: ${e.message}"
                         }
                     )
@@ -185,6 +187,10 @@ class BackupFragment : Fragment() {
                     appendLine("ID: ${resticSummary!!.snapshotId.take(8)}…")
                     appendLine("新增: ${resticSummary!!.dataAdded / 1024 / 1024} MB")
                     appendLine("文件: ${resticSummary!!.totalFilesProcessed}")
+                } else if (resticError != null) {
+                    appendLine()
+                    appendLine("── Restic 错误 ──")
+                    appendLine(resticError!!)
                 }
             }
             setRunning(false)
