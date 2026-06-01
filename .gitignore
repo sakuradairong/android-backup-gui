@@ -16,3 +16,6 @@ Thumbs.db
 # Keystore (regenerate if needed)
 debug.keystore
 release.keystore
+
+# Memory files from agent harness
+memory:*
