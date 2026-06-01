@@ -34,22 +34,37 @@ object RootShell {
     }
 
     /**
-     * Trigger root shell pre-initialization.
-     * Returns true if root is available.
-     * Note: Shell.cmd() also auto-initializes on first use, so this is optional.
+     * libsu shell initializer: enter global mount namespace via nsenter.
+     * This ensures we can see the REAL /data (not the isolated per-app namespace).
+     * Ref: DataBackup (XayahSuSuSu) uses the same pattern.
      */
+    private class GlobalNamespaceInitializer : Shell.Initializer() {
+        override fun onInit(context: android.content.Context, shell: Shell): Boolean {
+            shell.newJob()
+                .add("nsenter --mount=/proc/1/ns/mnt sh")
+                .add("set -o pipefail")
+                .exec()
+            return true
+        }
+    }
+
+    /** Call once at app startup to configure libsu. */
+    fun configure() {
+        Shell.enableVerboseLogging = true
+        Shell.setDefaultBuilder(
+            Shell.Builder.create()
+                .setFlags(Shell.FLAG_MOUNT_MASTER)
+                .setInitializers(GlobalNamespaceInitializer::class.java)
+                .setTimeout(30)
+        )
+    }
+
     suspend fun ensureSession(): Boolean = withContext(Dispatchers.IO) {
         try {
             Shell.getShell().isRoot
         } catch (_: Exception) { false }
     }
 
-    /**
-     * Execute a shell command and return the result.
-     * libsu internally runs via `su`, compatible with Magisk/KernelSU/APatch.
-     * Commands are passed verbatim to `su -c`, so pipes and redirects work normally.
-     * Timeout is enforced via structured coroutine cancellation.
-     */
     suspend fun exec(command: String, timeoutMs: Long = COMMAND_TIMEOUT_MS): ShellResult =
         withContext(Dispatchers.IO) {
             try {

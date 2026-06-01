@@ -34,6 +34,9 @@ class MainActivity : AppCompatActivity() {
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
+        // Configure libsu with global mount namespace support
+        RootShell.configure()
+
         // Request root access on startup
         lifecycleScope.launch(Dispatchers.IO) {
             RootShell.ensureSession()
