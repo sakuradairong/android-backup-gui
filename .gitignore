@@ -15,3 +15,4 @@ Thumbs.db
 
 # Keystore (regenerate if needed)
 debug.keystore
+release.keystore

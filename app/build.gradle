@@ -18,10 +18,19 @@ android {
     lint {
         disable 'QueryAllPackagesPermission'
     }
+    signingConfigs {
+        release {
+            storeFile file("release.keystore")
+            storePassword System.getenv("KEYSTORE_PASSWORD") ?: "android"
+            keyAlias "release"
+            keyPassword System.getenv("KEY_PASSWORD") ?: "android"
+        }
+    }
     buildTypes {
         release {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+            signingConfig signingConfigs.release
         }
     }
     compileOptions {
