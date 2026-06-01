@@ -1,0 +1,17 @@
+# Android / Gradle
+.gradle/
+app/build/
+local.properties
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Keystore (regenerate if needed)
+debug.keystore
