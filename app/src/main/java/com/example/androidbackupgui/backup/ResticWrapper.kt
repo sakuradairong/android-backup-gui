@@ -102,19 +102,20 @@ object ResticWrapper {
 
     @Serializable
     data class BackupSummary(
+        @SerialName("message_type") val messageType: String = "",
         @SerialName("snapshot_id") val snapshotId: String,
-        @SerialName("files_new") val filesNew: Int,
-        @SerialName("files_changed") val filesChanged: Int,
-        @SerialName("files_unmodified") val filesUnmodified: Int,
-        @SerialName("dirs_new") val dirsNew: Int,
-        @SerialName("dirs_changed") val dirsChanged: Int,
-        @SerialName("dirs_unmodified") val dirsUnmodified: Int,
-        @SerialName("data_blobs") val dataBlobs: Int,
-        @SerialName("tree_blobs") val treeBlobs: Int,
-        @SerialName("data_added") val dataAdded: Long,
-        @SerialName("total_files_processed") val totalFilesProcessed: Int,
-        @SerialName("total_bytes_processed") val totalBytesProcessed: Long,
-        @SerialName("total_duration") val totalDuration: Double
+        @SerialName("files_new") val filesNew: Int = 0,
+        @SerialName("files_changed") val filesChanged: Int = 0,
+        @SerialName("files_unmodified") val filesUnmodified: Int = 0,
+        @SerialName("dirs_new") val dirsNew: Int = 0,
+        @SerialName("dirs_changed") val dirsChanged: Int = 0,
+        @SerialName("dirs_unmodified") val dirsUnmodified: Int = 0,
+        @SerialName("data_blobs") val dataBlobs: Int = 0,
+        @SerialName("tree_blobs") val treeBlobs: Int = 0,
+        @SerialName("data_added") val dataAdded: Long = 0,
+        @SerialName("total_files_processed") val totalFilesProcessed: Int = 0,
+        @SerialName("total_bytes_processed") val totalBytesProcessed: Long = 0,
+        @SerialName("total_duration") val totalDuration: Double = 0.0
     )
 
     suspend fun backup(

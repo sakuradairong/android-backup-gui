@@ -78,7 +78,7 @@ class ResticBackup(
             if (!line.startsWith("{")) continue
             try {
                 val summary = resticJson.decodeFromString<ResticWrapper.BackupSummary>(line)
-                if (summary.snapshotId.isNotEmpty()) return Result.success(summary)
+                if (summary.messageType == "summary" && summary.snapshotId.isNotEmpty()) return Result.success(summary)
             } catch (_: Exception) { /* keep looking */ }
         }
         return Result.failure(Exception("No summary found in restic output"))

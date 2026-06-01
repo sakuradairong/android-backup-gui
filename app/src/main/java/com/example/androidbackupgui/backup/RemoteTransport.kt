@@ -148,16 +148,18 @@ interface RemoteTransport {
                 val errors = mutableListOf<String>()
 
                 // Download remote files that are new or have different size
-                var downloaded = 0
+                var transferred = 0
+                var skipped = 0
                 val syncTotal = remoteFiles.size
                 for ((relPath, info) in remoteByPath) {
-                    downloaded++
-                    onProgress(TransferProgress("download", downloaded, syncTotal, relPath))
                     val localFile = File(localDir, relPath)
                     if (localFile.isFile && localFile.length() == info.size) {
                         Log.d(TAG, "syncFromRemote skip (same size): $relPath")
+                        skipped++
                         continue
                     }
+                    transferred++
+                    onProgress(TransferProgress("download", transferred, syncTotal, relPath))
                     localFile.parentFile?.mkdirs()
                     val fullRemotePath = "$remoteDir/$relPath"
                     Log.i(TAG, "syncFromRemote downloading: $fullRemotePath (${info.size} bytes)")
@@ -187,7 +189,7 @@ interface RemoteTransport {
                     Log.i(TAG, "syncFromRemote deleting stale local: $relPath")
                     try { localFile.delete() } catch (_: Exception) {}
                 }
-                onProgress(TransferProgress("complete", syncTotal, syncTotal))
+                onProgress(TransferProgress("complete", transferred, syncTotal, "已传输: $transferred 跳过: $skipped"))
                 Result.success(Unit)
             } catch (e: Exception) {
                 Result.failure(Exception("syncFromRemote failed: ${e.message}", e))
@@ -233,15 +235,17 @@ interface RemoteTransport {
 
                 // Upload new or changed local files
                 var uploaded = 0
+                var uploadSkipped = 0
                 val syncTotal = localFiles.size
                 for ((relPath, localFile) in localFiles) {
-                    uploaded++
-                    onProgress(TransferProgress("upload", uploaded, syncTotal, relPath))
                     val remoteInfo = remoteByPath[relPath]
                     if (remoteInfo != null && remoteInfo.size == localFile.length()) {
                         Log.d(TAG, "syncToRemote skip (same size): $relPath")
+                        uploadSkipped++
                         continue
                     }
+                    uploaded++
+                    onProgress(TransferProgress("upload", uploaded, syncTotal, relPath))
                     val fullRemotePath = "$remoteDir/$relPath"
                     Log.i(TAG, "syncToRemote uploading: $fullRemotePath (${localFile.length()} bytes)")
                     val result = withRetry("upload($fullRemotePath)") {
@@ -268,7 +272,7 @@ interface RemoteTransport {
                     Log.i(TAG, "syncToRemote deleting stale: $relPath")
                     transport.delete("$remoteDir/$relPath")
                 }
-                onProgress(TransferProgress("complete", localFiles.size, localFiles.size))
+                onProgress(TransferProgress("complete", uploaded, syncTotal, "已传输: $uploaded 跳过: $uploadSkipped"))
                 Result.success(Unit)
             } catch (e: Exception) {
                 Result.failure(Exception("syncToRemote failed: ${e.message}", e))
