@@ -200,10 +200,11 @@ object BackupOperation {
             archiveCreated = result?.isSuccess == true || (archiveRaw.exists() && archiveRaw.length() > 0)
         }
 
-        // 4. Last resort: try su -mm (Magisk mount namespace master) for devices where
-        //    the app's su session is confined to an isolated mount namespace.
+        // 4. Last resort: try su -Z (Magisk SELinux context switch) — on Magisk 30+,
+        //    the app's su context (untrusted_app) cannot see other apps' /data/data/.
+        //    Switching to u:r:magisk:s0 lifts the SELinux restriction.
         if (!archiveCreated) {
-            Log.w(TAG, "backupUserData: $packageName /proc/1/root failed, trying su -mm")
+            Log.w(TAG, "backupUserData: $packageName /proc/1/root failed, trying su -Z magisk context")
             val excludeArgs = "--exclude='cache' --exclude='code_cache' --exclude='lib' --exclude='no_backup'"
             val dirList = dataPaths.joinToString(" ")
             val rawOut = appDir.absolutePath + "/" + packageName + "_data.tar"
@@ -212,8 +213,7 @@ object BackupOperation {
             } else {
                 "tar $excludeArgs -czf '${rawOut}.gz' $dirList 2>/dev/null"
             }
-            // Use double quotes for su -mm -c so inner single quotes work
-            result = RootShell.exec("su -mm -c \"$innerCmd\" 2>/dev/null")
+            result = RootShell.exec("su -Z u:r:magisk:s0 -c \"$innerCmd\" 2>/dev/null")
             archiveCreated = result?.isSuccess == true || (archiveRaw.exists() && archiveRaw.length() > 0)
         }
 
