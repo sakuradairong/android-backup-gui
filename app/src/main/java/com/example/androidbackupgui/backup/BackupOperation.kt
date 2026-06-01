@@ -159,16 +159,24 @@ object BackupOperation {
         compression: String
     ): Boolean {
         val pkgEsc = packageName.shellEscape()
-        val dataDir = "/data/data/$pkgEsc"
-        val userDeDir = "/data/user_de/${userId.shellEscape()}/$pkgEsc"
         val outputFile = "${appDir.absolutePath.shellEscape()}/${pkgEsc}_data.tar"
         Log.d(TAG, "backupUserData: $packageName checking dirs")
         val dirs = mutableListOf<String>()
-        val dataOk = RootShell.exec("test -d $dataDir")
-        val userDeOk = RootShell.exec("test -d $userDeDir")
-        Log.d(TAG, "backupUserData: $packageName test -d dataDir exit=${dataOk.exitCode} userDe exit=${userDeOk.exitCode}")
-        if (dataOk.isSuccess) dirs.add(dataDir)
-        if (userDeOk.isSuccess) dirs.add(userDeDir)
+        val dataOk = RootShell.exec("test -d /data/data/$pkgEsc")
+        val userDeOk = RootShell.exec("test -d /data/user_de/${userId.shellEscape()}/$pkgEsc")
+        Log.d(TAG, "backupUserData: $packageName test -d data exit=${dataOk.exitCode} user_de exit=${userDeOk.exitCode}")
+        if (dataOk.isSuccess) dirs.add("/data/data/$pkgEsc")
+        if (userDeOk.isSuccess) dirs.add("/data/user_de/${userId.shellEscape()}/$pkgEsc")
+        // Fallback: if test -d failed, try `ls` to distinguish "no such file" from "permission denied"
+        if (dirs.isEmpty()) {
+            val lsResult = RootShell.exec("ls -d /data/data/$pkgEsc 2>&1")
+            Log.w(TAG, "backupUserData: $packageName test -d failed, ls exit=${lsResult.exitCode} out=${lsResult.output.take(200)}")
+            // If ls also fails, the directory truly doesn't exist on this device
+            if (lsResult.isSuccess) {
+                Log.i(TAG, "backupUserData: $packageName ls succeeded but test -d failed — adding dir via fallback")
+                dirs.add("/data/data/$pkgEsc")
+            }
+        }
         Log.d(TAG, "backupUserData: $packageName dirs=$dirs")
         if (dirs.isEmpty()) {
             Log.w(TAG, "backupUserData: $packageName no data dirs found, skipping")
