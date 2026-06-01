@@ -137,10 +137,10 @@ class RestoreFragment : Fragment() {
                 backendPass = config.resticBackendPass,
                 backendShare = config.resticBackendShare,
                 onSyncProgress = { p ->
-                    binding.statusText.text = "同步中: ${p.current}/${p.total} (${p.name})"
+                    binding.statusText.text = "同步中: ${p.current}/${p.total} [${p.currentFile}]"
                 },
                 onByteSyncProgress = { bp ->
-                    binding.statusText.text = "下载中: ${bp.transferred / 1024 / 1024} MB / ${bp.total / 1024 / 1024} MB"
+                    binding.statusText.text = "下载中: ${bp.bytesTransferred / 1024 / 1024} MB / ${bp.totalBytes / 1024 / 1024} MB"
                 }
             )
             if (snapshotsResult.isFailure) {
