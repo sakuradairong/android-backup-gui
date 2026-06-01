@@ -80,10 +80,16 @@ class RemoteSyncManager {
                 val deleted = cacheDir.deleteRecursively()
                 Log.i(TAG, "cleanupTempDirs: deleted cache $cacheDir ($deleted)")
             }
+            val tmpDir = File(tempRepoDir.substringBeforeLast("/") + "/restic_tmp")
+            if (tmpDir.exists()) {
+                val deleted = tmpDir.deleteRecursively()
+                Log.i(TAG, "cleanupTempDirs: deleted tmp $tmpDir ($deleted)")
+            }
         } catch (e: Exception) {
             Log.w(TAG, "cleanupTempDirs failed: ${e.message}")
         }
     }
+
 
     /** True if [tempRepoDir] already contains an initialized restic repository (has a config file). */
     private fun isLocalRepoPopulated(): Boolean {
