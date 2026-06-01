@@ -41,3 +41,9 @@ This project is indexed by GitNexus as **android-backup-gui** (773 symbols, 2066
 | Index, status, clean, wiki CLI commands | `.claude/skills/gitnexus/gitnexus-cli/SKILL.md` |
 
 <!-- gitnexus:end -->
+
+<!-- USER_PREFERENCES -->
+## 用户偏好
+
+- **语言**: 所有回复必须使用中文。在任何新对话中都需要自动遵守此要求。
+<!-- END_USER_PREFERENCES -->
