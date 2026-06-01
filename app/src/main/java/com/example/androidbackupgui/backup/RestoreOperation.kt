@@ -5,7 +5,12 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
 import java.io.File
-import kotlin.coroutines.coroutineContext
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
+import java.util.concurrent.atomic.AtomicInteger
+import kotlinx.serialization.Serializable
 
 /**
  * Performs restore of backed-up apps using root shell.
@@ -13,6 +18,7 @@ import kotlin.coroutines.coroutineContext
  */
 object RestoreOperation {
 
+    @Serializable
     data class RestoreProgress(
         val current: Int,
         val total: Int,
@@ -21,6 +27,7 @@ object RestoreOperation {
         val message: String
     )
 
+    @Serializable
     data class RestoreResult(
         val successCount: Int,
         val failCount: Int,
@@ -60,59 +67,65 @@ object RestoreOperation {
             allPackages
         }
 
-        var success = 0
-        var fail = 0
+        val successAtomic = AtomicInteger(0)
+        val failAtomic = AtomicInteger(0)
 
-        for ((index, pkg) in packages.withIndex()) {
-            if (!coroutineContext.isActive) break
+        val semaphore = Semaphore(2)
+        coroutineScope {
+            packages.forEachIndexed { index, pkg ->
+                launch {
+                    if (!coroutineContext.isActive) return@launch
+                    semaphore.withPermit {
+                        val appBackupDir = File(backupDir, pkg)
+                        if (!appBackupDir.exists()) {
+                            failAtomic.incrementAndGet()
+                            return@withPermit
+                        }
 
-            val appBackupDir = File(backupDir, pkg)
-            if (!appBackupDir.exists()) {
-                fail++
-                continue
+                        // 1. Install APK
+                        emit(RestoreProgress(index + 1, packages.size, pkg, "install", "正在安装 APK…"))
+                        val installed = installApk(appBackupDir)
+
+                        if (!installed) {
+                            failAtomic.incrementAndGet()
+                            emit(RestoreProgress(index + 1, packages.size, pkg, "done", "安装失败"))
+                            return@withPermit
+                        }
+
+                        // 2. Stop the app before restoring data
+                        RootShell.exec("am force-stop '${pkg.shellEscape()}'")
+
+                        // 3. Restore data
+                        emit(RestoreProgress(index + 1, packages.size, pkg, "data", "正在恢复数据…"))
+                        restoreData(appBackupDir)
+
+                        // 4. Restore OBB
+                        emit(RestoreProgress(index + 1, packages.size, pkg, "obb", "正在恢复 OBB…"))
+                        restoreObb(pkg, appBackupDir)
+
+                        // 5. Restore SSAID
+                        emit(RestoreProgress(index + 1, packages.size, pkg, "ssaid", "正在恢复 SSAID…"))
+                        restoreSsaid(pkg, appBackupDir, userId)
+
+                        // 6. Restore permissions
+                        emit(RestoreProgress(index + 1, packages.size, pkg, "permissions", "正在恢复权限…"))
+                        restorePermissions(pkg, appBackupDir)
+
+                        // 7. Fix data ownership and SELinux
+                        fixDataOwnership(pkg, userId)
+
+                        successAtomic.incrementAndGet()
+                        emit(RestoreProgress(index + 1, packages.size, pkg, "done", "完成"))
+                    }
+                }
             }
-
-            // 1. Install APK
-            emit(RestoreProgress(index + 1, packages.size, pkg, "install", "正在安装 APK…"))
-            val installed = installApk(appBackupDir)
-
-            if (!installed) {
-                fail++
-                emit(RestoreProgress(index + 1, packages.size, pkg, "done", "安装失败"))
-                continue
-            }
-
-            // 2. Stop the app before restoring data
-            RootShell.exec("am force-stop '${pkg.shellEscape()}'")
-
-            // 3. Restore data
-            emit(RestoreProgress(index + 1, packages.size, pkg, "data", "正在恢复数据…"))
-            restoreData(appBackupDir)
-
-            // 4. Restore OBB
-            emit(RestoreProgress(index + 1, packages.size, pkg, "obb", "正在恢复 OBB…"))
-            restoreObb(pkg, appBackupDir)
-
-            // 5. Restore SSAID
-            emit(RestoreProgress(index + 1, packages.size, pkg, "ssaid", "正在恢复 SSAID…"))
-            restoreSsaid(pkg, appBackupDir, userId)
-
-            // 6. Restore permissions
-            emit(RestoreProgress(index + 1, packages.size, pkg, "permissions", "正在恢复权限…"))
-            restorePermissions(pkg, appBackupDir)
-
-            // 7. Fix data ownership and SELinux
-            fixDataOwnership(pkg, userId)
-
-            success++
-            emit(RestoreProgress(index + 1, packages.size, pkg, "done", "完成"))
         }
 
         val elapsed = System.currentTimeMillis() - startTime
-        RestoreResult(success, fail, elapsed)
+        RestoreResult(successAtomic.get(), failAtomic.get(), elapsed)
     }
 
-    private fun installApk(appDir: File): Boolean {
+    private suspend fun installApk(appDir: File): Boolean {
         // Find APK files
         val apkFiles = appDir.listFiles()
             ?.filter { it.name.endsWith(".apk") }
@@ -147,7 +160,7 @@ object RestoreOperation {
         return result.isSuccess
     }
 
-    private fun restoreData(appDir: File) {
+    private suspend fun restoreData(appDir: File) {
 
         // Find data archive
         val dataFiles = appDir.listFiles()
@@ -177,7 +190,7 @@ object RestoreOperation {
      * or symbolic links pointing outside the tree.
      * Accepts both absolute and relative paths — tar implementations vary.
      */
-    private fun isArchiveSafe(archive: File): Boolean {
+    private suspend fun isArchiveSafe(archive: File): Boolean {
         val listCmd = if (archive.name.endsWith(".zst")) {
             "zstd -d -c '${archive.absolutePath.shellEscape()}' | tar tf - 2>/dev/null"
         } else {
@@ -195,7 +208,7 @@ object RestoreOperation {
         }
     }
 
-    private fun restoreObb(packageName: String, appDir: File) {
+    private suspend fun restoreObb(packageName: String, appDir: File) {
         val obbFiles = appDir.listFiles()
             ?.filter { it.name.contains("_obb.tar") }
             ?: return
@@ -220,7 +233,7 @@ object RestoreOperation {
         RootShell.exec("chown -R 1023:1023 /storage/emulated/0/Android/obb/${packageName.shellEscape()}/ 2>/dev/null")
     }
 
-    private fun restoreSsaid(packageName: String, appDir: File, userId: String) {
+    private suspend fun restoreSsaid(packageName: String, appDir: File, userId: String) {
         val ssaidFile = File(appDir, "ssaid.txt")
         if (!ssaidFile.exists()) return
 
@@ -239,7 +252,7 @@ object RestoreOperation {
         )
     }
 
-    private fun restorePermissions(packageName: String, appDir: File) {
+    private suspend fun restorePermissions(packageName: String, appDir: File) {
         val permFile = File(appDir, "permissions.txt")
         if (!permFile.exists()) return
 
@@ -262,7 +275,7 @@ object RestoreOperation {
         }
     }
 
-    private fun fixDataOwnership(packageName: String, userId: String) {
+    private suspend fun fixDataOwnership(packageName: String, userId: String) {
         val pkgEsc = packageName.shellEscape()
         val uidEsc = userId.shellEscape()
         val uidResult = RootShell.exec("dumpsys package '$pkgEsc' | grep 'userId=' | head -1")
