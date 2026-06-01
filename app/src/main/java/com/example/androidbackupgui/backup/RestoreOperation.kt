@@ -256,15 +256,17 @@ object RestoreOperation {
         val permFile = File(appDir, "permissions.txt")
         if (!permFile.exists()) return
 
-        val perms = permFile.readLines()
-            .filter { it.contains("granted=true") }
-            .mapNotNull { line ->
-                // Extract permission name from dumpsys output
-                // Format: "permission.name: granted=true" or similar
-                line.substringBefore(":")
-                    .trim()
-                    .takeIf { it.isNotEmpty() && it.contains(".") }
-            }
+        // dumpsys 输出格式: "android.permission.XXX: granted=true" 或 "permission.XXX: granted=true"
+        // 各 Android 版本输出有差异，try-catch 兜底避免单权限失败中断全部
+        val perms = try {
+            permFile.readLines()
+                .filter { it.contains("granted=true") }
+                .mapNotNull { line ->
+                    line.substringBefore(":")
+                        .trim()
+                        .takeIf { it.isNotEmpty() && it.contains(".") }
+                }
+        } catch (_: Exception) { emptyList() }
 
         val pkgEsc = packageName.shellEscape()
         for (perm in perms) {

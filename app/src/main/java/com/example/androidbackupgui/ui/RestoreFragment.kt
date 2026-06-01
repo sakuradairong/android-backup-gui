@@ -5,6 +5,7 @@ import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
 import androidx.fragment.app.Fragment
+import android.app.AlertDialog
 import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.LinearLayoutManager
 import com.example.androidbackupgui.backup.AppInfo
@@ -21,6 +22,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.Locale
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlin.coroutines.resume
 
 class RestoreFragment : Fragment() {
 
@@ -132,9 +135,20 @@ class RestoreFragment : Fragment() {
                 return@launch
             }
 
+            // 多快照时让用户选择，单个快照自动选
+            val chosenSnapshot = if (snapshots.size == 1) {
+                snapshots.first()
+            } else {
+                pickSnapshot(snapshots) ?: run {
+                    binding.statusText.text = "已取消选择"
+                    setRunning(false)
+                    return@launch
+                }
+            }
+
             // Switch to restic source
             backupDir = null
-            selectedSnapshot = snapshots.first()
+            selectedSnapshot = chosenSnapshot
             val backupPath = selectedSnapshot!!.paths.firstOrNull() ?: run {
                 binding.statusText.text = "快照中找不到备份路径"
                 setRunning(false)
@@ -157,6 +171,7 @@ class RestoreFragment : Fragment() {
 
             binding.backupDirText.text = "restic: ${selectedSnapshot!!.time.take(19)} (${snapshots.size} 个快照可用)"
             selectedPackages.clear()
+
             selectedPackages.addAll(packages)
 
             // Resolve app labels for display
@@ -168,6 +183,17 @@ class RestoreFragment : Fragment() {
             setupAppList()
         }
     }
+
+    /** 多快照时弹出选择对话框。返回用户选择的快照，取消时返回 null。 */
+    private suspend fun pickSnapshot(snapshots: List<ResticWrapper.ResticSnapshot>): ResticWrapper.ResticSnapshot? =
+        suspendCancellableCoroutine { cont ->
+            val names = snapshots.map { "${it.time.take(19)} (${it.id.take(8)})" }
+            AlertDialog.Builder(requireContext())
+                .setTitle("选择快照")
+                .setItems(names.toTypedArray()) { _, i -> cont.resume(snapshots[i]) }
+                .setOnCancelListener { cont.resume(null) }
+                .show()
+        }
 
     /** Read a single file from a restic snapshot using `restic dump`. */
     private suspend fun readResticFile(
@@ -208,66 +234,66 @@ class RestoreFragment : Fragment() {
                 val snapshot = selectedSnapshot!!
                 val config = resticConfig!!
                 val backupPath = snapshot.paths.firstOrNull() ?: return@launch
-
                 val staging = File(requireContext().cacheDir, "restic_restore_${snapshot.shortId}")
                 staging.mkdirs()
-
-                binding.statusText.text = "正在从 restic 快照恢复到暂存目录…"
-                val restoreResult = ResticWrapper.restore(
-                    repoPath = config.resticRepo,
-                    password = config.resticPassword,
-                    snapshotId = snapshot.id,
-                    targetPath = staging.absolutePath,
-                    backend = config.resticBackend,
-                    backendUrl = config.resticBackendUrl,
-                    backendUser = config.resticBackendUser,
-                    backendPass = config.resticBackendPass,
-                    backendShare = config.resticBackendShare,
-                    onSyncProgress = { progress: RemoteTransport.TransferProgress ->
-                        withContext(Dispatchers.Main) {
-                            when (progress.phase) {
-                                "list", "download", "upload", "delete_stale" ->
-                                    binding.statusText.text = "同步中: ${progress.current}/${progress.total} 个文件"
+                try {
+                    binding.statusText.text = "正在从 restic 快照恢复到暂存目录…"
+                    val restoreResult = ResticWrapper.restore(
+                        repoPath = config.resticRepo,
+                        password = config.resticPassword,
+                        snapshotId = snapshot.id,
+                        targetPath = staging.absolutePath,
+                        backend = config.resticBackend,
+                        backendUrl = config.resticBackendUrl,
+                        backendUser = config.resticBackendUser,
+                        backendPass = config.resticBackendPass,
+                        backendShare = config.resticBackendShare,
+                        onSyncProgress = { progress: RemoteTransport.TransferProgress ->
+                            withContext(Dispatchers.Main) {
+                                when (progress.phase) {
+                                    "list", "download", "upload", "delete_stale" ->
+                                        binding.statusText.text = "同步中: ${progress.current}/${progress.total} 个文件"
+                                }
                             }
-                        }
-                    },
-                    onByteSyncProgress = { progress ->
-                        withContext(Dispatchers.Main) {
-                            binding.progressBar.max = progress.totalBytes.toInt().coerceAtLeast(1)
-                            binding.progressBar.progress = progress.bytesTransferred.toInt()
-                            binding.statusText.text = "同步中: ${progress.currentFile}\n" +
-                                "${formatSize(progress.bytesTransferred)} / ${formatSize(progress.totalBytes)}"
-                        }
-                    },
-                    onProgress = { msg -> binding.statusText.text = msg }
-                )
+                        },
+                        onByteSyncProgress = { progress ->
+                            withContext(Dispatchers.Main) {
+                                binding.progressBar.max = progress.totalBytes.toInt().coerceAtLeast(1)
+                                binding.progressBar.progress = progress.bytesTransferred.toInt()
+                                binding.statusText.text = "同步中: ${progress.currentFile}\n" +
+                                    "${formatSize(progress.bytesTransferred)} / ${formatSize(progress.totalBytes)}"
+                            }
+                        },
+                        onProgress = { msg -> binding.statusText.text = msg }
+                    )
 
-                if (restoreResult.isFailure) {
-                    binding.statusText.text = "restic 恢复失败: ${restoreResult.exceptionOrNull()?.message}"
-                    setRunning(false)
-                    binding.selectDirButton.isEnabled = true
-                    return@launch
-                }
-
-                // The restored backup directory: <staging>/<original_absolute_path>
-                val restoredBackupDir = File(staging, backupPath.removePrefix("/"))
-                binding.statusText.text = "正在从恢复的备份安装应用…"
-
-                val r = RestoreOperation.restoreApps(
-                    backupDir = restoredBackupDir,
-                    filterPkgs = selectedPackages,
-                    onProgress = { progress ->
-                        val label = appInfos.find { it.packageName == progress.packageName }?.label
-                        val name = label?.ifEmpty { progress.packageName } ?: progress.packageName
-                        binding.statusText.text =
-                            "[${progress.current}/${progress.total}] $name: ${progress.message}"
+                    if (restoreResult.isFailure) {
+                        binding.statusText.text = "restic 恢复失败: ${restoreResult.exceptionOrNull()?.message}"
+                        setRunning(false)
+                        binding.selectDirButton.isEnabled = true
+                        return@launch
                     }
-                )
-                // Also restore WiFi if backup exists
-                WifiManager.restore(restoredBackupDir)
-                // Cleanup staging
-                try { staging.deleteRecursively() } catch (_: Exception) {}
-                r
+
+                    // The restored backup directory: <staging>/<original_absolute_path>
+                    val restoredBackupDir = File(staging, backupPath.removePrefix("/"))
+                    binding.statusText.text = "正在从恢复的备份安装应用…"
+
+                    val r = RestoreOperation.restoreApps(
+                        backupDir = restoredBackupDir,
+                        filterPkgs = selectedPackages,
+                        onProgress = { progress ->
+                            val label = appInfos.find { it.packageName == progress.packageName }?.label
+                            val name = label?.ifEmpty { progress.packageName } ?: progress.packageName
+                            binding.statusText.text =
+                                "[${progress.current}/${progress.total}] $name: ${progress.message}"
+                        }
+                    )
+                    // Also restore WiFi if backup exists
+                    WifiManager.restore(restoredBackupDir)
+                    r
+                } finally {
+                    try { staging.deleteRecursively() } catch (_: Exception) {}
+                }
             } else {
                 // Local restore
                 val dir = backupDir ?: return@launch
