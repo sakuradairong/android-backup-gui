@@ -5,7 +5,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
 import java.io.BufferedReader
-import java.util.concurrent.TimeUnit
 import kotlin.coroutines.coroutineContext
 import kotlinx.serialization.Serializable
 
@@ -116,15 +115,25 @@ class ResticCommandRunner {
             } finally {
                 try { reader.close() } catch (_: Exception) {}
             }
-
             stderrThread.join(5000)
             val exitCode = try {
-                if (process.waitFor(60, TimeUnit.SECONDS)) {
+                // Manual timeout loop (Process.waitFor(timeout,unit) requires API 26+)
+                val deadline = System.currentTimeMillis() + 60_000
+                var exited = false
+                while (System.currentTimeMillis() < deadline && !exited) {
+                    try {
+                        process.exitValue()
+                        exited = true
+                    } catch (_: IllegalThreadStateException) {
+                        Thread.sleep(100)
+                    }
+                }
+                if (exited) {
                     process.exitValue()
                 } else {
                     Log.w(TAG, "runResticStreaming: process did not exit within 60s after stdout EOF, destroying")
-                    process.destroyForcibly()
-                    process.waitFor(5, TimeUnit.SECONDS)
+                    process.destroy()
+                    process.waitFor()
                     process.exitValue()
                 }
             } catch (_: Exception) { -1 }
