@@ -263,6 +263,8 @@ class RestoreFragment : Fragment() {
                             "[${progress.current}/${progress.total}] $name: ${progress.message}"
                     }
                 )
+                // Also restore WiFi if backup exists
+                WifiManager.restore(restoredBackupDir)
                 // Cleanup staging
                 try { staging.deleteRecursively() } catch (_: Exception) {}
                 r

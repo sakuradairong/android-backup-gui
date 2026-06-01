@@ -110,6 +110,16 @@ class BackupFragment : Fragment() {
                     ResticWrapper.binaryPath = binaryPath
                     ResticWrapper.tempRepoDir = ResticBinary.getTempRepoDir(requireContext())
                     ResticWrapper.backendDomain = config.resticBackendDomain
+
+                    // For local repos, verify init before attempting backup
+                    if (config.resticBackend == "local") {
+                        if (!File(config.resticRepo, "config").exists()) {
+                            binding.statusText.text = "restic 本地仓库未初始化，请先在设置中初始化"
+                            setRunning(false)
+                            binding.scanButton.isEnabled = true
+                            return@launch
+                        }
+                    }
                     binding.statusText.text = "正在写入 restic 去重仓库…"
                     val resticResult = ResticWrapper.backup(
                         repoPath = config.resticRepo,
