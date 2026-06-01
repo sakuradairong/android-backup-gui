@@ -1,6 +1,7 @@
 package com.example.androidbackupgui.backup
 
 import com.example.androidbackupgui.root.RootShell
+import android.util.Log
 import com.example.androidbackupgui.root.shellEscape
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.isActive
@@ -8,6 +9,12 @@ import kotlinx.coroutines.withContext
 import java.io.File
 import org.json.JSONObject
 import kotlin.coroutines.coroutineContext
+import kotlinx.serialization.Serializable
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * Performs backup of apps and WiFi config using root shell.
@@ -15,6 +22,9 @@ import kotlin.coroutines.coroutineContext
  */
 object BackupOperation {
 
+    private const val TAG = "BackupOperation"
+
+    @Serializable
     data class BackupProgress(
         val current: Int,
         val total: Int,
@@ -23,6 +33,7 @@ object BackupOperation {
         val message: String
     )
 
+    @Serializable
     data class BackupResult(
         val successCount: Int,
         val failCount: Int,
@@ -61,94 +72,104 @@ object BackupOperation {
         val metaFile = File(backupRoot, "app_details.json")
         metaFile.writeText(buildAppDetailsJson(apps))
 
-        var success = 0
-        var fail = 0
-        var skipped = 0
+        val semaphore = Semaphore(3)
+        val successAtomic = AtomicInteger(0)
+        val failAtomic = AtomicInteger(0)
+        val skippedAtomic = AtomicInteger(0)
 
-        for ((index, app) in apps.withIndex()) {
-            if (!coroutineContext.isActive) break
+        coroutineScope {
+            apps.forEachIndexed { index, app ->
+                launch {
+                    if (!coroutineContext.isActive) return@launch
+                    semaphore.withPermit {
+                        val appDir = File(backupRoot, app.packageName)
+                        appDir.mkdirs()
 
-            val appDir = File(backupRoot, app.packageName)
-            appDir.mkdirs()
+                        emit(BackupProgress(index + 1, apps.size, app.packageName, "apk", "正在备份 APK…"))
 
-            emit(BackupProgress(index + 1, apps.size, app.packageName, "apk", "正在备份 APK…"))
+                        // 1. Backup APK
+                        val paths = AppScanner.getApkPaths(app.packageName)
+                        val apkOk = if (paths.isNotEmpty()) {
+                            paths.withIndex().all { (i, apkPath) ->
+                                val destName = if (paths.size > 1) "${app.packageName}_split_$i.apk" else "${app.packageName}.apk"
+                                RootShell.exec("cp '${apkPath.shellEscape()}' '${appDir.absolutePath.shellEscape()}/${destName.shellEscape()}'").isSuccess
+                            }
+                        } else false
 
-            // 1. Backup APK
-            val paths = AppScanner.getApkPaths(app.packageName)
-            val apkOk = if (paths.isNotEmpty()) {
-                paths.withIndex().all { (i, apkPath) ->
-                    val destName = if (paths.size > 1) "${app.packageName}_split_$i.apk" else "${app.packageName}.apk"
-                    RootShell.exec("cp '${apkPath.shellEscape()}' '${appDir.absolutePath.shellEscape()}/${destName.shellEscape()}'").isSuccess
+                        if (!apkOk) {
+                            failAtomic.incrementAndGet()
+                            emit(BackupProgress(index + 1, apps.size, app.packageName, "done", "APK 备份失败"))
+                            return@withPermit
+                        }
+
+                        // 2. Backup user data (if configured)
+                        if (config.backupMode == 1 && config.backupUserData == 1) {
+                            emit(BackupProgress(index + 1, apps.size, app.packageName, "data", "正在备份数据…"))
+                            if (!backupUserData(app.packageName, appDir, userId, config.compressionMethod)) {
+                                failAtomic.incrementAndGet()
+                                emit(BackupProgress(index + 1, apps.size, app.packageName, "done", "数据备份失败"))
+                                return@withPermit
+                            }
+                        }
+
+                        // 3. Backup OBB (if configured and exists)
+                        if (config.backupMode == 1 && config.backupObbData == 1) {
+                            val hasObb = AppScanner.hasObbData(app.packageName)
+                            if (hasObb) {
+                                emit(BackupProgress(index + 1, apps.size, app.packageName, "obb", "正在备份 OBB…"))
+                                if (!backupObb(app.packageName, appDir, config.compressionMethod)) {
+                                    failAtomic.incrementAndGet()
+                                    emit(BackupProgress(index + 1, apps.size, app.packageName, "done", "OBB 备份失败"))
+                                    return@withPermit
+                                }
+                            }
+                        }
+
+                        // 4. Backup SSAID
+                        emit(BackupProgress(index + 1, apps.size, app.packageName, "ssaid", "正在备份 SSAID…"))
+                        backupSsaid(app.packageName, appDir, userId)
+
+                        // 5. Backup runtime permissions
+                        backupPermissions(app.packageName, appDir)
+
+                        successAtomic.incrementAndGet()
+                        emit(BackupProgress(index + 1, apps.size, app.packageName, "done", "完成"))
+                    }
                 }
-            } else false
-
-            if (!apkOk) {
-                fail++
-                emit(BackupProgress(index + 1, apps.size, app.packageName, "done", "APK 备份失败"))
-                continue
             }
-
-            // 2. Backup user data (if configured)
-            if (config.backupMode == 1 && config.backupUserData == 1) {
-                emit(BackupProgress(index + 1, apps.size, app.packageName, "data", "正在备份数据…"))
-                backupUserData(app.packageName, appDir, userId, config.compressionMethod)
-            }
-
-            // 3. Backup OBB (if configured and exists)
-            if (config.backupMode == 1 && config.backupObbData == 1) {
-                val hasObb = AppScanner.hasObbData(app.packageName)
-                if (hasObb) {
-                    emit(BackupProgress(index + 1, apps.size, app.packageName, "obb", "正在备份 OBB…"))
-                    backupObb(app.packageName, appDir, config.compressionMethod)
-                }
-            }
-
-            // 4. Backup SSAID
-            emit(BackupProgress(index + 1, apps.size, app.packageName, "ssaid", "正在备份 SSAID…"))
-            backupSsaid(app.packageName, appDir, userId)
-
-            // 5. Backup runtime permissions
-            backupPermissions(app.packageName, appDir)
-
-            success++
-            emit(BackupProgress(index + 1, apps.size, app.packageName, "done", "完成"))
         }
 
         val elapsed = System.currentTimeMillis() - startTime
         RootShell.exec("chmod -R 0755 '${backupRoot.absolutePath}'")
 
         BackupResult(
-            successCount = success,
-            failCount = fail,
-            skippedCount = skipped,
+            successCount = successAtomic.get(),
+            failCount = failAtomic.get(),
+            skippedCount = skippedAtomic.get(),
             outputDir = backupRoot.absolutePath,
             elapsedMs = elapsed
         )
     }
 
 
-    private fun backupUserData(
+    private suspend fun backupUserData(
         packageName: String,
         appDir: File,
         userId: String,
         compression: String
-    ) {
+    ): Boolean {
         val pkgEsc = packageName.shellEscape()
         val dataDir = "/data/data/$pkgEsc"
         val userDeDir = "/data/user_de/${userId.shellEscape()}/$pkgEsc"
         val outputFile = "${appDir.absolutePath.shellEscape()}/${pkgEsc}_data.tar"
-
         // Build a list of dirs that exist
         val dirs = mutableListOf<String>()
         if (RootShell.exec("test -d $dataDir").isSuccess) dirs.add(dataDir)
         if (RootShell.exec("test -d $userDeDir").isSuccess) dirs.add(userDeDir)
-
-        if (dirs.isEmpty()) return
-
+        if (dirs.isEmpty()) return true  // no data to backup is not an error
         // Exclude cache, code_cache, lib
         val excludeArgs = "--exclude='cache' --exclude='code_cache' --exclude='lib' --exclude='no_backup'"
-
-        when (compression) {
+        val result = when (compression) {
             "zstd" -> {
                 val dirList = dirs.joinToString(" ")
                 RootShell.exec(
@@ -162,20 +183,43 @@ object BackupOperation {
                 )
             }
         }
+        if (!result.isSuccess) {
+            Log.e(TAG, "Failed to backup data for $packageName: exit=${result.exitCode} err=${result.error}")
+            return false
+        }
+        // Verify the compressed archive integrity
+        val verificationOk = when (compression) {
+            "zstd" -> RootShell.exec("zstd -t '$outputFile.zst' 2>/dev/null").isSuccess
+            else -> RootShell.exec("gzip -t '$outputFile.gz' 2>/dev/null").isSuccess
+        }
+        if (!verificationOk) {
+            Log.e(TAG, "Data archive integrity check FAILED for $packageName")
+        }
+        return verificationOk
     }
 
-    private fun backupObb(packageName: String, appDir: File, compression: String) {
+    private suspend fun backupObb(packageName: String, appDir: File, compression: String): Boolean {
         val obbDir = "/storage/emulated/0/Android/obb/${packageName.shellEscape()}"
         val escapedAppDir = appDir.absolutePath.shellEscape()
         val escapedPkg = packageName.shellEscape()
-
-        when (compression) {
+        val result = when (compression) {
             "zstd" -> RootShell.exec("tar -cf - '$obbDir' 2>/dev/null | zstd -T0 -o '$escapedAppDir/${escapedPkg}_obb.tar.zst'")
             else -> RootShell.exec("tar -czf '$escapedAppDir/${escapedPkg}_obb.tar.gz' '$obbDir' 2>/dev/null")
         }
+        if (!result.isSuccess) {
+            Log.e(TAG, "Failed to backup OBB for $packageName: exit=${result.exitCode} err=${result.error}")
+            return false
+        }
+        val archive = if (compression == "zstd") "$escapedAppDir/${escapedPkg}_obb.tar.zst" else "$escapedAppDir/${escapedPkg}_obb.tar.gz"
+        val verifyCmd = if (compression == "zstd") "zstd -t '$archive' 2>/dev/null" else "gzip -t '$archive' 2>/dev/null"
+        val verificationOk = RootShell.exec(verifyCmd).isSuccess
+        if (!verificationOk) {
+            Log.e(TAG, "OBB archive integrity check FAILED for $packageName")
+        }
+        return verificationOk
     }
 
-    private fun backupSsaid(packageName: String, appDir: File, userId: String) {
+    private suspend fun backupSsaid(packageName: String, appDir: File, userId: String) {
         val ssaidFile = "/data/system/users/${userId.shellEscape()}/settings_ssaid.xml"
         val result = RootShell.exec("grep '${packageName.shellEscape()}' '$ssaidFile' 2>/dev/null")
         if (result.output.isNotBlank()) {
@@ -183,7 +227,7 @@ object BackupOperation {
         }
     }
 
-    private fun backupPermissions(packageName: String, appDir: File) {
+    private suspend fun backupPermissions(packageName: String, appDir: File) {
         val result = RootShell.exec("dumpsys package '${packageName.shellEscape()}' | grep -E 'granted=(true|false)'")
         if (result.output.isNotBlank()) {
             File(appDir, "permissions.txt").writeText(result.output)
