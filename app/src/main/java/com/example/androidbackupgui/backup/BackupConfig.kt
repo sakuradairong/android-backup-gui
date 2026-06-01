@@ -1,11 +1,13 @@
 package com.example.androidbackupgui.backup
 
 import java.io.File
+import kotlinx.serialization.Serializable
 
 /**
  * Mirrors backup_settings.conf from backup_script.
  * All keys correspond 1:1 with the original shell config.
  */
+@Serializable
 data class BackupConfig(
     // Operation mode
     var lo: Int = 0,                        // 0=volume key, 1=volume force, 2=keyboard
@@ -67,7 +69,8 @@ data class BackupConfig(
     var resticBackendUrl: String = "",
     var resticBackendUser: String = "",
     var resticBackendPass: String = "",
-    var resticBackendShare: String = ""      // SMB share name
+    var resticBackendShare: String = "",      // SMB share name
+    var resticBackendDomain: String = ""      // SMB domain (optional, for NTLM)
 ) {
     companion object {
         fun fromFile(file: File): BackupConfig {
@@ -127,7 +130,7 @@ data class BackupConfig(
             config.resticBackendUser = str("restic_backend_user")
             config.resticBackendPass = str("restic_backend_pass")
             config.resticBackendShare = str("restic_backend_share")
-
+            config.resticBackendDomain = str("restic_backend_domain")
             return config
         }
 
@@ -176,6 +179,7 @@ data class BackupConfig(
                 appendLine("restic_backend_user=\"${config.resticBackendUser}\"")
                 appendLine("restic_backend_pass=\"${config.resticBackendPass}\"")
                 appendLine("restic_backend_share=\"${config.resticBackendShare}\"")
+                appendLine("restic_backend_domain=\"${config.resticBackendDomain}\"")
             })
         }
     }

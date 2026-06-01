@@ -6,7 +6,9 @@ import com.example.androidbackupgui.root.RootShell
 import com.example.androidbackupgui.root.shellEscape
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.Serializable
 
+@Serializable
 data class AppInfo(
     val packageName: String,
     var label: String = "",
