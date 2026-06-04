@@ -5,7 +5,7 @@
     android:layout_height="match_parent"
     android:background="?attr/colorSurface"
     android:clipToPadding="false"
-    android:padding="16dp">
+    android:padding="@dimen/fragment_horizontal_padding">
 
     <LinearLayout
         android:layout_width="match_parent"
@@ -162,47 +162,53 @@
                     android:textAppearance="@style/TextAppearance.Material3.LabelLarge"
                     android:textColor="?attr/colorOnSurface" />
 
-                <com.google.android.material.button.MaterialButtonToggleGroup
-                    android:id="@+id/resticBackendGroup"
+                <HorizontalScrollView
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:layout_marginTop="4dp"
-                    app:singleSelection="true"
-                    app:selectionRequired="true">
+                    android:scrollbars="none">
 
-                    <com.google.android.material.button.MaterialButton
-                        android:id="@+id/resticBackendLocal"
-                        android:layout_width="0dp"
+                    <com.google.android.material.button.MaterialButtonToggleGroup
+                        android:id="@+id/resticBackendGroup"
+                        android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:text="本机"
-                        style="@style/Widget.Material3.Button.TonalButton" />
+                        app:singleSelection="true"
+                        app:selectionRequired="true">
 
-                    <com.google.android.material.button.MaterialButton
-                        android:id="@+id/resticBackendWebdav"
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:text="WebDAV"
-                        style="@style/Widget.Material3.Button.TonalButton" />
+                        <com.google.android.material.button.MaterialButton
+                            android:id="@+id/resticBackendLocal"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:minWidth="80dp"
+                            android:text="本机"
+                            style="@style/Widget.Material3.Button.TonalButton" />
 
-                    <com.google.android.material.button.MaterialButton
-                        android:id="@+id/resticBackendSmb"
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:text="SMB"
-                        style="@style/Widget.Material3.Button.TonalButton" />
+                        <com.google.android.material.button.MaterialButton
+                            android:id="@+id/resticBackendWebdav"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:minWidth="80dp"
+                            android:text="WebDAV"
+                            style="@style/Widget.Material3.Button.TonalButton" />
 
-                    <com.google.android.material.button.MaterialButton
-                        android:id="@+id/resticBackendRestServer"
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:text="REST"
-                        style="@style/Widget.Material3.Button.TonalButton" />
+                        <com.google.android.material.button.MaterialButton
+                            android:id="@+id/resticBackendSmb"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:minWidth="80dp"
+                            android:text="SMB"
+                            style="@style/Widget.Material3.Button.TonalButton" />
 
-                </com.google.android.material.button.MaterialButtonToggleGroup>
+                        <com.google.android.material.button.MaterialButton
+                            android:id="@+id/resticBackendRestServer"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:minWidth="80dp"
+                            android:text="REST"
+                            style="@style/Widget.Material3.Button.TonalButton" />
+
+                    </com.google.android.material.button.MaterialButtonToggleGroup>
+                </HorizontalScrollView>
 
                 <!-- Backend URL (WebDAV/SMB only) -->
                 <com.google.android.material.textfield.TextInputLayout

@@ -3,6 +3,7 @@ package com.example.androidbackupgui.backup
 import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.isActive
+import com.example.androidbackupgui.backup.AppError
 import kotlinx.coroutines.withContext
 import java.io.BufferedReader
 import java.io.File
@@ -28,17 +29,18 @@ class ResticCommandRunner {
     )
 
     /** Build the full command list to run restic. */
-    fun buildCommandArgs(args: List<String>): List<String> {
-        val cmd = listOf(binaryPath) + args
-        Log.d(TAG, "buildCommandArgs: binaryPath=$binaryPath args=$args → cmd=$cmd")
-        return cmd
-    }
+    fun buildCommandArgs(args: List<String>): List<String> =
+        (listOf(binaryPath) + args).also { cmd ->
+            Log.d(TAG, "buildCommandArgs: binaryPath=$binaryPath args=$args -> cmd=$cmd")
+        }
 
     /** Run restic (non-streaming). */
     fun runRestic(env: Map<String, String>, args: List<String>): CommandResult {
         val cmdArgs = buildCommandArgs(args)
         Log.i(TAG, "runRestic cmd=${cmdArgs.joinToString(" ")}")
         Log.d(TAG, "runRestic REPOSITORY=${env["RESTIC_REPOSITORY"]}")
+        // NOTE: Do NOT log RESTIC_PASSWORD or any value derived from it.
+        // RESTIC_REPOSITORY is safe to log (does not contain secrets).
         env["TMPDIR"]?.let { File(it).mkdirs() }
         return try {
             val pb = ProcessBuilder(cmdArgs)
@@ -46,25 +48,15 @@ class ResticCommandRunner {
             pb.redirectErrorStream(false)
             val process = pb.start()
 
-            val stderrText = StringBuilder()
-            val stderrThread = Thread({
-                try {
-                    process.errorStream.bufferedReader().use { reader ->
-                        var line: String?
-                        while (reader.readLine().also { line = it } != null) {
-                            Log.d(TAG, "restic stderr: $line")
-                            stderrText.appendLine(line)
-                        }
-                    }
-                } catch (_: Exception) {}
-            }, "restic-stderr").apply { isDaemon = true; start() }
-
             val stdout = process.inputStream.bufferedReader().use(BufferedReader::readText)
             val exitCode = process.waitFor()
-            stderrThread.join(5000)
+            val stderrBytes = process.errorStream.readAllBytes()
+            val stderrText = stderrBytes.decodeToString()
             Log.i(TAG, "runRestic exitCode=$exitCode stdout_len=${stdout.length}")
-            if (stderrText.isNotEmpty()) Log.w(TAG, "runRestic stderr: ${stderrText}")
-            CommandResult(stdout.trim(), stderrText.toString().trim(), exitCode)
+            if (stderrText.isNotEmpty()) Log.w(TAG, "runRestic stderr: ${stderrText.trim()}")
+            CommandResult(stdout.trim(), stderrText.trim(), exitCode)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
         } catch (e: Exception) {
             Log.e(TAG, "runRestic exception", e)
             CommandResult("", e.message ?: "Unknown error", -1)
@@ -136,7 +128,9 @@ class ResticCommandRunner {
 
             Log.i(TAG, "runResticStreaming exitCode=$exitCode stdout_len=${stdoutText.length}")
             if (stderrText.isNotEmpty()) Log.w(TAG, "runResticStreaming stderr: ${stderrText}")
-            CommandResult(stdoutText.toString().trim(), stderrText.toString().trim(), exitCode)
+            CommandResult(stdoutText.toString().trim(), stderrText.trim(), exitCode)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
         } catch (e: Exception) {
             Log.e(TAG, "runResticStreaming exception", e)
             try { process?.destroy() } catch (_: Exception) {}

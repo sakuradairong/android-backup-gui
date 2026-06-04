@@ -1,6 +1,7 @@
 package com.example.androidbackupgui.backup
 import com.example.androidbackupgui.root.RootShell
 import com.example.androidbackupgui.root.shellEscape
+import android.content.Context
 import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.isActive
@@ -42,6 +43,7 @@ object RestoreOperation {
      * @param filterPkgs if non-null, only restore packages in this set
      */
     suspend fun restoreApps(
+        context: Context,
         backupDir: File,
         userId: String = "0",
         filterPkgs: Set<String>? = null,
@@ -49,6 +51,11 @@ object RestoreOperation {
     ): RestoreResult = withContext(Dispatchers.IO) {
         val emit: suspend (RestoreProgress) -> Unit = { p -> withContext(Dispatchers.Main) { onProgress(p) } }
         val startTime = System.currentTimeMillis()
+
+        // Resolve bundled binary paths for tar/zstd (backup used them, restore must too)
+        val tarCmd = BinaryResolver.tarPath(context) ?: "tar"
+        val bundledZstd = BinaryResolver.zstdPath(context)
+        val zstdCmd = bundledZstd ?: "zstd"
 
         // Read app list from backup
         val appListFile = File(backupDir, "appList.txt")
@@ -88,7 +95,7 @@ object RestoreOperation {
 
                         // 1. Install APK
                         emit(RestoreProgress(index + 1, packages.size, pkg, "install", "正在安装 APK…"))
-                        val installed = installApk(appBackupDir)
+                        val installed = installApk(pkg, appBackupDir)
 
                         if (!installed) {
                             failAtomic.incrementAndGet()
@@ -101,11 +108,11 @@ object RestoreOperation {
 
                         // 3. Restore data
                         emit(RestoreProgress(index + 1, packages.size, pkg, "data", "正在恢复数据…"))
-                        restoreData(appBackupDir)
+                        restoreData(pkg, userId, appBackupDir, tarCmd, zstdCmd)
 
                         // 4. Restore OBB
                         emit(RestoreProgress(index + 1, packages.size, pkg, "obb", "正在恢复 OBB…"))
-                        restoreObb(pkg, appBackupDir)
+                        restoreObb(pkg, appBackupDir, tarCmd, zstdCmd)
 
                         // 5. Restore SSAID
                         emit(RestoreProgress(index + 1, packages.size, pkg, "ssaid", "正在恢复 SSAID…"))
@@ -132,7 +139,7 @@ object RestoreOperation {
         RestoreResult(successCount, failCount, elapsed)
     }
 
-    private suspend fun installApk(appDir: File): Boolean {
+    private suspend fun installApk(packageName: String, appDir: File): Boolean {
         // Find APK files
         val apkFiles = appDir.listFiles()
             ?.filter { it.name.endsWith(".apk") }
@@ -141,33 +148,68 @@ object RestoreOperation {
 
         if (apkFiles.isEmpty()) return false
 
-        // Build install command for multiple APKs (split APK support)
-        val apkPaths = apkFiles.joinToString(" ") { "'${it.absolutePath.shellEscape()}'" }
+        suspend fun doInstall(): Boolean {
+            // Build install command for multiple APKs (split APK support)
+            val apkPaths = apkFiles.joinToString(" ") { "'${it.absolutePath.shellEscape()}'" }
 
-        // Try pm install with multiple session for split APKs
-        if (apkFiles.size > 1) {
-            val result = RootShell.exec("pm install-create -r -t 2>/dev/null")
-            val sessionId = result.output.lines()
-                .firstOrNull { it.contains("Success") }
-                ?.substringAfter("[")
-                ?.substringBefore("]")
+            // Try pm install with multiple session for split APKs
+            if (apkFiles.size > 1) {
+                val result = RootShell.exec("pm install-create -r -t 2>/dev/null")
+                val sessionId = result.output.lines()
+                    .firstOrNull { it.contains("Success") }
+                    ?.substringAfter("[")
+                    ?.substringBefore("]")
 
-            if (sessionId != null) {
-                for ((i, apk) in apkFiles.withIndex()) {
-                    val sessionName = if (i == 0) "base.apk" else "split_${i}.apk"
-                    RootShell.exec("pm install-write '${sessionId.shellEscape()}' '$sessionName' '${apk.absolutePath.shellEscape()}'")
+                if (sessionId != null) {
+                    for ((i, apk) in apkFiles.withIndex()) {
+                        val sessionName = if (i == 0) "base.apk" else "split_${i}.apk"
+                        RootShell.exec("pm install-write '${sessionId.shellEscape()}' '$sessionName' '${apk.absolutePath.shellEscape()}'")
+                    }
+                    val commit = RootShell.exec("pm install-commit '${sessionId.shellEscape()}'")
+                    return commit.isSuccess
                 }
-                val commit = RootShell.exec("pm install-commit '${sessionId.shellEscape()}'")
-                return commit.isSuccess
             }
+
+            // Single APK install
+            val result = RootShell.exec("pm install -r -t $apkPaths")
+            return result.isSuccess
         }
 
-        // Single APK install
-        val result = RootShell.exec("pm install -r -t $apkPaths")
-        return result.isSuccess
+        suspend fun isInstalled(): Boolean {
+            val verifyResult = RootShell.exec("pm list packages '${packageName.shellEscape()}' 2>/dev/null")
+            return verifyResult.output.contains(packageName)
+        }
+
+        // First install attempt
+        val firstOk = doInstall()
+        if (!firstOk) {
+            Log.e(TAG, "installApk: $packageName — first install attempt failed")
+            return false
+        }
+
+        // Verify installation succeeded
+        if (isInstalled()) {
+            Log.i(TAG, "installApk: $packageName installed and verified")
+            return true
+        }
+
+        Log.w(TAG, "installApk: $packageName installed but not detected — retrying once")
+        val retryOk = doInstall()
+        if (!retryOk) {
+            Log.e(TAG, "installApk: $packageName — retry install failed")
+            return false
+        }
+
+        if (isInstalled()) {
+            Log.i(TAG, "installApk: $packageName installed and verified (after retry)")
+            return true
+        }
+
+        Log.e(TAG, "installApk: $packageName — install reported success but package not found after retry")
+        return false
     }
 
-    private suspend fun restoreData(appDir: File) {
+    private suspend fun restoreData(packageName: String, userId: String, appDir: File, tarCmd: String, zstdCmd: String) {
         val files = appDir.listFiles()
         if (files.isNullOrEmpty()) {
             Log.w(TAG, "restoreData: appDir empty or null: ${appDir.absolutePath}")
@@ -178,27 +220,60 @@ object RestoreOperation {
             Log.w(TAG, "restoreData: no _data.tar in ${appDir.name}, found: ${files.map { it.name }}")
             return
         }
+
+        // Build exclusion patterns for cache/temp directories
+        val dataPaths = listOf("/data/data/$packageName", "/data/user_de/$userId/$packageName")
+        val excludeFolders = listOf(".ota", "cache", "lib", "code_cache", "no_backup")
+        val excludeArgs = dataPaths.flatMap { dataPath ->
+            excludeFolders.flatMap { folder ->
+                listOf("--exclude='${dataPath.shellEscape()}/$folder'", "--exclude='${dataPath.shellEscape()}/$folder/*'")
+            }
+        }.joinToString(" ")
+
         for (archive in dataFiles) {
             val archivePath = archive.absolutePath.shellEscape()
             Log.d(TAG, "restoreData: found archive ${archive.name}")
-            if (!isArchiveSafe(archive)) {
+            if (!isArchiveSafe(archive, zstdCmd)) {
                 Log.w(TAG, "restoreData: archive NOT SAFE, skipping: ${archive.name}")
                 continue
             }
-            val cmd = when {
+
+            // Build the extract command with exclusion flags
+            val baseCmd = when {
                 archive.name.endsWith(".zst") ->
-                    "zstd -d -c '$archivePath' | tar -xf - -C / 2>/dev/null"
+                    "set -o pipefail; $zstdCmd -d -c '$archivePath' | $tarCmd -xf - $excludeArgs -C / 2>/dev/null"
                 archive.name.endsWith(".gz") ->
-                    "tar -xzf '$archivePath' -C / 2>/dev/null"
+                    "$tarCmd -xzf $excludeArgs '$archivePath' -C / 2>/dev/null"
                 archive.name.endsWith(".tar") ->
-                    "tar -xf '$archivePath' -C / 2>/dev/null"
+                    "$tarCmd -xf $excludeArgs '$archivePath' -C / 2>/dev/null"
                 else -> { Log.w(TAG, "restoreData: unknown archive type ${archive.name}"); continue }
             }
-            val result = RootShell.exec(cmd)
+
+            val result = RootShell.exec(baseCmd)
             if (result.isSuccess) {
                 Log.i(TAG, "restoreData: extracted ${archive.name}")
             } else {
                 Log.e(TAG, "restoreData: FAILED ${archive.name}: exit=${result.exitCode} err=${result.error}")
+                // Continue to try SELinux fix even if extraction had issues
+            }
+        }
+
+        // Restore SELinux context on extracted data directories
+        for (dataPath in dataPaths) {
+            // Try to get the existing context (if the path already existed)
+            val existingContext = SELinuxUtil.getContext(dataPath)
+            val context = existingContext ?: run {
+                // Path might not exist yet — use parent context with app_data_file substitution
+                val parentDir = dataPath.substringBeforeLast("/")
+                val parentContext = SELinuxUtil.getContext(parentDir)
+                parentContext?.replace("system_data_file", "app_data_file")
+            }
+
+            if (context != null) {
+                Log.d(TAG, "restoreData: restoring SELinux context on $dataPath: $context")
+                SELinuxUtil.chcon(context, dataPath)
+            } else {
+                Log.w(TAG, "restoreData: could not determine SELinux context for $dataPath")
             }
         }
     }
@@ -208,13 +283,18 @@ object RestoreOperation {
      * or symbolic links pointing outside the tree.
      * Accepts both absolute and relative paths — tar implementations vary.
      */
-    private suspend fun isArchiveSafe(archive: File): Boolean {
+    private suspend fun isArchiveSafe(archive: File, zstdCmd: String = "zstd"): Boolean {
         val listCmd = if (archive.name.endsWith(".zst")) {
-            "zstd -d -c '${archive.absolutePath.shellEscape()}' | tar tf - 2>/dev/null"
+            "set -o pipefail; $zstdCmd -d -c '${archive.absolutePath.shellEscape()}' | tar tf - 2>/dev/null"
         } else {
             "tar tf '${archive.absolutePath.shellEscape()}' 2>/dev/null"
         }
-        val result = RootShell.exec(listCmd)
+        var result = RootShell.exec(listCmd)
+        // Fallback: try without pipefail (some Android shells don't support it)
+        if (!result.isSuccess && archive.name.endsWith(".zst")) {
+            val fallbackCmd = "$zstdCmd -d -c '${archive.absolutePath.shellEscape()}' 2>/dev/null | tar tf - 2>/dev/null"
+            result = RootShell.exec(fallbackCmd)
+        }
         if (!result.isSuccess) return false
         return !result.output.lines().any { line ->
             val path = line.substringBefore(" -> ")
@@ -226,29 +306,39 @@ object RestoreOperation {
         }
     }
 
-    private suspend fun restoreObb(packageName: String, appDir: File) {
+    private suspend fun restoreObb(packageName: String, appDir: File, tarCmd: String, zstdCmd: String) {
         val obbFiles = appDir.listFiles()
             ?.filter { it.name.contains("_obb.tar") }
             ?: return
 
+        if (obbFiles.isEmpty()) return
+
+        // Build exclusion patterns for OBB cache/temp directories
+        val obbPath = "/storage/emulated/0/Android/obb/$packageName"
+        val excludeFolders = listOf(".ota", "cache", "lib", "code_cache", "no_backup", "Backup_*")
+        val excludeArgs = excludeFolders.joinToString(" ") { "--exclude='${obbPath.shellEscape()}/$it' --exclude='${obbPath.shellEscape()}/$it/*'" }
+
         for (archive in obbFiles) {
-            if (!isArchiveSafe(archive)) continue
+            if (!isArchiveSafe(archive, zstdCmd)) continue
             val archivePath = archive.absolutePath.shellEscape()
             when {
                 archive.name.endsWith(".zst") -> {
-                    RootShell.exec("zstd -d -c '$archivePath' | tar -xf - -C / 2>/dev/null")
+                    RootShell.exec("set -o pipefail; $zstdCmd -d -c '$archivePath' | $tarCmd -xf - $excludeArgs -C / 2>/dev/null")
                 }
                 archive.name.endsWith(".gz") -> {
-                    RootShell.exec("tar -xzf '$archivePath' -C / 2>/dev/null")
+                    RootShell.exec("$tarCmd -xzf $excludeArgs '$archivePath' -C / 2>/dev/null")
                 }
                 archive.name.endsWith(".tar") -> {
-                    RootShell.exec("tar -xf '$archivePath' -C / 2>/dev/null")
+                    RootShell.exec("$tarCmd -xf $excludeArgs '$archivePath' -C / 2>/dev/null")
                 }
             }
         }
 
-        // Fix OBB permissions
-        RootShell.exec("chown -R 1023:1023 /storage/emulated/0/Android/obb/${packageName.shellEscape()}/ 2>/dev/null")
+        // Fix OBB permissions: resolve GID from parent directory instead of hardcoding 1023
+        val gidResult = RootShell.exec("stat -c %g '${obbPath.shellEscape()}' 2>/dev/null")
+        val gid = gidResult.output.trim().toIntOrNull() ?: 1023 // fallback to media_rw gid
+        RootShell.exec("chown -R $gid:$gid '${obbPath.shellEscape()}/' 2>/dev/null")
+        Log.i(TAG, "restoreObb: set ownership to $gid:$gid on $obbPath")
     }
 
     private suspend fun restoreSsaid(packageName: String, appDir: File, userId: String) {
@@ -267,23 +357,60 @@ object RestoreOperation {
             .trim()
             .toIntOrNull()
 
-        if (uid != null) {
-            // Use settings put secure to set SSAID (more reliable than XML manipulation)
-            val result = RootShell.exec("settings put secure ssaid_$uid '$ssaidValue'")
-            if (result.isSuccess) {
-                Log.i(TAG, "restoreSsaid: restored SSAID for $packageName (uid=$uid)")
-            } else {
-                Log.w(TAG, "restoreSsaid: failed to set SSAID for $packageName: ${result.error}")
+        if (uid == null) {
+            Log.w(TAG, "restoreSsaid: could not resolve UID for $packageName")
+            return
+        }
+
+        // Try XML-based approach first (more reliable across Android versions)
+        val targetFile = "/data/system/users/${userId.shellEscape()}/settings_ssaid.xml"
+        val xmlSuccess = run {
+            // Check if file exists
+            val checkResult = RootShell.exec("test -f '$targetFile' && echo 'exists'")
+            if (!checkResult.output.contains("exists")) {
+                Log.d(TAG, "restoreSsaid: $targetFile does not exist, will use settings command")
+                return@run false
             }
-        } else {
-            Log.w(TAG, "restoreSsaid: could not resolve UID for $packageName, falling back to XML edit")
-            // Fallback: edit settings_ssaid.xml directly
-            val targetFile = "/data/system/users/${userId.shellEscape()}/settings_ssaid.xml"
-            RootShell.exec(
-                "grep -v '${packageName.shellEscape()}' '$targetFile' > '$targetFile.tmp' && " +
-                "sed -i '\$ i ${ssaidValue.shellEscape()}' '$targetFile.tmp' && " +
-                "mv '$targetFile.tmp' '$targetFile'"
-            )
+
+            // Generate a UUID for the new entry
+            val uuidResult = RootShell.exec("cat /proc/sys/kernel/random/uuid 2>/dev/null")
+            val id = uuidResult.output.trim()
+            if (id.length != 36) { // UUID format check
+                Log.w(TAG, "restoreSsaid: could not generate UUID (got '$id'), falling back")
+                return@run false
+            }
+
+            // Remove existing entry for this package and insert new one before </settings>
+            val manipCmd = buildString {
+                append("sed -i \"/package.*${packageName.shellEscape()}/d\" '$targetFile' && ")
+                append("sed -i \"s#</settings>#<setting id=\\\"$id\\\" package=\\\"${packageName.shellEscape()}\\\" value=\\\"${ssaidValue.shellEscape()}\\\" defaultValue=\\\"default\\\" />\\n</settings>#\" '$targetFile'")
+            }
+            val result = RootShell.exec(manipCmd)
+            if (!result.isSuccess) {
+                Log.w(TAG, "restoreSsaid: XML edit failed: ${result.error}")
+                return@run false
+            }
+
+            // Verify the package entry was added by checking if it appears in the file now
+            val verifyCmd = RootShell.exec("grep -c \"${packageName.shellEscape()}\" '$targetFile' 2>/dev/null")
+            val entryCount = verifyCmd.output.trim().toIntOrNull() ?: 0
+            if (entryCount > 0) {
+                Log.i(TAG, "restoreSsaid: restored SSAID for $packageName via XML (uid=$uid)")
+                true
+            } else {
+                Log.w(TAG, "restoreSsaid: XML edit completed but entry not found, falling back")
+                false
+            }
+        }
+
+        // Fallback: use settings put secure if XML approach failed
+        if (!xmlSuccess) {
+            val result = RootShell.exec("settings put secure ssaid_$uid '${ssaidValue.shellEscape()}'")
+            if (result.isSuccess) {
+                Log.i(TAG, "restoreSsaid: restored SSAID for $packageName via settings (uid=$uid)")
+            } else {
+                Log.e(TAG, "restoreSsaid: failed to set SSAID for $packageName: ${result.error}")
+            }
         }
     }
 
@@ -291,43 +418,109 @@ object RestoreOperation {
         val permFile = File(appDir, "permissions.txt")
         if (!permFile.exists()) return
 
-        // dumpsys 输出格式: "android.permission.XXX: granted=true" 或 "permission.XXX: granted=true"
-        // 各 Android 版本输出有差异，try-catch 兜底避免单权限失败中断全部
-        val perms = try {
-            permFile.readLines()
-                .filter { it.contains("granted=true") }
-                .mapNotNull { line ->
-                    line.substringBefore(":")
-                        .trim()
-                        .takeIf { it.isNotEmpty() && it.contains(".") }
-                }
+        // Parse permissions from dumpsys output.
+        // Format: "android.permission.XXX: granted=true" or "android.permission.XXX: granted=false"
+        val parsedPerms = try {
+            permFile.readLines().mapNotNull { line ->
+                val name = line.substringBefore(":").trim().takeIf { it.isNotEmpty() && it.contains(".") } ?: return@mapNotNull null
+                val granted = line.contains("granted=true")
+                Pair(name, granted)
+            }
         } catch (_: Exception) { emptyList() }
 
+        if (parsedPerms.isEmpty()) return
+
         val pkgEsc = packageName.shellEscape()
-        for (perm in perms) {
+
+        // Reset app ops first (clears any previous modes)
+        RootShell.exec("appops reset '$pkgEsc' 2>/dev/null")
+
+        val grantedPerms = parsedPerms.filter { it.second }.map { it.first }
+        val deniedPerms = parsedPerms.filter { !it.second }.map { it.first }
+
+        // Grant runtime permissions that were previously granted
+        for (perm in grantedPerms) {
             val result = RootShell.exec("pm grant '$pkgEsc' '${perm.shellEscape()}' 2>&1")
             if (!result.isSuccess) {
-                android.util.Log.w("RestoreOperation", "pm grant failed for $packageName: $perm — ${result.output}")
+                Log.w(TAG, "restorePermissions: pm grant failed for $packageName: $perm — ${result.output}")
             }
         }
+
+        // Revoke runtime permissions that were explicitly denied
+        for (perm in deniedPerms) {
+            val result = RootShell.exec("pm revoke '$pkgEsc' '${perm.shellEscape()}' 2>&1")
+            if (!result.isSuccess) {
+                // Revoking a permission that isn't granted is not an error — just log at debug level
+                Log.d(TAG, "restorePermissions: pm revoke for $packageName: $perm — ${result.output}")
+            }
+        }
+
+        Log.i(TAG, "restorePermissions: ${grantedPerms.size} granted, ${deniedPerms.size} revoked for $packageName")
     }
 
-    private suspend fun fixDataOwnership(packageName: String, userId: String) {
+    /** Resolve app UID using multiple methods for robustness across Android versions. */
+    private suspend fun resolveAppUid(packageName: String): Int? {
         val pkgEsc = packageName.shellEscape()
-        val uidEsc = userId.shellEscape()
-        val uidResult = RootShell.exec("dumpsys package '$pkgEsc' | grep 'userId=' | head -1")
-        val uid = uidResult.output
+        // Method 1: pm list packages -U (reliable, consistent output format)
+        val pmResult = RootShell.exec("pm list packages -U 2>/dev/null | grep '${pkgEsc}$'")
+        val pmUid = pmResult.output
+            .substringAfter(" uid:")
+            .trim()
+            .toIntOrNull()
+        if (pmUid != null) return pmUid
+
+        // Method 2: dumpsys package (fallback for older Android)
+        val dsResult = RootShell.exec("dumpsys package '$pkgEsc' | grep 'userId=' | head -1")
+        val dsUid = dsResult.output
             .substringAfter("userId=", "")
             .substringBefore(" ")
             .substringBefore(",")
             .trim()
             .toIntOrNull()
+        if (dsUid != null) return dsUid
 
-        if (uid != null) {
-            RootShell.exec("chown -R $uid:$uid /data/data/$pkgEsc/ 2>/dev/null")
-            RootShell.exec("chown -R $uid:$uid /data/user_de/$uidEsc/$pkgEsc/ 2>/dev/null")
-            RootShell.exec("restorecon -R /data/data/$pkgEsc/ 2>/dev/null")
-            RootShell.exec("restorecon -R /data/user_de/$uidEsc/$pkgEsc/ 2>/dev/null")
+        // Method 3: dumpsys with userId: separator (AOSP variant)
+        val ds2Result = RootShell.exec("dumpsys package '$pkgEsc' | grep 'userId:' | head -1")
+        val ds2Uid = ds2Result.output
+            .substringAfter("userId:", "")
+            .substringBefore(" ")
+            .trim()
+            .toIntOrNull()
+        return ds2Uid
+    }
+
+    private suspend fun fixDataOwnership(packageName: String, userId: String) {
+        val pkgEsc = packageName.shellEscape()
+        val uidEsc = userId.shellEscape()
+
+        val uid = resolveAppUid(packageName)
+        if (uid == null) {
+            Log.w(TAG, "fixDataOwnership: could not resolve UID for $packageName — data will be inaccessible")
+            return
+        }
+
+        // USER and USER_DE use uid:uid (app's own group)
+        val dataPaths = listOf(
+            "/data/data/$pkgEsc",
+            "/data/user_de/$uidEsc/$pkgEsc"
+        )
+
+        for (dataPath in dataPaths) {
+            RootShell.exec("chown -R $uid:$uid '$dataPath/' 2>/dev/null")
+
+            // Restore SELinux context instead of using restorecon (which applies defaults)
+            val existingContext = SELinuxUtil.getContext(dataPath)
+            val context = existingContext ?: run {
+                val parentDir = dataPath.substringBeforeLast("/")
+                val parentContext = SELinuxUtil.getContext(parentDir)
+                parentContext?.replace("system_data_file", "app_data_file")
+            }
+            if (context != null) {
+                SELinuxUtil.chcon(context, dataPath)
+                Log.d(TAG, "fixDataOwnership: restored SELinux context on $dataPath: $context")
+            } else {
+                Log.w(TAG, "fixDataOwnership: could not determine SELinux context for $dataPath")
+            }
         }
     }
 }

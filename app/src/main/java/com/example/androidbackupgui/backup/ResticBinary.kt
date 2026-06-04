@@ -41,5 +41,5 @@ object ResticBinary {
         return dir.absolutePath
     }
 
-    fun isReady(): Boolean = false // call prepare() instead
+    fun isReady(): Boolean = cachedBinaryPath != null
 }

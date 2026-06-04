@@ -12,25 +12,28 @@ import java.io.File
 object BinaryResolver {
     private const val TAG = "BinaryResolver"
 
-    private val cacheTar = ResolveCache()
-    private val cacheZstd = ResolveCache()
+    private var tarPath: String? = null
+    private var zstdPath: String? = null
 
-    private class ResolveCache {
-        var initialized = false
-        var path: String? = null
+    fun tarPath(context: Context): String? = cacheOrResolve(context, "libtar_bin.so", "tar_bin", ::tarPath) { tarPath = it }
+    fun zstdPath(context: Context): String? = cacheOrResolve(context, "libzstd_bin.so", "zstd_bin", ::zstdPath) { zstdPath = it }
+
+    private fun cacheOrResolve(
+        context: Context, libName: String, destName: String,
+        cache: () -> String?, setCache: (String?) -> Unit
+    ): String? {
+        val cached = cache()
+        if (cached != null) return cached
+        val resolved = resolve(context, libName, destName)
+        setCache(resolved)
+        return resolved
     }
 
-    fun tarPath(context: Context): String? = resolve(context, "libtar_bin.so", "tar_bin", cacheTar)
-    fun zstdPath(context: Context): String? = resolve(context, "libzstd_bin.so", "zstd_bin", cacheZstd)
-
-    private fun resolve(context: Context, libName: String, destName: String, cache: ResolveCache): String? {
-        if (cache.initialized) return cache.path
+    private fun resolve(context: Context, libName: String, destName: String): String? {
         val nativeLibDir = context.applicationInfo.nativeLibraryDir
         val source = File(nativeLibDir, libName)
         if (!source.isFile) {
             Log.e(TAG, "$libName NOT FOUND at ${source.absolutePath}")
-            cache.initialized = true
-            cache.path = null
             return null
         }
         val dest = File(context.filesDir, "bin/$destName")
@@ -40,10 +43,7 @@ object BinaryResolver {
             source.inputStream().use { src -> dest.outputStream().use { out -> src.copyTo(out) } }
             dest.setExecutable(true)
         }
-        val result = dest.absolutePath
-        Log.i(TAG, "ready: $libName -> $result (${dest.length()} bytes) canExec=${dest.canExecute()}")
-        cache.path = result
-        cache.initialized = true
-        return result
+        Log.i(TAG, "ready: $libName -> ${dest.absolutePath} (${dest.length()} bytes) canExec=${dest.canExecute()}")
+        return dest.absolutePath
     }
 }

@@ -4,7 +4,7 @@
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:orientation="vertical"
-    android:padding="16dp"
+    android:padding="@dimen/fragment_horizontal_padding"
     android:background="?attr/colorSurface">
 
     <LinearLayout
@@ -62,9 +62,9 @@
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
-            android:layout_marginEnd="4dp"
+            android:layout_marginEnd="2dp"
             android:text="A-Z"
-            android:textSize="12sp"
+            android:textSize="11sp"
             style="@style/Widget.Material3.Button.TonalButton" />
 
         <com.google.android.material.button.MaterialButton
@@ -72,9 +72,10 @@
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
-            android:layout_marginStart="4dp"
+            android:layout_marginStart="2dp"
+            android:layout_marginEnd="2dp"
             android:text="大小"
-            android:textSize="12sp"
+            android:textSize="11sp"
             style="@style/Widget.Material3.Button.TonalButton" />
 
         <com.google.android.material.button.MaterialButton
@@ -82,9 +83,10 @@
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
-            android:layout_marginStart="4dp"
+            android:layout_marginStart="2dp"
+            android:layout_marginEnd="2dp"
             android:text="全选"
-            android:textSize="12sp"
+            android:textSize="11sp"
             style="@style/Widget.Material3.Button.TonalButton" />
 
         <com.google.android.material.button.MaterialButton
@@ -92,9 +94,9 @@
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
-            android:layout_marginStart="4dp"
+            android:layout_marginStart="2dp"
             android:text="取消全选"
-            android:textSize="12sp"
+            android:textSize="11sp"
             style="@style/Widget.Material3.Button.TonalButton" />
     </LinearLayout>
 
@@ -129,6 +131,8 @@
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_marginTop="8dp"
+        android:maxLines="3"
+        android:ellipsize="end"
         android:text="点击扫描以载入应用列表"
         android:textAppearance="@style/TextAppearance.Material3.BodySmall"
         android:textColor="?attr/colorOnSurfaceVariant" />

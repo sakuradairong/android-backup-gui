@@ -6,6 +6,7 @@ import com.thegrizzlylabs.sardineandroid.impl.OkHttpSardine
 import com.thegrizzlylabs.sardineandroid.impl.SardineException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.CancellationException
 import java.io.ByteArrayOutputStream
 import java.io.File
 
@@ -31,16 +32,14 @@ class WebdavTransport(
         return "$baseUrl/$cleanPath"
     }
 
-    override suspend fun upload(localPath: String, remotePath: String, onProgress: suspend (RemoteTransport.TransferProgress) -> Unit, onByteProgress: suspend (RemoteTransport.ByteProgress) -> Unit): Result<Unit> =
+    override suspend fun upload(localPath: String, remotePath: String, onProgress: suspend (RemoteTransport.TransferProgress) -> Unit, onByteProgress: suspend (RemoteTransport.ByteProgress) -> Unit): AppResult<Unit> =
         withContext(Dispatchers.IO) {
             try {
                 val url = buildUrl(remotePath)
                 val file = File(localPath)
                 val fileSize = file.length()
                 if (fileSize > 50 * 1024 * 1024L) {
-                    return@withContext Result.failure(
-                        Exception("WebDAV upload: file too large (${fileSize / 1024 / 1024}MB), max 50MB")
-                    )
+                    return@withContext err(AppError.Remote("WebDAV 上传: 文件过大 (${fileSize / 1024 / 1024}MB), 上限 50MB", "upload"))
                 }
                 Log.d(TAG, "upload $localPath -> $url ($fileSize bytes)")
                 onProgress(RemoteTransport.TransferProgress("connecting", 0, 1, remotePath))
@@ -61,14 +60,16 @@ class WebdavTransport(
                 }
                 sardine.put(url, data, "application/octet-stream")
                 onProgress(RemoteTransport.TransferProgress("completed", 1, 1, remotePath))
-                Result.success(Unit)
+                AppResult.Success(Unit)
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 Log.e(TAG, "upload failed: $remotePath", e)
-                Result.failure(Exception("WebDAV upload failed: ${e.message}", e))
+                err(AppError.Remote("WebDAV 上传失败", "upload", cause = e))
             }
         }
 
-    override suspend fun download(remotePath: String, localPath: String, onProgress: suspend (RemoteTransport.TransferProgress) -> Unit, onByteProgress: suspend (RemoteTransport.ByteProgress) -> Unit): Result<Unit> =
+    override suspend fun download(remotePath: String, localPath: String, onProgress: suspend (RemoteTransport.TransferProgress) -> Unit, onByteProgress: suspend (RemoteTransport.ByteProgress) -> Unit): AppResult<Unit> =
         withContext(Dispatchers.IO) {
             try {
                 val url = buildUrl(remotePath)
@@ -91,13 +92,15 @@ class WebdavTransport(
                 }
                 onProgress(RemoteTransport.TransferProgress("completed", 1, 1, remotePath))
                 Log.d(TAG, "download $url -> $localPath (${localFile.length()} bytes)")
-                Result.success(Unit)
+                AppResult.Success(Unit)
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 Log.e(TAG, "download failed: $remotePath", e)
-                Result.failure(Exception("WebDAV download failed: ${e.message}", e))
+                err(AppError.Remote("WebDAV 下载失败", "download", cause = e))
             }
         }
-    override suspend fun listFiles(remoteDir: String): Result<List<RemoteTransport.RemoteFileInfo>> =
+    override suspend fun listFiles(remoteDir: String): AppResult<List<RemoteTransport.RemoteFileInfo>> =
         withContext(Dispatchers.IO) {
             try {
                 val url = buildUrl(remoteDir)
@@ -116,7 +119,9 @@ class WebdavTransport(
                         isDirectory = it.isDirectory
                     ) }
                 Log.d(TAG, "listFiles $remoteDir -> ${entries.size} entries")
-                Result.success(entries)
+                AppResult.Success(entries)
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 // Only treat 404 as empty for non-root paths; the caller (listRemoteRecursive)
                 // handles the distinction. We propagate the error so the caller can decide.
@@ -124,14 +129,14 @@ class WebdavTransport(
                 if (is404) {
                     // Return a failure with a distinguishable marker so callers can check
                     Log.d(TAG, "listFiles $remoteDir -> 404 (not found)")
-                    return@withContext Result.failure(FileNotFoundException(remoteDir))
+                    return@withContext err(AppError.Remote("远端路径不存在", "list", isNotFound = true))
                 }
                 Log.e(TAG, "listFiles failed: $remoteDir", e)
-                Result.failure(Exception("WebDAV list failed: ${e.message}", e))
+                err(AppError.Remote("WebDAV 列表失败", "list", cause = e))
             }
         }
 
-    override suspend fun mkdirs(remotePath: String): Result<Unit> =
+    override suspend fun mkdirs(remotePath: String): AppResult<Unit> =
         withContext(Dispatchers.IO) {
             try {
                 val parts = remotePath.trimStart('/').split("/")
@@ -139,34 +144,40 @@ class WebdavTransport(
                 for (part in parts) {
                     current = if (current.isEmpty()) part else "$current/$part"
                     try { sardine.createDirectory(buildUrl(current)) }
-                    catch (_: Exception) { /* already exists or parent missing, continue */ }
+                    catch (_: Exception) { Log.w(TAG, "mkdirs: failed to create $current"); continue }
                 }
-                Result.success(Unit)
+                AppResult.Success(Unit)
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 Log.w(TAG, "mkdirs failed: $remotePath — ${e.message}")
-                Result.success(Unit)  // best-effort; upload will fail if dir can't be created
+                AppResult.Success(Unit)  // best-effort; upload will fail if dir can't be created
             }
         }
 
-    override suspend fun delete(remotePath: String): Result<Unit> =
+    override suspend fun delete(remotePath: String): AppResult<Unit> =
         withContext(Dispatchers.IO) {
             try {
                 val url = buildUrl(remotePath)
                 sardine.delete(url)
-                Result.success(Unit)
+                AppResult.Success(Unit)
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 Log.w(TAG, "delete failed (ignoring): $remotePath — ${e.message}")
-                Result.success(Unit)
+                err(AppError.Remote("WebDAV 删除失败", "delete", cause = e))
             }
         }
 
-    override suspend fun exists(remotePath: String): Result<Boolean> =
+    override suspend fun exists(remotePath: String): AppResult<Boolean> =
         withContext(Dispatchers.IO) {
             try {
                 val result = sardine.exists(buildUrl(remotePath))
-                Result.success(result)
+                AppResult.Success(result)
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
-                Result.failure(Exception("WebDAV exists check failed: ${e.message}", e))
+                err(AppError.Remote("WebDAV 检查失败", "exists", cause = e))
             }
         }
 }

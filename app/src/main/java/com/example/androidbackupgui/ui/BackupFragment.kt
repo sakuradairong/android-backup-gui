@@ -18,6 +18,7 @@ import com.example.androidbackupgui.backup.BackupService
 import com.example.androidbackupgui.backup.ResticBinary
 import com.example.androidbackupgui.backup.ResticWrapper
 import com.example.androidbackupgui.backup.WifiManager
+import com.example.androidbackupgui.backup.AppResult
 import com.example.androidbackupgui.backup.RemoteTransport
 import com.example.androidbackupgui.databinding.FragmentBackupBinding
 import kotlinx.coroutines.Dispatchers
@@ -69,7 +70,7 @@ class BackupFragment : Fragment() {
             applySortFilter()
         }
         binding.selectAllButton.setOnClickListener {
-            selectedApps.addAll(apps.map { it.packageName })
+            selectedApps.addAll(apps.map { it.packageName.value })
             applySortFilter()
         }
         binding.deselectAllButton.setOnClickListener {
@@ -118,7 +119,7 @@ class BackupFragment : Fragment() {
             val system = AppScanner.scanSystem(ctx, config, userId = selectedUserId)
             apps = if (showSystemApps) thirdParty + system else thirdParty
             selectedApps.clear()
-            selectedApps.addAll(apps.map { it.packageName })
+            selectedApps.addAll(apps.map { it.packageName.value })
 
             binding.statusText.text = "共找到 ${apps.size} 个应用，全部已选中"
             binding.backupButton.isEnabled = apps.isNotEmpty()
@@ -148,8 +149,17 @@ class BackupFragment : Fragment() {
     }
 
     private fun startBackup() {
-        val toBackup = apps.filter { it.packageName in selectedApps }
+        val toBackup = apps.filter { it.packageName.value in selectedApps }
         if (toBackup.isEmpty()) return
+
+        // Check restic local repo availability before doing any work
+        if (config.resticEnabled == 1 && config.resticRepo.isNotBlank() &&
+            config.resticBackend == "local" && !File(config.resticRepo, "config").exists()
+        ) {
+            binding.statusText.text = "restic 本地仓库未初始化，请先在设置中初始化"
+            return
+        }
+
         setRunning(true)
         binding.backupButton.isEnabled = false
         binding.scanButton.isEnabled = false
@@ -167,7 +177,6 @@ class BackupFragment : Fragment() {
                 val outputDir = File(config.outputPath.ifEmpty {
                     requireContext().filesDir.absolutePath
                 })
-                WifiManager.backup(outputDir)
                 val result = BackupOperation.backupApps(
                     context = requireContext(),
                     apps = toBackup,
@@ -175,12 +184,14 @@ class BackupFragment : Fragment() {
                     outputDir = outputDir,
                     userId = selectedUserId.toString(),
                     onProgress = { progress ->
-                        val label = toBackup.find { it.packageName == progress.packageName }?.label
+                        val label = toBackup.find { it.packageName.value == progress.packageName }?.label
                         val name = label?.ifEmpty { progress.packageName } ?: progress.packageName
-                        binding.statusText.text =
-                            "[${progress.current}/${progress.total}] $name: ${progress.message}"
+                        updateStatus("[${progress.current}/${progress.total}] $name: ${progress.message}")
                     }
                 )
+
+                // Store WiFi config inside Backup_* directory so restic/local restore can find it
+                WifiManager.backup(File(result.outputDir))
 
                 // If restic is enabled, snapshot to repository
                 var resticSummary: ResticWrapper.BackupSummary? = null
@@ -194,11 +205,11 @@ class BackupFragment : Fragment() {
 
                         if (config.resticBackend == "local") {
                             if (!File(config.resticRepo, "config").exists()) {
-                                binding.statusText.text = "restic 本地仓库未初始化，请先在设置中初始化"
+                                updateStatus("restic 本地仓库未初始化，请先在设置中初始化")
                                 return@launch
                             }
                         }
-                        binding.statusText.text = "正在写入 restic 去重仓库…"
+                        updateStatus("正在写入 restic 去重仓库…")
                         val resticResult = ResticWrapper.backup(
                             repoPath = config.resticRepo,
                             password = config.resticPassword,

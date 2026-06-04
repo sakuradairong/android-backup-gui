@@ -3,6 +3,9 @@ package com.example.androidbackupgui.backup
 import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import com.example.androidbackupgui.backup.AppError
+import com.example.androidbackupgui.backup.AppResult
+import com.example.androidbackupgui.backup.err
 
 /**
  * Repository lifecycle operations: init and repo URL construction.
@@ -29,7 +32,7 @@ class ResticRepoInit(
         backendShare: String = "",
         onSyncProgress: suspend (RemoteTransport.TransferProgress) -> Unit = {},
         onByteSyncProgress: suspend (RemoteTransport.ByteProgress) -> Unit = {},
-    ): Result<Unit> =
+    ): AppResult<Unit> =
         withContext(Dispatchers.IO) {
             syncManager.withRemoteSync(backend, backendUrl, backendUser, backendPass, backendShare, repoPath,
                 needsDownload = true, needsUpload = true,
@@ -40,7 +43,7 @@ class ResticRepoInit(
                 val result = runner.runRestic(env, "init")
                 // exitCode 0 = brand new repo created, needs upload
                 if (result.exitCode == 0) {
-                    return@withRemoteSync Result.success(Unit)
+                    return@withRemoteSync AppResult.Success(Unit)
                 }
                 // exitCode 1 = config already exists; verify the repo is actually usable
                 if (result.exitCode == 1) {
@@ -48,14 +51,14 @@ class ResticRepoInit(
                     if (verify.exitCode == 0) {
                         // Repo is healthy — already initialized with matching password
                         Log.i(TAG, "init: repo already initialized and verified")
-                        return@withRemoteSync Result.success(Unit)
+                        return@withRemoteSync AppResult.Success(Unit)
                     }
                     // Config exists but repo is corrupted (wrong password, missing keys, etc.)
-                    return@withRemoteSync Result.failure(
-                        Exception("仓库已存在但无法验证: ${verify.stderr.ifEmpty { "密码错误或密钥缺失" }}。请删除远端仓库后重试。")
+                    return@withRemoteSync err(
+                        AppError.Restic("仓库已存在但无法验证", verify.exitCode, verify.stderr)
                     )
                 }
-                Result.failure(Exception("restic init failed: ${result.stderr}"))
+                err(AppError.Restic("restic init 失败", result.exitCode, result.stderr))
             }
         }
 

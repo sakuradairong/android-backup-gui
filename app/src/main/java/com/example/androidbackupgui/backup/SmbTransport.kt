@@ -11,6 +11,7 @@ import jcifs.smb.SmbFileInputStream
 import jcifs.smb.SmbFileOutputStream
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.CancellationException
 import java.io.File
 import java.util.Properties
 
@@ -54,7 +55,7 @@ class SmbTransport(
 
     private fun smbFile(path: String): SmbFile = SmbFile(buildUrl(path), context)
 
-    override suspend fun upload(localPath: String, remotePath: String, onProgress: suspend (RemoteTransport.TransferProgress) -> Unit, onByteProgress: suspend (RemoteTransport.ByteProgress) -> Unit): Result<Unit> =
+    override suspend fun upload(localPath: String, remotePath: String, onProgress: suspend (RemoteTransport.TransferProgress) -> Unit, onByteProgress: suspend (RemoteTransport.ByteProgress) -> Unit): AppResult<Unit> =
         withContext(Dispatchers.IO) {
             try {
                 val localFile = File(localPath)
@@ -83,14 +84,16 @@ class SmbTransport(
                 }
                 onProgress(RemoteTransport.TransferProgress("completed", 1, 1, remotePath))
                 Log.i(TAG, "upload $localPath -> ${buildUrl(remotePath)} ($fileSize bytes)")
-                Result.success(Unit)
+                AppResult.Success(Unit)
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 Log.e(TAG, "upload failed: ${buildUrl(remotePath)}", e)
-                Result.failure(Exception("SMB upload failed: ${e.message}", e))
+                err(AppError.Remote("SMB 上传失败", "upload", cause = e))
             }
         }
 
-    override suspend fun download(remotePath: String, localPath: String, onProgress: suspend (RemoteTransport.TransferProgress) -> Unit, onByteProgress: suspend (RemoteTransport.ByteProgress) -> Unit): Result<Unit> =
+    override suspend fun download(remotePath: String, localPath: String, onProgress: suspend (RemoteTransport.TransferProgress) -> Unit, onByteProgress: suspend (RemoteTransport.ByteProgress) -> Unit): AppResult<Unit> =
         withContext(Dispatchers.IO) {
             try {
                 val localFile = File(localPath)
@@ -114,19 +117,21 @@ class SmbTransport(
                 }
                 onProgress(RemoteTransport.TransferProgress("completed", 1, 1, remotePath))
                 Log.d(TAG, "download ${buildUrl(remotePath)} -> $localPath (${localFile.length()} bytes)")
-                Result.success(Unit)
+                AppResult.Success(Unit)
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 Log.e(TAG, "download failed: $remotePath", e)
-                Result.failure(Exception("SMB download failed: ${e.message}", e))
+                err(AppError.Remote("SMB 下载失败", "download", cause = e))
             }
         }
 
-    override suspend fun listFiles(remoteDir: String): Result<List<RemoteTransport.RemoteFileInfo>> =
+    override suspend fun listFiles(remoteDir: String): AppResult<List<RemoteTransport.RemoteFileInfo>> =
         withContext(Dispatchers.IO) {
             try {
                 val dir = smbFile(remoteDir)
                 if (!dir.exists() || !dir.isDirectory) {
-                    return@withContext Result.failure(FileNotFoundException(remoteDir))
+                    return@withContext err(AppError.Remote("远端路径不存在", "list", isNotFound = true))
                 }
                 // SmbFile.getName() in jcifs-ng 2.1.x is broken — it concatenates
                 // parent-dir + filename without separator. Use the URL to extract
@@ -154,66 +159,74 @@ class SmbTransport(
                     }
                     ?: emptyList()
                 Log.d(TAG, "listFiles $remoteDir -> ${entries.size} entries: ${entries.joinToString { "${it.name}(${if (it.isDirectory) "d" else "f"},${it.size})" }}")
-                Result.success(entries)
+                AppResult.Success(entries)
             } catch (e: SmbException) {
                 if (e.ntStatus == 0xC0000034.toInt()) {
-                    return@withContext Result.failure(FileNotFoundException(remoteDir))
+                    return@withContext err(AppError.Remote("远端路径不存在", "list", isNotFound = true))
                 }
                 Log.e(TAG, "listFiles failed: $remoteDir", e)
-                Result.failure(Exception("SMB list failed: ${e.message}", e))
+                err(AppError.Remote("SMB 列表失败", "list", cause = e))
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 Log.e(TAG, "listFiles failed: $remoteDir", e)
-                Result.failure(Exception("SMB list failed: ${e.message}", e))
+                err(AppError.Remote("SMB 列表失败", "list", cause = e))
             }
         }
 
 
-    override suspend fun mkdirs(remotePath: String): Result<Unit> =
+    override suspend fun mkdirs(remotePath: String): AppResult<Unit> =
         withContext(Dispatchers.IO) {
             try {
                 val dir = smbFile(remotePath)
                 if (!dir.exists()) dir.mkdirs()
-                Result.success(Unit)
+                AppResult.Success(Unit)
             } catch (e: SmbException) {
                 // STATUS_OBJECT_NAME_COLLISION (0xC0000035): directory already exists — not an error
                 if (e.ntStatus == 0xC0000035.toInt()) {
-                    Result.success(Unit)
+                AppResult.Success(Unit)
                 } else {
                     Log.e(TAG, "mkdirs failed: $remotePath — ${e.message}")
-                    Result.failure(Exception("SMB mkdirs failed: ${e.message}", e))
+                    err(AppError.Remote("SMB 创建目录失败", "mkdirs", cause = e))
                 }
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 Log.e(TAG, "mkdirs failed: $remotePath — ${e.message}")
-                Result.failure(Exception("SMB mkdirs failed: ${e.message}", e))
+                err(AppError.Remote("SMB 创建目录失败", "mkdirs", cause = e))
             }
         }
 
-    override suspend fun delete(remotePath: String): Result<Unit> =
+    override suspend fun delete(remotePath: String): AppResult<Unit> =
         withContext(Dispatchers.IO) {
             try {
                 val file = smbFile(remotePath)
                 if (file.exists()) file.delete()
-                Result.success(Unit)
+                AppResult.Success(Unit)
             } catch (e: SmbException) {
                 // STATUS_OBJECT_NAME_NOT_FOUND (0xC0000034): file already gone — not an error
                 if (e.ntStatus == 0xC0000034.toInt()) {
-                    Result.success(Unit)
+                AppResult.Success(Unit)
                 } else {
                     Log.w(TAG, "delete failed: $remotePath — ${e.message}")
-                    Result.failure(Exception("SMB delete failed: ${e.message}", e))
+                    err(AppError.Remote("SMB 删除失败", "delete", cause = e))
                 }
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 Log.w(TAG, "delete failed: $remotePath — ${e.message}")
-                Result.failure(Exception("SMB delete failed: ${e.message}", e))
+                err(AppError.Remote("SMB 删除失败", "delete", cause = e))
             }
         }
 
-    override suspend fun exists(remotePath: String): Result<Boolean> =
+    override suspend fun exists(remotePath: String): AppResult<Boolean> =
         withContext(Dispatchers.IO) {
             try {
-                Result.success(smbFile(remotePath).exists())
+                AppResult.Success(smbFile(remotePath).exists())
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
-                Result.failure(Exception("SMB exists check failed: ${e.message}", e))
+                err(AppError.Remote("SMB 检查失败", "exists", cause = e))
             }
         }
 }

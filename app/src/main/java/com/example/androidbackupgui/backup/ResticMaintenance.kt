@@ -2,6 +2,9 @@ package com.example.androidbackupgui.backup
 
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import com.example.androidbackupgui.backup.AppError
+import com.example.androidbackupgui.backup.AppResult
+import com.example.androidbackupgui.backup.err
 
 /**
  * Repository maintenance operations: prune, check, stats.
@@ -28,7 +31,7 @@ class ResticMaintenance(
         backendShare: String = "",
         onSyncProgress: suspend (RemoteTransport.TransferProgress) -> Unit = {},
         onByteSyncProgress: suspend (RemoteTransport.ByteProgress) -> Unit = {},
-    ): Result<String> =
+    ): AppResult<String> =
         withContext(Dispatchers.IO) {
             syncManager.withRemoteSync(backend, backendUrl, backendUser, backendPass, backendShare, repoPath,
                 needsDownload = true, needsUpload = true,
@@ -37,8 +40,8 @@ class ResticMaintenance(
             ) {
                 val env = envResolver.buildFullEnv(repoPath, password, backend, backendUrl, backendUser, backendPass, backendShare, syncManager.tempRepoDir)
                 val result = runner.runRestic(env, "prune")
-                if (result.exitCode == 0) Result.success(result.stdout)
-                else Result.failure(Exception("restic prune failed: ${result.stderr}"))
+                if (result.exitCode == 0) AppResult.Success(result.stdout)
+                else err(AppError.Restic("restic prune 失败", result.exitCode, result.stderr))
             }
         }
 
@@ -54,7 +57,7 @@ class ResticMaintenance(
         backendShare: String = "",
         onSyncProgress: suspend (RemoteTransport.TransferProgress) -> Unit = {},
         onByteSyncProgress: suspend (RemoteTransport.ByteProgress) -> Unit = {},
-    ): Result<String> =
+    ): AppResult<String> =
         withContext(Dispatchers.IO) {
             syncManager.withRemoteSync(backend, backendUrl, backendUser, backendPass, backendShare, repoPath,
                 needsDownload = true, needsUpload = false,
@@ -63,8 +66,8 @@ class ResticMaintenance(
             ) {
                 val env = envResolver.buildFullEnv(repoPath, password, backend, backendUrl, backendUser, backendPass, backendShare, syncManager.tempRepoDir)
                 val result = runner.runRestic(env, "check")
-                if (result.exitCode == 0) Result.success(result.stdout)
-                else Result.failure(Exception("restic check failed: ${result.stderr}"))
+                if (result.exitCode == 0) AppResult.Success(result.stdout)
+                else err(AppError.Restic("restic check 失败", result.exitCode, result.stderr))
             }
         }
 
@@ -80,7 +83,7 @@ class ResticMaintenance(
         backendShare: String = "",
         onSyncProgress: suspend (RemoteTransport.TransferProgress) -> Unit = {},
         onByteSyncProgress: suspend (RemoteTransport.ByteProgress) -> Unit = {},
-    ): Result<String> =
+    ): AppResult<String> =
         withContext(Dispatchers.IO) {
             syncManager.withRemoteSync(backend, backendUrl, backendUser, backendPass, backendShare, repoPath,
                 needsDownload = true, needsUpload = false,
@@ -89,8 +92,8 @@ class ResticMaintenance(
             ) {
                 val env = envResolver.buildFullEnv(repoPath, password, backend, backendUrl, backendUser, backendPass, backendShare, syncManager.tempRepoDir)
                 val result = runner.runRestic(env, "stats")
-                if (result.exitCode == 0) Result.success(result.stdout)
-                else Result.failure(Exception("restic stats failed: ${result.stderr}"))
+                if (result.exitCode == 0) AppResult.Success(result.stdout)
+                else err(AppError.Restic("restic stats 失败", result.exitCode, result.stderr))
             }
         }
 }

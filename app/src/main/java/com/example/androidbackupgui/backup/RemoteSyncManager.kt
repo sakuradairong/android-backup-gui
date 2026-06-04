@@ -6,6 +6,10 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.channels.Channel.Factory.CONFLATED
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch
 import java.io.File
 
 /**
@@ -18,6 +22,11 @@ import java.io.File
  * operations don't corrupt the local temp repo.
  */
 class RemoteSyncManager {
+
+    private sealed interface SyncEvent {
+        data class Phase(val progress: RemoteTransport.TransferProgress) : SyncEvent
+        data class Bytes(val progress: RemoteTransport.ByteProgress) : SyncEvent
+    }
 
     private val TAG = "ResticWrapper"
 
@@ -42,9 +51,9 @@ class RemoteSyncManager {
     private fun ensureTransport(
         backend: String, url: String, user: String, pass: String, share: String, repoPath: String
     ): RemoteTransport? = synchronized(transportLock) {
-        val key = "$backend|$url|$user|$pass|$share|$backendDomain|$repoPath"
+        val key = "$backend|$url|$user|${pass.hashCode()}|$share|$backendDomain|$repoPath"
         if (key != transportConfigKey || transport == null) {
-            transport?.let { Log.i(TAG, "transport config changed ($transportConfigKey -> $key), recreating") }
+            transport?.let { Log.i(TAG, "transport config changed, recreating") }
             // Clear local temp repo when backend config changes so
             // syncFromRemote downloads fresh data from the new backend
             if (transportConfigKey.isNotEmpty() && tempRepoDir.isNotEmpty()) {
@@ -122,71 +131,91 @@ class RemoteSyncManager {
         needsUpload: Boolean,
         onProgress: suspend (RemoteTransport.TransferProgress) -> Unit = {},
         onByteProgress: suspend (RemoteTransport.ByteProgress) -> Unit = {},
-        action: suspend () -> Result<T>
-    ): Result<T> {
+        action: suspend () -> AppResult<T>
+    ): AppResult<T> {
         if (backend != "smb" && backend != "webdav") return action()
 
         return repoSyncMutex.withLock {
-            var shouldCleanup = false
-            try {
-                val t = ensureTransport(backend, backendUrl, backendUser, backendPass, backendShare, repoPath)
-                    ?: return@withLock Result.failure(Exception("Failed to create transport for backend: $backend"))
-
-                val localDir = File(tempRepoDir)
-
-                val emitProgress: suspend (RemoteTransport.TransferProgress) -> Unit = { p ->
-                    withContext(Dispatchers.Main) { onProgress(p) }
+            coroutineScope {
+                var shouldCleanup = false
+                var lastByteEmitMs = 0L
+                val progressChannel = Channel<SyncEvent>(CONFLATED)
+                val progressJob = launch(Dispatchers.Main) {
+                    for (event in progressChannel) {
+                        when (event) {
+                            is SyncEvent.Phase -> onProgress(event.progress)
+                            is SyncEvent.Bytes -> {
+                                val now = System.currentTimeMillis()
+                                if (now - lastByteEmitMs >= 50) {
+                                    onByteProgress(event.progress)
+                                    lastByteEmitMs = now
+                                }
+                            }
+                        }
+                    }
                 }
 
-                // Write ops always download to avoid overwriting remote changes.
-                // Read-only ops skip download if local repo is already present.
-                val actualDownload = needsDownload && (needsUpload || !isLocalRepoPopulated())
-                if (actualDownload) {
-                    Log.i(TAG, "syncFromRemote start: $repoPath -> $tempRepoDir")
-                    val syncResult = RemoteTransport.syncFromRemote(t, localDir, repoPath, emitProgress, onByteProgress)
-                    if (syncResult.isFailure) {
+                try {
+                    val t = ensureTransport(backend, backendUrl, backendUser, backendPass, backendShare, repoPath)
+                        ?: return@coroutineScope err(AppError.Remote("Failed to create transport for backend: $backend", "connecting"))
+
+                    val localDir = File(tempRepoDir)
+
+                    val emitProgress: suspend (RemoteTransport.TransferProgress) -> Unit = { p ->
+                        progressChannel.send(SyncEvent.Phase(p))
+                    }
+                    val emitByteProgress: suspend (RemoteTransport.ByteProgress) -> Unit = { p ->
+                        progressChannel.send(SyncEvent.Bytes(p))
+                    }
+
+                    // Write ops always download to avoid overwriting remote changes.
+                    // Read-only ops skip download if local repo is already present.
+                    val actualDownload = needsDownload && (needsUpload || !isLocalRepoPopulated())
+                    if (actualDownload) {
+                        Log.i(TAG, "syncFromRemote start: $repoPath -> $tempRepoDir")
+                        val syncResult = RemoteTransport.syncFromRemote(t, localDir, repoPath, emitProgress, emitByteProgress)
+                        if (syncResult.isFailure) {
+                            shouldCleanup = true
+                            Log.e(TAG, "syncFromRemote FAILED: ${syncResult.exceptionOrNull()?.message}")
+                            return@coroutineScope err(AppError.Remote("syncFromRemote failed: ${syncResult.exceptionOrNull()?.message}", "download"))
+                        }
+                        Log.i(TAG, "syncFromRemote complete")
+                    } else if (needsDownload) {
+                        Log.i(TAG, "syncFromRemote skipped: local repo already populated")
+                    }
+
+                    val result = action()
+
+                    if (needsUpload && result.isSuccess) {
+                        Log.i(TAG, "syncToRemote start: $tempRepoDir -> $repoPath")
+                        val uploadResult = RemoteTransport.syncToRemote(t, localDir, repoPath, emitProgress, emitByteProgress)
+                        if (uploadResult.isFailure) {
+                            shouldCleanup = false  // PRESERVE local repo — snapshot would be lost
+                            Log.e(TAG, "syncToRemote FAILED: ${uploadResult.exceptionOrNull()?.message} — local repo preserved for retry")
+                            return@coroutineScope err(AppError.Remote("syncToRemote failed: ${uploadResult.exceptionOrNull()?.message}", "upload"))
+                        }
+                        Log.i(TAG, "syncToRemote complete")
                         shouldCleanup = true
-                        Log.e(TAG, "syncFromRemote FAILED: ${syncResult.exceptionOrNull()?.message}")
-                        return@withLock Result.failure(
-                            Exception("syncFromRemote failed: ${syncResult.exceptionOrNull()?.message}")
-                        )
+                    } else if (result.isFailure) {
+                        shouldCleanup = true
                     }
-                    Log.i(TAG, "syncFromRemote complete")
-                } else if (needsDownload) {
-                    Log.i(TAG, "syncFromRemote skipped: local repo already populated")
-                }
 
-                val result = action()
-
-                if (needsUpload && result.isSuccess) {
-                    Log.i(TAG, "syncToRemote start: $tempRepoDir -> $repoPath")
-                    val uploadResult = RemoteTransport.syncToRemote(t, localDir, repoPath, emitProgress, onByteProgress)
-                    if (uploadResult.isFailure) {
-                        shouldCleanup = false  // PRESERVE local repo — snapshot would be lost
-                        Log.e(TAG, "syncToRemote FAILED: ${uploadResult.exceptionOrNull()?.message} — local repo preserved for retry")
-                        return@withLock Result.failure(
-                            Exception("syncToRemote failed: ${uploadResult.exceptionOrNull()?.message}")
-                        )
+                    result
+                } catch (e: CancellationException) {
+                    shouldCleanup = true
+                    throw e
+                } catch (e: Exception) {
+                    shouldCleanup = true
+                    err(AppError.Remote(e.message ?: "Unknown error", "sync", cause = e))
+                } finally {
+                    progressChannel.close()
+                    progressJob.join()
+                    if (shouldCleanup) {
+                        Log.i(TAG, "withRemoteSync: cleaning up temp dirs")
+                        cleanupTempDirs()
+                    } else {
+                        Log.d(TAG, "withRemoteSync: keeping local repo for subsequent ops")
                     }
-                    Log.i(TAG, "syncToRemote complete")
-                    shouldCleanup = true
-                } else if (result.isFailure) {
-                    shouldCleanup = true
-                }
-
-                result
-            } catch (e: CancellationException) {
-                shouldCleanup = true
-                throw e
-            } catch (e: Exception) {
-                shouldCleanup = true
-                Result.failure(e)
-            } finally {
-                if (shouldCleanup) {
-                    Log.i(TAG, "withRemoteSync: cleaning up temp dirs")
-                    cleanupTempDirs()
-                } else {
-                    Log.d(TAG, "withRemoteSync: keeping local repo for subsequent ops")
                 }
             }
         }

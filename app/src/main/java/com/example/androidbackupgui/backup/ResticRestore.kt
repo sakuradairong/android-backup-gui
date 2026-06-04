@@ -6,6 +6,9 @@ import kotlinx.coroutines.withContext
 import java.io.File
 import kotlinx.serialization.json.Json
 import kotlin.coroutines.coroutineContext
+import com.example.androidbackupgui.backup.AppError
+import com.example.androidbackupgui.backup.AppResult
+import com.example.androidbackupgui.backup.err
 
 /** Shared Json instance configured for restic's snake_case output via @SerialName. */
 private val resticJson = Json { ignoreUnknownKeys = true }
@@ -38,7 +41,7 @@ class ResticRestore(
         onSyncProgress: suspend (RemoteTransport.TransferProgress) -> Unit = {},
         onByteSyncProgress: suspend (RemoteTransport.ByteProgress) -> Unit = {},
         onProgress: suspend (String) -> Unit = {}
-    ): Result<Unit> = withContext(Dispatchers.IO) {
+    ): AppResult<Unit> = withContext(Dispatchers.IO) {
         val emit: suspend (String) -> Unit = { s -> withContext(Dispatchers.Main) { onProgress(s) } }
         syncManager.withRemoteSync(backend, backendUrl, backendUser, backendPass, backendShare, repoPath,
             needsDownload = true, needsUpload = false,
@@ -67,8 +70,8 @@ class ResticRestore(
                 } catch (_: Exception) { emit(line) }
             }
 
-            if (result.exitCode == 0) Result.success(Unit)
-            else Result.failure(Exception("restic restore failed: ${result.stderr}"))
+            if (result.exitCode == 0) AppResult.Success(Unit)
+            else err(AppError.Restic("restic restore 失败", result.exitCode, result.stderr))
         }
     }
 
@@ -86,7 +89,7 @@ class ResticRestore(
         backendShare: String = "",
         onSyncProgress: suspend (RemoteTransport.TransferProgress) -> Unit = {},
         onByteSyncProgress: suspend (RemoteTransport.ByteProgress) -> Unit = {},
-    ): Result<String> = withContext(Dispatchers.IO) {
+    ): AppResult<String> = withContext(Dispatchers.IO) {
         syncManager.withRemoteSync(backend, backendUrl, backendUser, backendPass, backendShare, repoPath,
             needsDownload = true, needsUpload = false,
             onProgress = onSyncProgress,
@@ -94,8 +97,8 @@ class ResticRestore(
         ) {
             val env = envResolver.buildFullEnv(repoPath, password, backend, backendUrl, backendUser, backendPass, backendShare, syncManager.tempRepoDir)
             val result = runner.runRestic(env, "dump", snapshotId, filePath)
-            if (result.exitCode == 0) Result.success(result.stdout)
-            else Result.failure(Exception(result.stderr.ifEmpty { "restic dump failed with exit code ${result.exitCode}" }))
+            if (result.exitCode == 0) AppResult.Success(result.stdout)
+            else err(AppError.Restic(result.stderr.ifEmpty { "restic dump 失败" }, result.exitCode, result.stderr))
         }
     }
 }

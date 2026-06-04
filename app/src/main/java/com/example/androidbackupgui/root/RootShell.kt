@@ -3,6 +3,7 @@ package com.example.androidbackupgui.root
 import android.util.Log
 import com.topjohnwu.superuser.Shell
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
@@ -67,6 +68,7 @@ object RootShell {
 
     suspend fun exec(command: String, timeoutMs: Long = COMMAND_TIMEOUT_MS): ShellResult =
         withContext(Dispatchers.IO) {
+            ensureActive()
             try {
                 val result = withTimeout(timeoutMs) {
                     Shell.cmd(command).exec()
@@ -84,4 +86,17 @@ object RootShell {
                 ShellResult("", e.message ?: "Unknown error", -1)
             }
         }
+
+    /**
+     * 安全执行 root shell 命令，自动 shellEscape 每个参数。
+     * @param parts 命令和参数列表，第一个元素是命令本身
+     * @param timeoutMs 超时毫秒
+     */
+    suspend fun execSafe(
+        parts: List<String>,
+        timeoutMs: Long = COMMAND_TIMEOUT_MS
+    ): ShellResult = exec(
+        command = parts.joinToString(" ") { "'${it.shellEscape()}'" },
+        timeoutMs = timeoutMs
+    )
 }

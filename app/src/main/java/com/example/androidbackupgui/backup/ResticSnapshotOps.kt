@@ -3,6 +3,9 @@ package com.example.androidbackupgui.backup
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
+import com.example.androidbackupgui.backup.AppError
+import com.example.androidbackupgui.backup.AppResult
+import com.example.androidbackupgui.backup.err
 
 
 /** Shared Json instance configured for restic's snake_case output via @SerialName. */
@@ -33,7 +36,7 @@ class ResticSnapshotOps(
         backendShare: String = "",
         onSyncProgress: suspend (RemoteTransport.TransferProgress) -> Unit = {},
         onByteSyncProgress: suspend (RemoteTransport.ByteProgress) -> Unit = {},
-    ): Result<List<ResticWrapper.ResticSnapshot>> = withContext(Dispatchers.IO) {
+    ): AppResult<List<ResticWrapper.ResticSnapshot>> = withContext(Dispatchers.IO) {
         syncManager.withRemoteSync(backend, backendUrl, backendUser, backendPass, backendShare, repoPath,
             needsDownload = true, needsUpload = false,
             onProgress = onSyncProgress,
@@ -46,16 +49,16 @@ class ResticSnapshotOps(
             val result = runner.runRestic(env, args)
 
             if (result.exitCode != 0) {
-                return@withRemoteSync Result.failure(Exception("restic snapshots failed: ${result.stderr}"))
+                return@withRemoteSync err(AppError.Restic("restic snapshots 失败", result.exitCode, result.stderr))
             }
 
             try {
                 val snapshots = resticJson.decodeFromString<List<ResticWrapper.ResticSnapshot>>(
                     result.stdout.ifEmpty { "[]" }
                 )
-                Result.success(snapshots.sortedByDescending { it.time })
-            } catch (e: Exception) {
-                Result.failure(Exception("Failed to parse snapshot JSON: ${e.message}"))
+                AppResult.Success(snapshots.sortedByDescending { it.time })
+        } catch (e: Exception) {
+                err(AppError.Parse("解析快照 JSON 失败", e.message ?: ""))
             }
         }
     }
@@ -76,7 +79,7 @@ class ResticSnapshotOps(
         backendShare: String = "",
         onSyncProgress: suspend (RemoteTransport.TransferProgress) -> Unit = {},
         onByteSyncProgress: suspend (RemoteTransport.ByteProgress) -> Unit = {},
-    ): Result<String> = withContext(Dispatchers.IO) {
+    ): AppResult<String> = withContext(Dispatchers.IO) {
         syncManager.withRemoteSync(backend, backendUrl, backendUser, backendPass, backendShare, repoPath,
             needsDownload = true, needsUpload = true,
             onProgress = onSyncProgress,
@@ -93,8 +96,8 @@ class ResticSnapshotOps(
             val env = envResolver.buildFullEnv(repoPath, password, backend, backendUrl, backendUser, backendPass, backendShare, syncManager.tempRepoDir)
             val result = runner.runRestic(env, args)
 
-            if (result.exitCode == 0) Result.success(result.stdout)
-            else Result.failure(Exception("restic forget failed: ${result.stderr}"))
+            if (result.exitCode == 0) AppResult.Success(result.stdout)
+            else err(AppError.Restic("restic forget 失败", result.exitCode, result.stderr))
         }
     }
 }

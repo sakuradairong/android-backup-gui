@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Card dimensions (tablet: wider layout, larger touch targets) -->
+    <dimen name="card_padding_horizontal">24dp</dimen>
+    <dimen name="card_padding_vertical">16dp</dimen>
+    <dimen name="card_radius">16dp</dimen>
+    <dimen name="card_margin_bottom">12dp</dimen>
+
+    <!-- List item text size -->
+    <dimen name="list_item_text_size">18sp</dimen>
+
+    <!-- Fragment layout padding -->
+    <dimen name="fragment_horizontal_padding">24dp</dimen>
+
+    <!-- Bottom navigation: inset padding from system bars (set dynamically) -->
+    <dimen name="bottom_nav_padding_bottom">0dp</dimen>
+</resources>

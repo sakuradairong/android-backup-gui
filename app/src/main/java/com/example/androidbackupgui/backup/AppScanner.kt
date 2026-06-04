@@ -19,7 +19,7 @@ data class DataSizes(
 
 @Serializable
 data class AppInfo(
-    val packageName: String,
+    val packageName: PackageName,
     var label: String = "",
     val isSystem: Boolean = false,
     val apkPaths: List<String> = emptyList(),
@@ -27,7 +27,7 @@ data class AppInfo(
     val isRunning: Boolean = false,
     val backupSize: Long = 0,  // estimated from last backup
     // Enhanced fields (multi-user, keystore, icon)
-    val userId: Int = 0,
+    val userId: UserId = UserId(0),
     val hasKeystore: Boolean = false,
     val iconPath: String? = null,
     val dataSizes: DataSizes = DataSizes(),
@@ -44,11 +44,10 @@ object AppScanner {
             .filter { it.startsWith("package:") }
             .map { it.removePrefix("package:").trim() }
             .filter { it.isNotEmpty() }
-            .map { AppInfo(packageName = it, userId = userId) }
+            .map { AppInfo(packageName = PackageName(it), userId = UserId(userId)) }
         resolveLabels(context, packages)
     }
 
-    /** Scan all system packages. */
     suspend fun scanSystem(context: Context, config: BackupConfig, userId: Int = 0): List<AppInfo> = withContext(Dispatchers.IO) {
         val result = RootShell.exec("pm list packages -s --user $userId")
         if (!result.isSuccess) return@withContext emptyList()
@@ -67,7 +66,7 @@ object AppScanner {
             .filter { pkg ->
                 if (config.blacklistMode == 1) pkg !in blacklist else true
             }
-            .map { AppInfo(packageName = it, isSystem = true, userId = userId) }
+            .map { AppInfo(packageName = PackageName(it), isSystem = true, userId = UserId(userId)) }
         resolveLabels(context, packages)
     }
 
@@ -82,10 +81,10 @@ object AppScanner {
         val pm = context.packageManager
         for (app in packages) {
             app.label = try {
-                val ai = pm.getApplicationInfo(app.packageName, 0)
+                val ai = pm.getApplicationInfo(app.packageName.value, 0)
                 pm.getApplicationLabel(ai).toString()
             } catch (_: PackageManager.NameNotFoundException) {
-                app.packageName
+                app.packageName.value
             }
         }
         return packages
@@ -127,7 +126,7 @@ object AppScanner {
     /** Check if an app has keystore entries (critical — keystore keys can be lost on backup). */
     suspend fun hasKeystore(packageName: String): Boolean = withContext(Dispatchers.IO) {
         // Resolve the app's UID first
-        val uidResult = RootShell.exec("dumpsys package '$packageName' | grep 'userId=' | head -1")
+        val uidResult = RootShell.exec("dumpsys package '${packageName.shellEscape()}' | grep 'userId=' | head -1")
         val uid = uidResult.output
             .substringAfter("userId=", "")
             .substringBefore(" ")
@@ -156,11 +155,11 @@ object AppScanner {
     suspend fun extractIcon(packageName: String, destDir: java.io.File, userId: Int = 0): String? = withContext(Dispatchers.IO) {
         // Try snapshot cache first
         val snapshotDir = "/data/system_ce/$userId/snapshots/$packageName"
-        val snapshotResult = RootShell.exec("ls '$snapshotDir/' 2>/dev/null | head -1")
+        val snapshotResult = RootShell.exec("ls '${snapshotDir.shellEscape()}/' 2>/dev/null | head -1")
         if (snapshotResult.isSuccess && snapshotResult.output.isNotBlank()) {
             val iconName = snapshotResult.output.trim()
             val iconFile = java.io.File(destDir, "app_icon.png")
-            val copyResult = RootShell.exec("cp '${snapshotDir}/${iconName.shellEscape()}' '${iconFile.absolutePath.shellEscape()}' 2>/dev/null")
+            val copyResult = RootShell.exec("cp '${snapshotDir.shellEscape()}/${iconName.shellEscape()}' '${iconFile.absolutePath.shellEscape()}' 2>/dev/null")
             if (copyResult.isSuccess && iconFile.exists()) {
                 return@withContext iconFile.absolutePath
             }

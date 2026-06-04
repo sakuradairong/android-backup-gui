@@ -6,6 +6,9 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlin.coroutines.coroutineContext
+import com.example.androidbackupgui.backup.AppError
+import com.example.androidbackupgui.backup.AppResult
+import com.example.androidbackupgui.backup.err
 
 /** Shared Json instance configured for restic's snake_case output via @SerialName. */
 private val resticJson = Json { ignoreUnknownKeys = true }
@@ -21,7 +24,7 @@ class ResticBackup(
     private val envResolver: ResticEnvResolver,
     private val syncManager: RemoteSyncManager
 ) {
-    private val TAG = "ResticWrapper"
+    private val TAG = "ResticBackup"
 
     // ── Backup ─────────────────────────────────────────
 
@@ -39,7 +42,7 @@ class ResticBackup(
         onSyncProgress: suspend (RemoteTransport.TransferProgress) -> Unit = {},
         onByteSyncProgress: suspend (RemoteTransport.ByteProgress) -> Unit = {},
         onProgress: suspend (ResticWrapper.ResticProgress) -> Unit = {}
-    ): Result<ResticWrapper.BackupSummary> = withContext(Dispatchers.IO) {
+    ): AppResult<ResticWrapper.BackupSummary> = withContext(Dispatchers.IO) {
         val emit: suspend (ResticWrapper.ResticProgress) -> Unit = { p -> withContext(Dispatchers.Main) { onProgress(p) } }
         syncManager.withRemoteSync(backend, backendUrl, backendUser, backendPass, backendShare, repoPath,
             needsDownload = true, needsUpload = true,
@@ -61,7 +64,7 @@ class ResticBackup(
             }
 
             if (result.exitCode != 0) {
-                return@withRemoteSync Result.failure(Exception("restic backup failed: ${result.stderr}"))
+                return@withRemoteSync err(AppError.Restic("restic backup 失败", result.exitCode, result.stderr))
             }
 
             parseBackupSummary(result.stdout)
@@ -71,16 +74,16 @@ class ResticBackup(
     // ── Internal helpers ───────────────────────────────
 
     /** Parse the JSON summary from the end of restic backup output. */
-    private fun parseBackupSummary(stdout: String): Result<ResticWrapper.BackupSummary> {
+    private fun parseBackupSummary(stdout: String): AppResult<ResticWrapper.BackupSummary> {
         val lines = stdout.lines()
         for (i in lines.indices.reversed()) {
             val line = lines[i].trim()
             if (!line.startsWith("{")) continue
             try {
                 val summary = resticJson.decodeFromString<ResticWrapper.BackupSummary>(line)
-                if (summary.messageType == "summary" && summary.snapshotId.isNotEmpty()) return Result.success(summary)
+                if (summary.messageType == "summary" && summary.snapshotId.isNotEmpty()) return AppResult.Success(summary)
             } catch (_: Exception) { /* keep looking */ }
         }
-        return Result.failure(Exception("No summary found in restic output"))
+        return err(AppError.Parse("restic 备份输出未找到摘要信息", "stdout=" + stdout.length))
     }
 }

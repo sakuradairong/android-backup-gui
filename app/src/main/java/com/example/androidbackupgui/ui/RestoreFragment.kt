@@ -11,6 +11,7 @@ import android.app.AlertDialog
 import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.LinearLayoutManager
 import com.example.androidbackupgui.backup.AppInfo
+import com.example.androidbackupgui.backup.PackageName
 import com.example.androidbackupgui.backup.AppScanner
 import com.example.androidbackupgui.backup.BackupConfig
 import com.example.androidbackupgui.backup.RestoreOperation
@@ -37,6 +38,7 @@ class RestoreFragment : Fragment() {
     private var selectedPackages = mutableSetOf<String>()
     private var resticConfig: BackupConfig? = null
     private var selectedSnapshot: ResticWrapper.ResticSnapshot? = null
+    private var resticConfigFingerprint: String? = null
     private var selectedUserId: Int = 0
     private var userList: List<Pair<Int, String>> = listOf(0 to "Owner")
 
@@ -97,13 +99,35 @@ class RestoreFragment : Fragment() {
         // Re-read config so changes from ConfigFragment take effect immediately
         val configFile = File(requireContext().filesDir, "backup_settings.conf")
         val config = BackupConfig.fromFile(configFile)
+
+        // Detect restic config change — clear stale state if repo/backend changed
+        val newFingerprint = "${config.resticRepo}|${config.resticBackend}|${config.resticBackendUrl}"
+        if (resticConfigFingerprint != null && resticConfigFingerprint != newFingerprint) {
+            selectedSnapshot = null
+            packages = emptyList()
+            selectedPackages.clear()
+            binding.backupDirText.text = ""
+            binding.restoreButton.isEnabled = false
+            binding.selectResticButton.visibility = View.GONE
+        }
+        resticConfigFingerprint = newFingerprint
+
         resticConfig = if (config.resticEnabled == 1 && config.resticRepo.isNotBlank()) config else null
-        val binaryPath = ResticBinary.prepare(requireContext())
-        if (binaryPath != null && resticConfig != null) {
-            ResticWrapper.binaryPath = binaryPath
-            ResticWrapper.tempRepoDir = ResticBinary.getTempRepoDir(requireContext())
-            ResticWrapper.backendDomain = config.resticBackendDomain
+        // Skip redundant preparation if binary and backend config are already set
+        if (resticConfig != null &&
+            ResticWrapper.binaryPath.isNotEmpty() &&
+            ResticWrapper.binaryPath != "restic" &&
+            ResticWrapper.backendDomain == config.resticBackendDomain
+        ) {
             binding.selectResticButton.visibility = View.VISIBLE
+        } else {
+            val binaryPath = ResticBinary.prepare(requireContext())
+            if (binaryPath != null && resticConfig != null) {
+                ResticWrapper.binaryPath = binaryPath
+                ResticWrapper.tempRepoDir = ResticBinary.getTempRepoDir(requireContext())
+                ResticWrapper.backendDomain = config.resticBackendDomain
+                binding.selectResticButton.visibility = View.VISIBLE
+            }
         }
     }
 
@@ -143,7 +167,7 @@ class RestoreFragment : Fragment() {
         binding.statusText.text = "共 ${packages.size} 个备份应用"
         binding.restoreButton.isEnabled = packages.isNotEmpty()
 
-        appInfos = AppScanner.resolveLabels(requireContext(), packages.map { AppInfo(packageName = it) })
+        appInfos = AppScanner.resolveLabels(requireContext(), packages.map { AppInfo(packageName = PackageName(it)) })
         setupAppList()
     }
 
@@ -161,21 +185,21 @@ class RestoreFragment : Fragment() {
                 backendPass = config.resticBackendPass,
                 backendShare = config.resticBackendShare,
                 onSyncProgress = { p ->
-                    binding.statusText.text = "同步中: ${p.current}/${p.total} [${p.currentFile}]"
+                    updateStatus("同步中: ${p.current}/${p.total} [${p.currentFile}]")
                 },
                 onByteSyncProgress = { bp ->
-                    binding.statusText.text = "下载中: ${bp.bytesTransferred / 1024 / 1024} MB / ${bp.totalBytes / 1024 / 1024} MB"
+                    updateStatus("下载中: ${bp.bytesTransferred / 1024 / 1024} MB / ${bp.totalBytes / 1024 / 1024} MB")
                 }
             )
             if (snapshotsResult.isFailure) {
-                binding.statusText.text = "读取快照失败: ${snapshotsResult.exceptionOrNull()?.message}"
+                updateStatus("读取快照失败: ${snapshotsResult.exceptionOrNull()?.message}")
                 setRunning(false)
                 return@launch
             }
 
             val snapshots = snapshotsResult.getOrThrow()
             if (snapshots.isEmpty()) {
-                binding.statusText.text = "没有可用的 restic 快照"
+                updateStatus("没有可用的 restic 快照")
                 setRunning(false)
                 return@launch
             }
@@ -185,7 +209,7 @@ class RestoreFragment : Fragment() {
                 snapshots.first()
             } else {
                 pickSnapshot(snapshots) ?: run {
-                    binding.statusText.text = "已取消选择"
+                    updateStatus("已取消选择")
                     setRunning(false)
                     return@launch
                 }
@@ -195,7 +219,7 @@ class RestoreFragment : Fragment() {
             backupDir = null
             selectedSnapshot = chosenSnapshot
             val backupPath = selectedSnapshot!!.paths.firstOrNull() ?: run {
-                binding.statusText.text = "快照中找不到备份路径"
+                updateStatus("快照中找不到备份路径")
                 setRunning(false)
                 return@launch
             }
@@ -209,7 +233,7 @@ class RestoreFragment : Fragment() {
             }
 
             if (packages.isEmpty()) {
-                binding.statusText.text = "无法从快照读取应用列表"
+                updateStatus("无法从快照读取应用列表")
                 setRunning(false)
                 return@launch
             }
@@ -220,9 +244,9 @@ class RestoreFragment : Fragment() {
             selectedPackages.addAll(packages)
 
             // Resolve app labels for display
-            appInfos = AppScanner.resolveLabels(requireContext(), packages.map { AppInfo(packageName = it) })
+            appInfos = AppScanner.resolveLabels(requireContext(), packages.map { AppInfo(packageName = PackageName(it)) })
 
-            binding.statusText.text = "restic 快照共 ${packages.size} 个应用，点击恢复开始"
+            updateStatus("restic 快照共 ${packages.size} 个应用，点击恢复开始")
             binding.restoreButton.isEnabled = true
             setRunning(false)
             setupAppList()
@@ -383,6 +407,10 @@ class RestoreFragment : Fragment() {
 
     private fun setRunning(running: Boolean) {
         binding.progressBar.visibility = if (running) View.VISIBLE else View.GONE
+    }
+
+    private suspend fun updateStatus(text: String) {
+        binding.statusText.text = text
     }
 
     override fun onDestroyView() {

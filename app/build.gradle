@@ -1,6 +1,23 @@
 apply plugin: 'com.android.application'
 apply plugin: 'kotlin-android'
 apply plugin: 'kotlinx-serialization'
+apply plugin: 'org.jetbrains.kotlinx.kover'
+
+kover {
+    reports {
+        filters {
+            excludes {
+                classes(
+                    // Generated/auto classes
+                    "*.databinding.*",
+                    "*.BuildConfig",
+                    "*.R",
+                    "*.R\$*"
+                )
+            }
+        }
+    }
+}
 
 android {
     namespace "com.example.androidbackupgui"
@@ -38,6 +55,12 @@ android {
             }
         }
     }
+    testOptions {
+        unitTests.all {
+
+            useJUnitPlatform()
+        }
+    }
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_17
         targetCompatibility JavaVersion.VERSION_17
@@ -72,4 +95,9 @@ dependencies {
 
     // root shell via libsu (Magisk/KernelSU/APatch)
     implementation 'com.github.topjohnwu:libsu:6.0.0'
+    testImplementation "io.kotest:kotest-runner-junit5:5.9.1"
+    testImplementation "io.kotest:kotest-assertions-core:5.9.1"
+    testImplementation "io.kotest:kotest-property:5.9.1"
+    testImplementation "io.mockk:mockk:1.13.12"
+    testImplementation "org.jetbrains.kotlinx:kotlinx-coroutines-test:1.7.3"
 }
