@@ -47,6 +47,8 @@
         <item name="colorSurfaceContainerHigh">@color/surfaceContainerHigh</item>
         <item name="colorSurfaceContainerHighest">@color/surfaceContainerHighest</item>
 
+        <!-- Display cutout: allow content under punch-hole/notch, inset listener handles padding -->
+        <item name="android:windowLayoutInDisplayCutoutMode">always</item>
         <!-- Status bar -->
         <item name="android:statusBarColor">@android:color/transparent</item>
         <item name="android:navigationBarColor">@android:color/transparent</item>

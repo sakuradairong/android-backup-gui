@@ -3,6 +3,7 @@ package com.example.androidbackupgui.ui
 import android.content.Intent
 import android.os.Bundle
 import android.view.LayoutInflater
+import androidx.core.content.ContextCompat
 import android.view.View
 import android.view.ViewGroup
 import android.widget.AdapterView
@@ -169,7 +170,7 @@ class BackupFragment : Fragment() {
         serviceIntent.action = BackupService.ACTION_START_BACKUP
         serviceIntent.putExtra(BackupService.EXTRA_STATUS_TEXT, "正在备份 ${toBackup.size} 个应用…")
         try {
-            requireContext().startForegroundService(serviceIntent)
+            ContextCompat.startForegroundService(requireContext(), serviceIntent)
         } catch (_: Exception) {}
 
         viewLifecycleOwner.lifecycleScope.launch {

@@ -8,6 +8,8 @@ import kotlinx.coroutines.withContext
 import java.io.BufferedReader
 import java.io.File
 import kotlin.coroutines.coroutineContext
+import java.io.ByteArrayOutputStream
+import java.io.InputStream
 import kotlinx.serialization.Serializable
 
 /**
@@ -50,7 +52,7 @@ class ResticCommandRunner {
 
             val stdout = process.inputStream.bufferedReader().use(BufferedReader::readText)
             val exitCode = process.waitFor()
-            val stderrBytes = process.errorStream.readAllBytes()
+            val stderrBytes = process.errorStream.readAllBytesCompat()
             val stderrText = stderrBytes.decodeToString()
             Log.i(TAG, "runRestic exitCode=$exitCode stdout_len=${stdout.length}")
             if (stderrText.isNotEmpty()) Log.w(TAG, "runRestic stderr: ${stderrText.trim()}")
@@ -102,7 +104,7 @@ class ResticCommandRunner {
             } finally {
                 try { reader.close() } catch (_: Exception) {}
             }
-            val stderrBytes = try { process.errorStream.readAllBytes() } catch (_: Exception) { byteArrayOf() }
+            val stderrBytes = try { process.errorStream.readAllBytesCompat() } catch (_: Exception) { byteArrayOf() }
             val stderrText = stderrBytes.decodeToString().trim()
             val exitCode = try {
                 // Manual timeout loop (Process.waitFor(timeout,unit) requires API 26+)
@@ -137,4 +139,19 @@ class ResticCommandRunner {
             CommandResult("", e.message ?: "Unknown error", -1)
         }
     }
+}
+
+/**
+ * Compat implementation of InputStream.readAllBytes() for API < 33.
+ * Reads the entire stream into a byte array.
+ */
+private fun InputStream.readAllBytesCompat(): ByteArray {
+    val buffer = ByteArrayOutputStream()
+    val data = ByteArray(4096)
+    while (true) {
+        val n = read(data)
+        if (n == -1) break
+        buffer.write(data, 0, n)
+    }
+    return buffer.toByteArray()
 }
