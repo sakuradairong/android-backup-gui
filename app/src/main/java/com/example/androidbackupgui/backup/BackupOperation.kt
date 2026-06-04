@@ -1,5 +1,6 @@
 package com.example.androidbackupgui.backup
 
+import com.example.androidbackupgui.backup.ResticWrapper.SnapshotAppInfo
 import com.example.androidbackupgui.root.RootShell
 import android.util.Log
 import com.example.androidbackupgui.root.shellEscape
@@ -7,6 +8,7 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
+import org.json.JSONArray
 import org.json.JSONObject
 import kotlinx.serialization.Serializable
 import kotlinx.coroutines.coroutineScope
@@ -48,7 +50,11 @@ object BackupOperation {
      * @param config backup configuration
      * @param outputDir root output directory
      * @param userId Android user ID (0, 999, etc.)
-     * @param onProgress callback for UI updates
+     * @param includePkgs if non-empty, only backup apps whose package name is in this set;
+     *                    metadata (app_details.json, appList.txt) is still generated for all [apps].
+     * @param legacyApps metadata from a previous snapshot used to populate app_details.json
+     *                   for apps not in [apps] (keeps them in the cumulative snapshot record
+     *                   without requiring re-scans of possibly-uninstalled apps).
      */
     suspend fun backupApps(
         context: android.content.Context,
@@ -56,6 +62,9 @@ object BackupOperation {
         config: BackupConfig,
         outputDir: File,
         userId: String = "0",
+        noDataBackup: Set<String> = emptySet(),
+        includePkgs: Set<String> = emptySet(),
+        legacyApps: Map<String, SnapshotAppInfo>? = null,
         onProgress: suspend (BackupProgress) -> Unit = {}
     ): BackupResult = withContext(Dispatchers.IO) {
         val emit: suspend (BackupProgress) -> Unit = { p -> withContext(Dispatchers.Main) { onProgress(p) } }
@@ -66,28 +75,31 @@ object BackupOperation {
         backupRoot.mkdirs()
         LogUtil.i(TAG, "backupApps: starting backup of ${apps.size} apps to ${backupRoot.absolutePath}")
 
-        // Write app list
+        // Write app list — includes ALL packages in [apps] (selected + legacy from snapshot)
         val appListFile = File(backupRoot, "appList.txt")
         appListFile.writeText(apps.joinToString("\n") { it.packageName.value })
 
-        // Write metadata JSON
+        // Write metadata JSON — fresh metadata for selected apps, legacy for historical apps
         val metaFile = File(backupRoot, "app_details.json")
-        metaFile.writeText(buildAppDetailsJson(apps))
+        metaFile.writeText(buildAppDetailsJson(apps, legacyApps))
 
+        val backupTargets = if (includePkgs.isEmpty()) apps else apps.filter { it.packageName.value in includePkgs }
+        val totalCount = backupTargets.size
+        LogUtil.i(TAG, "backupApps: includePkgs=${includePkgs.size} targets=$totalCount")
         val semaphore = Semaphore(3)
         val successAtomic = AtomicInteger(0)
         val failAtomic = AtomicInteger(0)
         val skippedAtomic = AtomicInteger(0)
 
         coroutineScope {
-            apps.mapIndexed { index, app ->
+            backupTargets.mapIndexed { index, app ->
                 async {
                     semaphore.withPermit {
                         ensureActive()
                         val appDir = File(backupRoot, app.packageName.value)
                         appDir.mkdirs()
 
-                        emit(BackupProgress(index + 1, apps.size, app.packageName.value, "apk", "正在备份 APK…"))
+                        emit(BackupProgress(index + 1, totalCount, app.packageName.value, "apk", "正在备份 APK…"))
 
                         // 1. Backup APK
                         val paths = AppScanner.getApkPaths(app.packageName.value)
@@ -100,23 +112,27 @@ object BackupOperation {
 
                         if (!apkOk) {
                             failAtomic.incrementAndGet()
-                            emit(BackupProgress(index + 1, apps.size, app.packageName.value, "done", "APK 备份失败"))
+                            emit(BackupProgress(index + 1, totalCount, app.packageName.value, "done", "APK 备份失败"))
                             return@withPermit
                         }
 
                         // 1.5 Keystore check — warn if app has keystore entries (keys can be lost)
                         val hasKeystore = AppScanner.hasKeystore(app.packageName.value)
                         if (hasKeystore) {
-                            emit(BackupProgress(index + 1, apps.size, app.packageName.value, "data", "⚠ 此应用包含密钥库条目，备份后密钥可能会丢失"))
+                            emit(BackupProgress(index + 1, totalCount, app.packageName.value, "data", "⚠ 此应用包含密钥库条目，备份后密钥可能会丢失"))
                         }
 
                         // 2. Backup user data (if configured)
                         if (config.backupMode == 1 && config.backupUserData == 1) {
-                            emit(BackupProgress(index + 1, apps.size, app.packageName.value, "data", "正在备份数据…"))
-                            if (!backupUserData(context, app.packageName.value, appDir, userId, config.compressionMethod)) {
-                                failAtomic.incrementAndGet()
-                                emit(BackupProgress(index + 1, apps.size, app.packageName.value, "done", "数据备份失败"))
-                                return@withPermit
+                            if (app.packageName.value in noDataBackup) {
+                                emit(BackupProgress(index + 1, totalCount, app.packageName.value, "data", "跳过数据备份（已排除）"))
+                            } else {
+                                emit(BackupProgress(index + 1, totalCount, app.packageName.value, "data", "正在备份数据…"))
+                                if (!backupUserData(context, app.packageName.value, appDir, userId, config.compressionMethod)) {
+                                    failAtomic.incrementAndGet()
+                                    emit(BackupProgress(index + 1, totalCount, app.packageName.value, "done", "数据备份失败"))
+                                    return@withPermit
+                                }
                             }
                         }
 
@@ -124,17 +140,17 @@ object BackupOperation {
                         if (config.backupMode == 1 && config.backupObbData == 1) {
                             val hasObb = AppScanner.hasObbData(app.packageName.value)
                             if (hasObb) {
-                                emit(BackupProgress(index + 1, apps.size, app.packageName.value, "obb", "正在备份 OBB…"))
+                                emit(BackupProgress(index + 1, totalCount, app.packageName.value, "obb", "正在备份 OBB…"))
                                 if (!backupObb(app.packageName.value, appDir, config.compressionMethod)) {
                                     failAtomic.incrementAndGet()
-                                    emit(BackupProgress(index + 1, apps.size, app.packageName.value, "done", "OBB 备份失败"))
+                                    emit(BackupProgress(index + 1, totalCount, app.packageName.value, "done", "OBB 备份失败"))
                                     return@withPermit
                                 }
                             }
                         }
 
                         // 4. Backup SSAID
-                        emit(BackupProgress(index + 1, apps.size, app.packageName.value, "ssaid", "正在备份 SSAID…"))
+                        emit(BackupProgress(index + 1, totalCount, app.packageName.value, "ssaid", "正在备份 SSAID…"))
                         backupSsaid(app.packageName.value, appDir, userId)
 
                         // 4.5 Backup app icon
@@ -147,7 +163,7 @@ object BackupOperation {
                         backupPermissions(app.packageName.value, appDir)
 
                         successAtomic.incrementAndGet()
-                        emit(BackupProgress(index + 1, apps.size, app.packageName.value, "done", "完成"))
+                        emit(BackupProgress(index + 1, totalCount, app.packageName.value, "done", "完成"))
                     }
                 }
             }.awaitAll()
@@ -337,13 +353,35 @@ object BackupOperation {
         }
     }
 
-    private fun buildAppDetailsJson(apps: List<AppInfo>): String {
+    private suspend fun buildAppDetailsJson(
+        apps: List<AppInfo>,
+        legacyApps: Map<String, SnapshotAppInfo>? = null
+    ): String {
         val root = JSONObject()
+        // Generate fresh metadata for apps in the current app list
         for (app in apps) {
             val entry = JSONObject()
             entry.put("label", app.label)
             entry.put("isSystem", app.isSystem)
+            // Record APK file sizes for change detection in incremental backup
+            val paths = AppScanner.getApkPaths(app.packageName.value)
+            val sizes = paths.map { path ->
+                val result = RootShell.exec("stat -c%s '${path.shellEscape()}'")
+                if (result.isSuccess) result.output.trim().toLongOrNull() ?: 0L else 0L
+            }
+            entry.put("apkSizes", JSONArray(sizes))
             root.put(app.packageName.value, entry)
+        }
+        // Include legacy apps not in current app list with preserved metadata
+        val legacyMap = legacyApps ?: emptyMap()
+        for ((pkg, legacy) in legacyMap) {
+            if (!root.has(pkg)) {
+                val entry = JSONObject()
+                entry.put("label", legacy.label)
+                entry.put("isSystem", legacy.isSystem)
+                entry.put("apkSizes", JSONArray(legacy.apkSizes))
+                root.put(pkg, entry)
+            }
         }
         return root.toString(2)
     }

@@ -19,12 +19,15 @@ import com.google.android.material.color.MaterialColors
 class PackageListAdapter(
     private val apps: List<AppInfo>,
     private val selected: Set<String>,
-    private val onToggle: (String, Boolean) -> Unit
+    private val onToggle: (String, Boolean) -> Unit,
+    private val excludeDataFrom: Set<String> = emptySet(),
+    private val onExcludeDataToggle: ((String, Boolean) -> Unit)? = null
 ) : RecyclerView.Adapter<PackageListAdapter.ViewHolder>() {
 
     class ViewHolder(view: View) : RecyclerView.ViewHolder(view) {
         val checkbox: CheckBox = view.findViewById(R.id.checkbox)
         val textView: TextView = view.findViewById(R.id.appName)
+        val excludeToggle: TextView = view.findViewById(R.id.excludeToggle)
     }
 
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): ViewHolder {
@@ -55,21 +58,67 @@ class PackageListAdapter(
                 MaterialColors.getColor(ctx, com.google.android.material.R.attr.colorOnSurface, 0)
             )
         }
+        val et = TextView(ctx).apply {
+            id = R.id.excludeToggle
+            visibility = if (onExcludeDataToggle != null) View.VISIBLE else View.GONE
+            setPadding(res.getDimensionPixelSize(R.dimen.card_padding_horizontal), 0, 0, 0)
+            setTextSize(TypedValue.COMPLEX_UNIT_PX, res.getDimension(R.dimen.list_item_text_size) * 0.75f)
+            setTextColor(
+                MaterialColors.getColor(ctx, com.google.android.material.R.attr.colorOnSurfaceVariant, 0)
+            )
+        }
         layout.addView(cb)
         layout.addView(tv)
+        layout.addView(et)
         card.addView(layout)
-        return ViewHolder(card)
+
+        val holder = ViewHolder(card)
+        card.setOnClickListener {
+            val pos = holder.adapterPosition
+            if (pos == RecyclerView.NO_POSITION) return@setOnClickListener
+            val app = apps[pos]
+            val newChecked = !holder.checkbox.isChecked
+            // Temporarily suppress checkbox listener to avoid double-fire
+            holder.checkbox.setOnCheckedChangeListener(null)
+            holder.checkbox.isChecked = newChecked
+            holder.checkbox.setOnCheckedChangeListener { _, checked ->
+                onToggle(app.packageName.value, checked)
+            }
+            onToggle(app.packageName.value, newChecked)
+        }
+        return holder
     }
 
     override fun onBindViewHolder(holder: ViewHolder, position: Int) {
         val app = apps[position]
+        val pkg = app.packageName.value
         // Prefer app name (label), fall back to package name
-        holder.textView.text = app.label.ifEmpty { app.packageName.value }
+        holder.textView.text = app.label.ifEmpty { pkg }
         // Avoid re-triggering listener during bind
         holder.checkbox.setOnCheckedChangeListener(null)
-        holder.checkbox.isChecked = app.packageName.value in selected
+        holder.checkbox.isChecked = pkg in selected
         holder.checkbox.setOnCheckedChangeListener { _, checked ->
-            onToggle(app.packageName.value, checked)
+            onToggle(pkg, checked)
+        }
+        // Configure per-app data exclusion toggle
+        val toggle = holder.excludeToggle
+        val dataToggleCb = onExcludeDataToggle
+        if (dataToggleCb != null) {
+            toggle.visibility = View.VISIBLE
+            val excluded = pkg in excludeDataFrom
+            toggle.text = "数据"
+            toggle.paintFlags = if (excluded) {
+                toggle.paintFlags or android.graphics.Paint.STRIKE_THRU_TEXT_FLAG
+            } else {
+                toggle.paintFlags and android.graphics.Paint.STRIKE_THRU_TEXT_FLAG.inv()
+            }
+            toggle.isSelected = excluded
+            toggle.setOnClickListener {
+                dataToggleCb(pkg, !excluded)
+            }
+        } else {
+            toggle.visibility = View.GONE
+            toggle.setOnClickListener(null)
         }
     }
 

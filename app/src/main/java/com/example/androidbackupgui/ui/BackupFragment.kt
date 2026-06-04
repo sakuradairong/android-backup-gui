@@ -12,6 +12,7 @@ import androidx.fragment.app.Fragment
 import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.LinearLayoutManager
 import com.example.androidbackupgui.backup.AppInfo
+import com.example.androidbackupgui.backup.PackageName
 import com.example.androidbackupgui.backup.AppScanner
 import com.example.androidbackupgui.backup.BackupConfig
 import com.example.androidbackupgui.backup.BackupOperation
@@ -41,6 +42,7 @@ class BackupFragment : Fragment() {
     private var userList: List<Pair<Int, String>> = listOf(0 to "Owner")
     private var sortMode: SortMode = SortMode.NAME_ASC
     private var showSystemApps: Boolean = false
+    private var excludeDataFromBackup = mutableSetOf<String>()
 
     private enum class SortMode { NAME_ASC, SIZE_DESC }
 
@@ -56,10 +58,12 @@ class BackupFragment : Fragment() {
 
         val configFile = File(requireContext().filesDir, "backup_settings.conf")
         config = BackupConfig.fromFile(configFile)
+        updateOutputPathDisplay()
 
         binding.appList.layoutManager = LinearLayoutManager(requireContext())
 
         binding.scanButton.setOnClickListener { scanApps() }
+        binding.outputPathEdit.setOnClickListener { showOutputPathEditDialog() }
         binding.backupButton.setOnClickListener { startBackup() }
 
         // Sort/filter controls
@@ -110,6 +114,11 @@ class BackupFragment : Fragment() {
 
     override fun onResume() {
         super.onResume()
+        if (::config.isInitialized) {
+            val configFile = File(requireContext().filesDir, "backup_settings.conf")
+            config = BackupConfig.fromFile(configFile)
+            updateOutputPathDisplay()
+        }
     }
 
     private fun scanApps() {
@@ -149,26 +158,24 @@ class BackupFragment : Fragment() {
         setupAppList()
         binding.statusText.text = "已选择 ${selectedApps.size}/${sortedApps.size} 个应用"
     }
-
     private fun setupAppList() {
         val displayApps = sortedApps.ifEmpty { apps }
-        binding.appList.adapter = PackageListAdapter(displayApps, selectedApps) { pkg, checked ->
-            if (checked) selectedApps.add(pkg) else selectedApps.remove(pkg)
-            binding.statusText.text = "已选择 ${selectedApps.size}/${displayApps.size} 个应用"
-        }
+        binding.appList.adapter = PackageListAdapter(
+            displayApps, selectedApps,
+            onToggle = { pkg, checked ->
+                if (checked) selectedApps.add(pkg) else selectedApps.remove(pkg)
+                binding.statusText.text = "已选择 ${selectedApps.size}/${displayApps.size} 个应用"
+            },
+            excludeDataFrom = excludeDataFromBackup,
+            onExcludeDataToggle = { pkg, excluded ->
+                if (excluded) excludeDataFromBackup.add(pkg) else excludeDataFromBackup.remove(pkg)
+            }
+        )
     }
 
     private fun startBackup() {
         val toBackup = apps.filter { it.packageName.value in selectedApps }
         if (toBackup.isEmpty()) return
-
-        // Check restic local repo availability before doing any work
-        if (config.resticEnabled == 1 && config.resticRepo.isNotBlank() &&
-            config.resticBackend == "local" && !File(config.resticRepo, "config").exists()
-        ) {
-            binding.statusText.text = "restic 本地仓库未初始化，请先在设置中初始化"
-            return
-        }
 
         setRunning(true)
         binding.backupButton.isEnabled = false
@@ -187,14 +194,108 @@ class BackupFragment : Fragment() {
                 val outputDir = File(config.outputPath.ifEmpty {
                     requireContext().filesDir.absolutePath
                 })
+
+                // ── Restic pre-flight: load snapshot metadata for cumulative merge ──
+                var snapshotApps: Map<String, ResticWrapper.SnapshotAppInfo>? = null
+                if (config.resticEnabled == 1 && config.resticRepo.isNotBlank()) {
+                    updateStatus("正在检查 restic 历史快照…")
+
+                    if (config.resticBackend == "local" && !File(config.resticRepo, "config").exists()) {
+                        updateStatus("restic 本地仓库未初始化，请先在设置中初始化")
+                        return@launch
+                    }
+
+                    val binaryPath = ResticBinary.prepare(requireContext())
+                    if (binaryPath != null) {
+                        ResticWrapper.binaryPath = binaryPath
+                        ResticWrapper.tempRepoDir = ResticBinary.getTempRepoDir(requireContext())
+                        ResticWrapper.backendDomain = config.resticBackendDomain
+
+                        snapshotApps = ResticWrapper.getLatestSnapshotAppDetails(
+                            repoPath = config.resticRepo,
+                            password = config.resticPassword,
+                            backend = config.resticBackend,
+                            backendUrl = config.resticBackendUrl,
+                            backendUser = config.resticBackendUser,
+                            backendPass = config.resticBackendPass,
+                            backendShare = config.resticBackendShare
+                        )
+                        if (snapshotApps != null) {
+                            updateStatus("发现历史快照，将合并为累积备份")
+                        }
+                    }
+                }
+
+                // ── Build merged app list for cumulative snapshot ──
+                val selectedPkgs = toBackup.map { it.packageName.value }.toSet()
+                val allApps: List<AppInfo>
+                val includePkgs: Set<String>
+
+                if (snapshotApps != null) {
+                    // Create placeholder AppInfo entries for packages from the snapshot
+                    // that are NOT in the current selection. These won't be re-backed-up
+                    // but their metadata is preserved via legacyApps.
+                    val snapshotOnly = snapshotApps.keys.filter { it !in selectedPkgs }
+                    val legacyEntries = snapshotOnly.mapNotNull { pkg ->
+                        val snap = snapshotApps[pkg] ?: return@mapNotNull null
+                        AppInfo(
+                            packageName = PackageName(pkg),
+                            label = snap.label,
+                            isSystem = snap.isSystem
+                        )
+                    }
+                    allApps = toBackup + legacyEntries
+                    includePkgs = selectedPkgs
+                    val snapCount = legacyEntries.size
+                    if (snapCount > 0) {
+                        updateStatus("累积备份: ${allApps.size} 个应用 ($snapCount 个来自历史快照)")
+                    }
+
+                    // Restore latest snapshot to populate directories for unchanged apps
+                    updateStatus("正在恢复历史快照…")
+                    val backupRoot = File(outputDir, "Backup_${config.compressionMethod}_${selectedUserId}")
+                    backupRoot.mkdirs()
+                    val snapsResult = ResticWrapper.listSnapshots(
+                        repoPath = config.resticRepo,
+                        password = config.resticPassword,
+                        backend = config.resticBackend,
+                        backendUrl = config.resticBackendUrl,
+                        backendUser = config.resticBackendUser,
+                        backendPass = config.resticBackendPass,
+                        backendShare = config.resticBackendShare
+                    )
+                    val latestSnap = (snapsResult as? AppResult.Success)?.data?.firstOrNull()
+                    if (latestSnap != null) {
+                        ResticWrapper.restore(
+                            repoPath = config.resticRepo,
+                            password = config.resticPassword,
+                            snapshotId = latestSnap.shortId,
+                            targetPath = backupRoot.absolutePath,
+                            backend = config.resticBackend,
+                            backendUrl = config.resticBackendUrl,
+                            backendUser = config.resticBackendUser,
+                            backendPass = config.resticBackendPass,
+                            backendShare = config.resticBackendShare
+                        )
+                    }
+                } else {
+                    allApps = toBackup
+                    includePkgs = emptySet()
+                }
+
+                // ── Execute backup (with cumulative metadata) ──
+                updateStatus("正在备份: ${allApps.size} 个应用…")
                 val result = BackupOperation.backupApps(
                     context = requireContext(),
-                    apps = toBackup,
+                    apps = allApps,
                     config = config,
                     outputDir = outputDir,
                     userId = selectedUserId.toString(),
+                    noDataBackup = excludeDataFromBackup.toSet(),
+                    includePkgs = includePkgs,
+                    legacyApps = snapshotApps,
                     onProgress = { progress ->
-                        val label = toBackup.find { it.packageName.value == progress.packageName }?.label
+                        val label = allApps.find { it.packageName.value == progress.packageName }?.label
                         val name = label?.ifEmpty { progress.packageName } ?: progress.packageName
                         updateStatus("[${progress.current}/${progress.total}] $name: ${progress.message}")
                     }
@@ -259,9 +360,9 @@ class BackupFragment : Fragment() {
                             is AppResult.Failure -> {
                                 resticError = resticResult.error.message
                                 updateStatus("restic 快照失败: ${resticResult.error.message}")
+                            }
                         }
                     }
-                }
                 }
 
                 updateStatus(buildString {
@@ -269,6 +370,7 @@ class BackupFragment : Fragment() {
                     appendLine("成功: ${result.successCount}  失败: ${result.failCount}")
                     appendLine("耗时: ${result.elapsedMs / 1000}秒")
                     appendLine("输出: ${result.outputDir}")
+                    appendLine("模式: 累积快照")
                     val summary = resticSummary
                     if (summary != null) {
                         appendLine()
@@ -310,6 +412,31 @@ class BackupFragment : Fragment() {
 
     private suspend fun updateStatus(text: String) {
         withContext(Dispatchers.Main) { binding.statusText.text = text }
+    }
+
+    private fun updateOutputPathDisplay() {
+        val path = config.outputPath.ifEmpty { requireContext().filesDir.absolutePath }
+        binding.outputPathLabel.text = path
+    }
+
+
+
+    private fun showOutputPathEditDialog() {
+        val editText = android.widget.EditText(requireContext()).apply {
+            setText(config.outputPath)
+            hint = requireContext().filesDir.absolutePath
+        }
+        com.google.android.material.dialog.MaterialAlertDialogBuilder(requireContext())
+            .setTitle("修改输出目录")
+            .setView(editText)
+            .setPositiveButton("确定") { _, _ ->
+                val newPath = editText.text.toString().trim()
+                config = config.copy(outputPath = newPath)
+                BackupConfig.toFile(config, File(requireContext().filesDir, "backup_settings.conf"))
+                updateOutputPathDisplay()
+            }
+            .setNegativeButton("取消", null)
+            .show()
     }
 
     override fun onDestroyView() {

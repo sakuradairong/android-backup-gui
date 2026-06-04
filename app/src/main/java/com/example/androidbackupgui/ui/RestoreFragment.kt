@@ -292,10 +292,13 @@ class RestoreFragment : Fragment() {
     }
 
     private fun setupAppList() {
-        binding.appList.adapter = PackageListAdapter(appInfos, selectedPackages) { pkg, checked ->
-            if (checked) selectedPackages.add(pkg) else selectedPackages.remove(pkg)
-            binding.statusText.text = "已选择 ${selectedPackages.size}/${packages.size} 个应用"
-        }
+        binding.appList.adapter = PackageListAdapter(
+            appInfos, selectedPackages,
+            onToggle = { pkg, checked ->
+                if (checked) selectedPackages.add(pkg) else selectedPackages.remove(pkg)
+                binding.statusText.text = "已选择 ${selectedPackages.size}/${packages.size} 个应用"
+            }
+        )
     }
 
     private fun startRestore() {

@@ -5,6 +5,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.isActive
 import java.io.File
 import kotlinx.coroutines.withContext
+import org.json.JSONObject
 import kotlin.coroutines.coroutineContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.SerialName
@@ -82,6 +83,13 @@ object ResticWrapper {
         val paths: List<String>,
         val tags: List<String>,
         val hostname: String = ""
+    )
+
+    /** App metadata read from a restic snapshot for change detection. */
+    data class SnapshotAppInfo(
+        val label: String,
+        val isSystem: Boolean,
+        val apkSizes: List<Long> = emptyList()
     )
 
     // ── Repository lifecycle ─────────────────────────
@@ -221,6 +229,80 @@ object ResticWrapper {
         backend, backendUrl, backendUser, backendPass, backendShare,
         onSyncProgress, onByteSyncProgress
     )
+
+    /**
+     * Read [app_details.json] from the latest restic snapshot and return a map
+     * of package-name → [SnapshotAppInfo]. Returns `null` when no snapshots
+     * exist or the file cannot be read (e.g. first backup, legacy format).
+     */
+    suspend fun getLatestSnapshotAppDetails(
+        repoPath: String,
+        password: String,
+        backend: String = "local",
+        backendUrl: String = "",
+        backendUser: String = "",
+        backendPass: String = "",
+        backendShare: String = "",
+        onSyncProgress: suspend (RemoteTransport.TransferProgress) -> Unit = {},
+        onByteSyncProgress: suspend (RemoteTransport.ByteProgress) -> Unit = {},
+    ): Map<String, SnapshotAppInfo>? = withContext(Dispatchers.IO) {
+        val snapsResult = snapshotOps.listSnapshots(
+            repoPath, password, tag = null,
+            backend, backendUrl, backendUser, backendPass, backendShare,
+            onSyncProgress, onByteSyncProgress
+        )
+        val snaps = when (snapsResult) {
+            is AppResult.Failure -> {
+                Log.w(TAG, "getLatestSnapshotAppDetails: listSnapshots failed: ${snapsResult.error.message}")
+                null
+            }
+            is AppResult.Success -> snapsResult.data
+        } ?: return@withContext null
+
+        if (snaps.isEmpty()) return@withContext null
+
+        val latestId = snaps.first().shortId
+        val basePath = snaps.first().paths.firstOrNull()?.trimEnd('/') ?: return@withContext null
+
+        val dumpResult = restoreOp.dump(
+            repoPath, password, latestId, "$basePath/app_details.json",
+            backend, backendUrl, backendUser, backendPass, backendShare,
+            onSyncProgress, onByteSyncProgress
+        )
+
+        val jsonStr = when (dumpResult) {
+            is AppResult.Failure -> return@withContext null
+            is AppResult.Success -> dumpResult.data
+        }
+
+        return@withContext parseAppDetailsJson(jsonStr)
+    }
+
+    /** Parse [app_details.json] content into a package-name → [SnapshotAppInfo] map. */
+    internal fun parseAppDetailsJson(jsonStr: String): Map<String, SnapshotAppInfo> {
+        val map = mutableMapOf<String, SnapshotAppInfo>()
+        try {
+            val root = JSONObject(jsonStr)
+            for (key in root.keys()) {
+                val entry = root.optJSONObject(key) ?: continue
+                val sizes = mutableListOf<Long>()
+                val sizesArr = entry.optJSONArray("apkSizes")
+                if (sizesArr != null) {
+                    for (i in 0 until sizesArr.length()) {
+                        sizes.add(sizesArr.optLong(i, 0L))
+                    }
+                }
+                map[key] = SnapshotAppInfo(
+                    label = entry.optString("label", key),
+                    isSystem = entry.optBoolean("isSystem", false),
+                    apkSizes = sizes
+                )
+            }
+        } catch (_: Exception) {
+            Log.w(TAG, "parseAppDetailsJson: failed to parse JSON")
+        }
+        return map
+    }
 
     // ── Maintenance ────────────────────────────────────
 

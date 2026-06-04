@@ -2,4 +2,5 @@
 <resources>
     <item name="checkbox" type="id" />
     <item name="appName" type="id" />
+    <item name="excludeToggle" type="id" />
 </resources>
