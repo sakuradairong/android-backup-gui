@@ -56,6 +56,21 @@ data class ResticForm(
     val backendShare: String, val backendDomain: String
 )
 
+/**
+ * 类型安全的一键操作生命周期事件。
+ * [ConfigFragment] 应对此进行收集以触发一次性 UI 效果。
+ */
+sealed interface OperationEvent {
+    data object InitStarted : OperationEvent
+    data object InitCompleted : OperationEvent
+    data object InitFailed : OperationEvent
+    data object StatsStarted : OperationEvent
+    data object StatsCompleted : OperationEvent
+    data object PruneStarted : OperationEvent
+    data object PruneFailed : OperationEvent
+    data object PruneCompleted : OperationEvent
+}
+
 class ConfigViewModel(application: Application) : AndroidViewModel(application) {
 
     companion object {
@@ -92,6 +107,10 @@ class ConfigViewModel(application: Application) : AndroidViewModel(application) 
         File(getApplication<Application>().filesDir, CONFIG_FILE_NAME)
     }
 
+    /** One-shot operation lifecycle events (e.g. "operation started", "operation completed"). */
+    private val _operationEvents = MutableSharedFlow<OperationEvent>(extraBufferCapacity = 4)
+    val operationEvents: SharedFlow<OperationEvent> = _operationEvents.asSharedFlow()
+
     private val _uiState = MutableStateFlow(ConfigUiState())
     val uiState: StateFlow<ConfigUiState> = _uiState.asStateFlow()
 
@@ -126,8 +145,10 @@ class ConfigViewModel(application: Application) : AndroidViewModel(application) 
      * The caller passes the current form values as a [BackupConfig] copy.
      */
     fun save(formConfig: BackupConfig) {
-        viewModelScope.launch(Dispatchers.IO) {
-            BackupConfig.toFile(formConfig, configFile)
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) {
+                BackupConfig.toFile(formConfig, configFile)
+            }
             _uiState.update {
                 it.copy(resticStatus = it.resticStatus.copy(message = "配置已保存到 $configFile"))
             }
@@ -168,27 +189,31 @@ class ConfigViewModel(application: Application) : AndroidViewModel(application) 
         ))}
 
         viewModelScope.launch {
-            val result = ResticWrapper.init(form.repo, form.password,
-                backend = form.backend, backendUrl = form.backendUrl,
-                backendUser = form.backendUser, backendPass = form.backendPass,
-                backendShare = form.backendShare,
-                onSyncProgress = { p -> onSyncProgress(p) },
-                onByteSyncProgress = { p -> onByteProgress(p) },
-            )
-            result.fold(
-                onSuccess = {
+            try {
+                _operationEvents.emit(OperationEvent.InitStarted)
+                val result = ResticWrapper.init(form.repo, form.password,
+                    backend = form.backend, backendUrl = form.backendUrl,
+                    backendUser = form.backendUser, backendPass = form.backendPass,
+                    backendShare = form.backendShare,
+                    onSyncProgress = { p -> onSyncProgress(p) },
+                    onByteSyncProgress = { p -> onByteProgress(p) },
+                )
+                if (result.isSuccess) {
+                    _operationEvents.emit(OperationEvent.InitCompleted)
                     _uiState.update { it.copy(resticStatus = it.resticStatus.copy(
                         message = "仓库初始化成功: ${form.repo}", initButtonEnabled = true
                     ))}
                     refreshResticStatus(form)
-                },
-                onFailure = { e ->
-                    Log.e(TAG, "initResticRepo failed", e)
+                } else {
+                    _operationEvents.emit(OperationEvent.InitFailed)
+                    Log.e(TAG, "initResticRepo failed: ${result.exceptionOrNull()?.message}")
                     _uiState.update { it.copy(resticStatus = it.resticStatus.copy(
-                        message = "初始化失败: ${e.message}", initButtonEnabled = true
+                        message = "初始化失败: ${result.exceptionOrNull()?.message}", initButtonEnabled = true
                     ))}
                 }
-            )
+            } finally {
+                _uiState.update { it.copy(resticStatus = it.resticStatus.copy(initButtonEnabled = true)) }
+            }
         }
     }
 
@@ -235,41 +260,46 @@ class ConfigViewModel(application: Application) : AndroidViewModel(application) 
             }
         }
     }
-
     fun showResticStats(form: ResticForm) {
         _uiState.update { it.copy(resticStatus = it.resticStatus.copy(
             message = "正在读取统计…", statsButtonEnabled = false
         ))}
 
         viewModelScope.launch {
-            val statsResult = ResticWrapper.stats(form.repo, form.password,
-                backend = form.backend, backendUrl = form.backendUrl,
-                backendUser = form.backendUser, backendPass = form.backendPass,
-                backendShare = form.backendShare,
-                onSyncProgress = { p -> onSyncProgress(p) },
-                onByteSyncProgress = { p -> onByteProgress(p) },
-            )
-            val snapshotsResult = ResticWrapper.listSnapshots(form.repo, form.password,
-                backend = form.backend, backendUrl = form.backendUrl,
-                backendUser = form.backendUser, backendPass = form.backendPass,
-                backendShare = form.backendShare,
-                onSyncProgress = { p -> onSyncProgress(p) },
-                onByteSyncProgress = { p -> onByteProgress(p) },
-            )
+            try {
+                _operationEvents.emit(OperationEvent.StatsStarted)
+                val statsResult = ResticWrapper.stats(form.repo, form.password,
+                    backend = form.backend, backendUrl = form.backendUrl,
+                    backendUser = form.backendUser, backendPass = form.backendPass,
+                    backendShare = form.backendShare,
+                    onSyncProgress = { p -> onSyncProgress(p) },
+                    onByteSyncProgress = { p -> onByteProgress(p) },
+                )
+                val snapshotsResult = ResticWrapper.listSnapshots(form.repo, form.password,
+                    backend = form.backend, backendUrl = form.backendUrl,
+                    backendUser = form.backendUser, backendPass = form.backendPass,
+                    backendShare = form.backendShare,
+                    onSyncProgress = { p -> onSyncProgress(p) },
+                    onByteSyncProgress = { p -> onByteProgress(p) },
+                )
 
-            val snapshotCount = snapshotsResult.getOrDefault(emptyList()).size
-            _uiState.update { it.copy(resticStatus = it.resticStatus.copy(
-                message = buildString {
-                    appendLine("快照数: $snapshotCount")
-                    if (statsResult.isSuccess) {
-                        appendLine(statsResult.getOrDefault(""))
-                    } else {
-                        appendLine("统计读取失败: ${statsResult.exceptionOrNull()?.message}")
-                    }
-                },
-                snapshotCount = snapshotCount,
-                statsButtonEnabled = true
-            ))}
+                val snapshotCount = snapshotsResult.getOrDefault(emptyList()).size
+                _uiState.update { it.copy(resticStatus = it.resticStatus.copy(
+                    message = buildString {
+                        appendLine("快照数: $snapshotCount")
+                        if (statsResult.isSuccess) {
+                            appendLine(statsResult.getOrDefault(""))
+                        } else {
+                            appendLine("统计读取失败: ${statsResult.errorOrNull()?.message}")
+                        }
+                    },
+                    snapshotCount = snapshotCount,
+                    statsButtonEnabled = true
+                ))}
+                _operationEvents.emit(OperationEvent.StatsCompleted)
+            } finally {
+                _uiState.update { it.copy(resticStatus = it.resticStatus.copy(statsButtonEnabled = true)) }
+            }
         }
     }
 
@@ -280,38 +310,49 @@ class ConfigViewModel(application: Application) : AndroidViewModel(application) 
         ))}
 
         viewModelScope.launch {
-            val forgetResult = ResticWrapper.forget(form.repo, form.password,
-                keepDaily = 7, keepWeekly = 4, keepMonthly = 3,
-                backend = form.backend, backendUrl = form.backendUrl,
-                backendUser = form.backendUser, backendPass = form.backendPass,
-                backendShare = form.backendShare,
-                onSyncProgress = { p -> onSyncProgress(p) },
-                onByteSyncProgress = { p -> onByteProgress(p) },
-            )
-            if (forgetResult.isFailure) {
+            try {
+                _operationEvents.emit(OperationEvent.PruneStarted)
+                val forgetResult = ResticWrapper.forget(form.repo, form.password,
+                    keepDaily = 7, keepWeekly = 4, keepMonthly = 3,
+                    backend = form.backend, backendUrl = form.backendUrl,
+                    backendUser = form.backendUser, backendPass = form.backendPass,
+                    backendShare = form.backendShare,
+                    onSyncProgress = { p -> onSyncProgress(p) },
+                    onByteSyncProgress = { p -> onByteProgress(p) },
+                )
+                if (forgetResult.isFailure) {
+                    _operationEvents.emit(OperationEvent.PruneFailed)
+                    _uiState.update { it.copy(resticStatus = it.resticStatus.copy(
+                        message = "forget 失败: ${forgetResult.exceptionOrNull()?.message}",
+                        pruneButtonEnabled = true
+                    ))}
+                    return@launch
+                }
+
+                _uiState.update { it.copy(resticStatus = it.resticStatus.copy(message = "正在回收空间…")) }
+
+                val pruneResult = ResticWrapper.prune(form.repo, form.password,
+                    backend = form.backend, backendUrl = form.backendUrl,
+                    backendUser = form.backendUser, backendPass = form.backendPass,
+                    backendShare = form.backendShare,
+                    onSyncProgress = { p -> onSyncProgress(p) },
+                    onByteSyncProgress = { p -> onByteProgress(p) },
+                )
                 _uiState.update { it.copy(resticStatus = it.resticStatus.copy(
-                    message = "forget 失败: ${forgetResult.exceptionOrNull()?.message}",
+                    message = if (pruneResult.isSuccess)
+                        "清理完成！\n${pruneResult.getOrDefault("")}"
+                    else
+                        "prune 失败: ${pruneResult.exceptionOrNull()?.message}",
                     pruneButtonEnabled = true
                 ))}
-                return@launch
+                if (pruneResult.isSuccess) {
+                    _operationEvents.emit(OperationEvent.PruneCompleted)
+                } else {
+                    _operationEvents.emit(OperationEvent.PruneFailed)
+                }
+            } finally {
+                _uiState.update { it.copy(resticStatus = it.resticStatus.copy(pruneButtonEnabled = true)) }
             }
-
-            _uiState.update { it.copy(resticStatus = it.resticStatus.copy(message = "正在回收空间…")) }
-
-            val pruneResult = ResticWrapper.prune(form.repo, form.password,
-                backend = form.backend, backendUrl = form.backendUrl,
-                backendUser = form.backendUser, backendPass = form.backendPass,
-                backendShare = form.backendShare,
-                onSyncProgress = { p -> onSyncProgress(p) },
-                onByteSyncProgress = { p -> onByteProgress(p) },
-            )
-            _uiState.update { it.copy(resticStatus = it.resticStatus.copy(
-                message = if (pruneResult.isSuccess)
-                    "清理完成！\n${pruneResult.getOrDefault("")}"
-                else
-                    "prune 失败: ${pruneResult.exceptionOrNull()?.message}",
-                pruneButtonEnabled = true
-            ))}
         }
     }
 
