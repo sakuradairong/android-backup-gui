@@ -51,8 +51,27 @@ class ResticCommandRunner {
             val process = pb.start()
 
             val stdout = process.inputStream.bufferedReader().use(BufferedReader::readText)
-            val exitCode = process.waitFor()
-            val stderrBytes = process.errorStream.readAllBytesCompat()
+            val stderrBytes = process.errorStream.use { it.readAllBytesCompat() }
+            val exitCode = try {
+                val deadline = System.currentTimeMillis() + 60_000
+                var exited = false
+                while (System.currentTimeMillis() < deadline && !exited) {
+                    try {
+                        process.exitValue()
+                        exited = true
+                    } catch (_: IllegalThreadStateException) {
+                        Thread.sleep(100)
+                    }
+                }
+                if (exited) {
+                    process.exitValue()
+                } else {
+                    Log.w(TAG, "runRestic: process did not exit within 60s, destroying")
+                    process.destroy()
+                    process.waitFor()
+                    process.exitValue()
+                }
+            } catch (_: Exception) { -1 }
             val stderrText = stderrBytes.decodeToString()
             Log.i(TAG, "runRestic exitCode=$exitCode stdout_len=${stdout.length}")
             if (stderrText.isNotEmpty()) Log.w(TAG, "runRestic stderr: ${stderrText.trim()}")
@@ -104,7 +123,7 @@ class ResticCommandRunner {
             } finally {
                 try { reader.close() } catch (_: Exception) {}
             }
-            val stderrBytes = try { process.errorStream.readAllBytesCompat() } catch (_: Exception) { byteArrayOf() }
+            val stderrBytes = try { process.errorStream.use { it.readAllBytesCompat() } } catch (_: Exception) { byteArrayOf() }
             val stderrText = stderrBytes.decodeToString().trim()
             val exitCode = try {
                 // Manual timeout loop (Process.waitFor(timeout,unit) requires API 26+)

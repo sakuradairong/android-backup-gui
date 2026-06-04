@@ -5,6 +5,7 @@ import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.androidbackupgui.backup.BackupConfig
+import com.example.androidbackupgui.backup.formatSize
 import com.example.androidbackupgui.backup.ResticBinary
 import com.example.androidbackupgui.backup.ResticWrapper
 import com.example.androidbackupgui.backup.RemoteTransport
@@ -20,7 +21,6 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import java.io.File
-import java.util.Locale
 
 /** UI-visible state driven by [ConfigViewModel]. */
 data class ConfigUiState(
@@ -94,13 +94,6 @@ class ConfigViewModel(application: Application) : AndroidViewModel(application) 
             )
         }
 
-        fun formatSize(bytes: Long): String {
-            if (bytes < 1024) return "$bytes B"
-            val units = arrayOf("KB", "MB", "GB", "TB")
-            val exp = (63 - bytes.countLeadingZeroBits()) / 10
-            val value = bytes.toDouble() / (1L shl (exp * 10))
-            return "%.1f %s".format(Locale.US, value, units[exp - 1].coerceAtMost(units.last()))
-        }
     }
 
     private val configFile: File by lazy {
@@ -108,7 +101,7 @@ class ConfigViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     /** One-shot operation lifecycle events (e.g. "operation started", "operation completed"). */
-    private val _operationEvents = MutableSharedFlow<OperationEvent>(extraBufferCapacity = 4)
+    private val _operationEvents = MutableSharedFlow<OperationEvent>(extraBufferCapacity = 16)
     val operationEvents: SharedFlow<OperationEvent> = _operationEvents.asSharedFlow()
 
     private val _uiState = MutableStateFlow(ConfigUiState())

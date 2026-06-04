@@ -17,7 +17,7 @@ import com.example.androidbackupgui.backup.BackupConfig
 import com.example.androidbackupgui.databinding.FragmentConfigBinding
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 import com.example.androidbackupgui.backup.ResticWrapper
 
 class ConfigFragment : Fragment() {
@@ -248,11 +248,12 @@ class ConfigFragment : Fragment() {
     }
 
     override fun onDestroyView() {
-        super.onDestroyView()
-        // Fallback: cleanup restic temp files in case ViewModel.onCleared() scope was cancelled
-        runBlocking(Dispatchers.IO) {
-            ResticWrapper.cleanup()
+        lifecycleScope.launch {
+            withContext(Dispatchers.IO) {
+                ResticWrapper.cleanup()
+            }
         }
+        super.onDestroyView()
         _binding = null
     }
 }

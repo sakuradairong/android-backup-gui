@@ -20,7 +20,7 @@ data class DataSizes(
 @Serializable
 data class AppInfo(
     val packageName: PackageName,
-    var label: String = "",
+    val label: String = "",
     val isSystem: Boolean = false,
     val apkPaths: List<String> = emptyList(),
     val hasObb: Boolean = false,
@@ -79,15 +79,15 @@ object AppScanner {
     fun resolveLabels(context: Context, packages: List<AppInfo>): List<AppInfo> {
         if (packages.isEmpty()) return packages
         val pm = context.packageManager
-        for (app in packages) {
-            app.label = try {
+        return packages.map { app ->
+            val resolvedLabel = try {
                 val ai = pm.getApplicationInfo(app.packageName.value, 0)
                 pm.getApplicationLabel(ai).toString()
             } catch (_: PackageManager.NameNotFoundException) {
                 app.packageName.value
             }
+            app.copy(label = resolvedLabel)
         }
-        return packages
     }
 
     /** Get APK paths for a package. */

@@ -24,7 +24,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
-import java.util.Locale
+import com.example.androidbackupgui.backup.formatSize
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlin.coroutines.resume
 
@@ -80,16 +80,20 @@ class RestoreFragment : Fragment() {
 
     private fun loadUsers() {
         viewLifecycleOwner.lifecycleScope.launch {
-            userList = AppScanner.enumerateUsers()
-            val names = userList.map { (id, name) -> "$name (ID: $id)" }
-            val adapter = ArrayAdapter(requireContext(), android.R.layout.simple_spinner_item, names)
-            adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
-            binding.userSelector.adapter = adapter
-            binding.userSelector.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
-                override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
-                    selectedUserId = userList.getOrNull(position)?.first ?: 0
+            try {
+                userList = AppScanner.enumerateUsers()
+                val names = userList.map { (id, name) -> "$name (ID: $id)" }
+                val adapter = ArrayAdapter(requireContext(), android.R.layout.simple_spinner_item, names)
+                adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+                binding.userSelector.adapter = adapter
+                binding.userSelector.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+                    override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                        selectedUserId = userList.getOrNull(position)?.first ?: 0
+                    }
+                    override fun onNothingSelected(parent: AdapterView<*>?) {}
                 }
-                override fun onNothingSelected(parent: AdapterView<*>?) {}
+            } catch (e: Exception) {
+                binding.statusText.text = "加载用户失败: ${e.message}"
             }
         }
     }
@@ -177,79 +181,84 @@ class RestoreFragment : Fragment() {
         binding.statusText.text = "正在同步远程仓库到本地…"
 
         viewLifecycleOwner.lifecycleScope.launch {
-            val snapshotsResult = ResticWrapper.listSnapshots(
-                config.resticRepo, config.resticPassword,
-                backend = config.resticBackend,
-                backendUrl = config.resticBackendUrl,
-                backendUser = config.resticBackendUser,
-                backendPass = config.resticBackendPass,
-                backendShare = config.resticBackendShare,
-                onSyncProgress = { p ->
-                    updateStatus("同步中: ${p.current}/${p.total} [${p.currentFile}]")
-                },
-                onByteSyncProgress = { bp ->
-                    updateStatus("下载中: ${bp.bytesTransferred / 1024 / 1024} MB / ${bp.totalBytes / 1024 / 1024} MB")
-                }
-            )
-            if (snapshotsResult.isFailure) {
-                updateStatus("读取快照失败: ${snapshotsResult.exceptionOrNull()?.message}")
-                setRunning(false)
-                return@launch
-            }
-
-            val snapshots = snapshotsResult.getOrThrow()
-            if (snapshots.isEmpty()) {
-                updateStatus("没有可用的 restic 快照")
-                setRunning(false)
-                return@launch
-            }
-
-            // 多快照时让用户选择，单个快照自动选
-            val chosenSnapshot = if (snapshots.size == 1) {
-                snapshots.first()
-            } else {
-                pickSnapshot(snapshots) ?: run {
-                    updateStatus("已取消选择")
+            try {
+                val snapshotsResult = ResticWrapper.listSnapshots(
+                    config.resticRepo, config.resticPassword,
+                    backend = config.resticBackend,
+                    backendUrl = config.resticBackendUrl,
+                    backendUser = config.resticBackendUser,
+                    backendPass = config.resticBackendPass,
+                    backendShare = config.resticBackendShare,
+                    onSyncProgress = { p ->
+                        updateStatus("同步中: ${p.current}/${p.total} [${p.currentFile}]")
+                    },
+                    onByteSyncProgress = { bp ->
+                        updateStatus("下载中: ${bp.bytesTransferred / 1024 / 1024} MB / ${bp.totalBytes / 1024 / 1024} MB")
+                    }
+                )
+                if (snapshotsResult.isFailure) {
+                    updateStatus("读取快照失败: ${snapshotsResult.exceptionOrNull()?.message}")
                     setRunning(false)
                     return@launch
                 }
-            }
 
-            // Switch to restic source
-            backupDir = null
-            selectedSnapshot = chosenSnapshot
-            val backupPath = selectedSnapshot!!.paths.firstOrNull() ?: run {
-                updateStatus("快照中找不到备份路径")
+                val snapshots = snapshotsResult.getOrThrow()
+                if (snapshots.isEmpty()) {
+                    updateStatus("没有可用的 restic 快照")
+                    setRunning(false)
+                    return@launch
+                }
+
+                // 多快照时让用户选择，单个快照自动选
+                val chosenSnapshot = if (snapshots.size == 1) {
+                    snapshots.first()
+                } else {
+                    pickSnapshot(snapshots) ?: run {
+                        updateStatus("已取消选择")
+                        setRunning(false)
+                        return@launch
+                    }
+                }
+
+                // Switch to restic source
+                backupDir = null
+                selectedSnapshot = chosenSnapshot
+                val backupPath = selectedSnapshot!!.paths.firstOrNull() ?: run {
+                    updateStatus("快照中找不到备份路径")
+                    setRunning(false)
+                    return@launch
+                }
+
+                // Read app list from the snapshot
+                val appListContent = readResticFile(config, selectedSnapshot!!.id, "$backupPath/appList.txt")
+                packages = if (appListContent != null) {
+                    appListContent.lines().map { it.trim() }.filter { it.isNotEmpty() && !it.startsWith("#") }
+                } else {
+                    emptyList()
+                }
+
+                if (packages.isEmpty()) {
+                    updateStatus("无法从快照读取应用列表")
+                    setRunning(false)
+                    return@launch
+                }
+
+                binding.backupDirText.text = "restic: ${selectedSnapshot!!.time.take(19)} (${snapshots.size} 个快照可用)"
+                selectedPackages.clear()
+
+                selectedPackages.addAll(packages)
+
+                // Resolve app labels for display
+                appInfos = AppScanner.resolveLabels(requireContext(), packages.map { AppInfo(packageName = PackageName(it)) })
+
+                updateStatus("restic 快照共 ${packages.size} 个应用，点击恢复开始")
+                binding.restoreButton.isEnabled = true
                 setRunning(false)
-                return@launch
-            }
-
-            // Read app list from the snapshot
-            val appListContent = readResticFile(config, selectedSnapshot!!.id, "$backupPath/appList.txt")
-            packages = if (appListContent != null) {
-                appListContent.lines().map { it.trim() }.filter { it.isNotEmpty() && !it.startsWith("#") }
-            } else {
-                emptyList()
-            }
-
-            if (packages.isEmpty()) {
-                updateStatus("无法从快照读取应用列表")
+                setupAppList()
+            } catch (e: Exception) {
+                binding.statusText.text = "选择快照失败: ${e.message}"
                 setRunning(false)
-                return@launch
             }
-
-            binding.backupDirText.text = "restic: ${selectedSnapshot!!.time.take(19)} (${snapshots.size} 个快照可用)"
-            selectedPackages.clear()
-
-            selectedPackages.addAll(packages)
-
-            // Resolve app labels for display
-            appInfos = AppScanner.resolveLabels(requireContext(), packages.map { AppInfo(packageName = PackageName(it)) })
-
-            updateStatus("restic 快照共 ${packages.size} 个应用，点击恢复开始")
-            binding.restoreButton.isEnabled = true
-            setRunning(false)
-            setupAppList()
         }
     }
 
@@ -389,6 +398,8 @@ class RestoreFragment : Fragment() {
                     appendLine("耗时: ${result.elapsedMs / 1000}秒")
                     appendLine("如有 SSAID，请立即重启设备后再开启应用")
                 }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
             } catch (e: Exception) {
                 binding.statusText.text = "恢复异常: ${e.message}"
             } finally {
@@ -398,12 +409,6 @@ class RestoreFragment : Fragment() {
         }
     }
 
-    private fun formatSize(bytes: Long): String {
-        if (bytes <= 0) return "0 B"
-        val units = arrayOf("B", "KB", "MB", "GB")
-        val digitGroups = (Math.log10(bytes.toDouble()) / Math.log10(1024.0)).toInt()
-        return String.format(Locale.US, "%.1f %s", bytes / Math.pow(1024.0, digitGroups.toDouble()), units[digitGroups])
-    }
 
     private fun setRunning(running: Boolean) {
         binding.progressBar.visibility = if (running) View.VISIBLE else View.GONE

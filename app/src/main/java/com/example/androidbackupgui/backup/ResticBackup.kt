@@ -4,14 +4,11 @@ import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
-import kotlinx.serialization.json.Json
 import kotlin.coroutines.coroutineContext
 import com.example.androidbackupgui.backup.AppError
 import com.example.androidbackupgui.backup.AppResult
 import com.example.androidbackupgui.backup.err
 
-/** Shared Json instance configured for restic's snake_case output via @SerialName. */
-private val resticJson = Json { ignoreUnknownKeys = true }
 
 /**
  * Backup operations: running restic backup and parsing its summary output.

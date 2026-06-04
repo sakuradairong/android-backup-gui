@@ -2,14 +2,11 @@ package com.example.androidbackupgui.backup
 
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import kotlinx.serialization.json.Json
 import com.example.androidbackupgui.backup.AppError
 import com.example.androidbackupgui.backup.AppResult
 import com.example.androidbackupgui.backup.err
 
 
-/** Shared Json instance configured for restic's snake_case output via @SerialName. */
-private val resticJson = Json { ignoreUnknownKeys = true }
 /**
  * Snapshot listing and retention policy operations.
  *

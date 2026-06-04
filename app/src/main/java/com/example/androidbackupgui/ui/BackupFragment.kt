@@ -25,6 +25,7 @@ import com.example.androidbackupgui.databinding.FragmentBackupBinding
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import com.example.androidbackupgui.backup.formatSize
 import java.io.File
 import java.util.Locale
 
@@ -89,24 +90,26 @@ class BackupFragment : Fragment() {
 
     private fun loadUsers() {
         viewLifecycleOwner.lifecycleScope.launch {
-            userList = AppScanner.enumerateUsers()
-            val names = userList.map { (id, name) -> "$name (ID: $id)" }
-            val adapter = ArrayAdapter(requireContext(), android.R.layout.simple_spinner_item, names)
-            adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
-            binding.userSelector.adapter = adapter
-            binding.userSelector.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
-                override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
-                    selectedUserId = userList.getOrNull(position)?.first ?: 0
+            try {
+                userList = AppScanner.enumerateUsers()
+                val names = userList.map { (id, name) -> "$name (ID: $id)" }
+                val adapter = ArrayAdapter(requireContext(), android.R.layout.simple_spinner_item, names)
+                adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+                binding.userSelector.adapter = adapter
+                binding.userSelector.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+                    override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                        selectedUserId = userList.getOrNull(position)?.first ?: 0
+                    }
+                    override fun onNothingSelected(parent: AdapterView<*>?) {}
                 }
-                override fun onNothingSelected(parent: AdapterView<*>?) {}
+            } catch (e: Exception) {
+                binding.statusText.text = "加载用户失败: ${e.message}"
             }
         }
     }
 
     override fun onResume() {
         super.onResume()
-        val configFile = File(requireContext().filesDir, "backup_settings.conf")
-        config = BackupConfig.fromFile(configFile)
     }
 
     private fun scanApps() {
@@ -115,18 +118,24 @@ class BackupFragment : Fragment() {
         binding.statusText.text = "正在扫描应用…"
 
         viewLifecycleOwner.lifecycleScope.launch {
-            val ctx = requireContext()
-            val thirdParty = AppScanner.scanThirdParty(ctx, userId = selectedUserId)
-            val system = AppScanner.scanSystem(ctx, config, userId = selectedUserId)
-            apps = if (showSystemApps) thirdParty + system else thirdParty
-            selectedApps.clear()
-            selectedApps.addAll(apps.map { it.packageName.value })
+            try {
+                val ctx = requireContext()
+                val thirdParty = AppScanner.scanThirdParty(ctx, userId = selectedUserId)
+                val system = AppScanner.scanSystem(ctx, config, userId = selectedUserId)
+                apps = if (showSystemApps) thirdParty + system else thirdParty
+                selectedApps.clear()
+                selectedApps.addAll(apps.map { it.packageName.value })
 
-            binding.statusText.text = "共找到 ${apps.size} 个应用，全部已选中"
-            binding.backupButton.isEnabled = apps.isNotEmpty()
-            setRunning(false)
+                binding.statusText.text = "共找到 ${apps.size} 个应用，全部已选中"
+                binding.backupButton.isEnabled = apps.isNotEmpty()
+                setRunning(false)
 
-            applySortFilter()
+                applySortFilter()
+            } catch (e: Exception) {
+                binding.statusText.text = "扫描应用失败: ${e.message}"
+                setRunning(false)
+                binding.backupButton.isEnabled = false
+            }
         }
     }
 
@@ -276,6 +285,8 @@ class BackupFragment : Fragment() {
                         }
                     }
                 })
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
             } catch (e: Exception) {
                 updateStatus("备份异常: ${e.message}")
             } finally {
@@ -292,12 +303,6 @@ class BackupFragment : Fragment() {
         }
     }
 
-    private fun formatSize(bytes: Long): String {
-        if (bytes <= 0) return "0 B"
-        val units = arrayOf("B", "KB", "MB", "GB")
-        val digitGroups = (Math.log10(bytes.toDouble()) / Math.log10(1024.0)).toInt()
-        return String.format(Locale.US, "%.1f %s", bytes / Math.pow(1024.0, digitGroups.toDouble()), units[digitGroups])
-    }
 
     private fun setRunning(running: Boolean) {
         binding.progressBar.visibility = if (running) View.VISIBLE else View.GONE
@@ -308,13 +313,12 @@ class BackupFragment : Fragment() {
     }
 
     override fun onDestroyView() {
-        super.onDestroyView()
-        // Cleanup restic temp files when leaving the fragment
-        viewLifecycleOwner.lifecycleScope.launch {
+        lifecycleScope.launch {
             withContext(Dispatchers.IO) {
                 ResticWrapper.cleanup()
             }
         }
+        super.onDestroyView()
         _binding = null
     }
 }
