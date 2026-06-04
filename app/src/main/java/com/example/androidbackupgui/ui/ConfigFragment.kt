@@ -6,6 +6,8 @@ import android.view.View
 import android.view.ViewGroup
 import androidx.core.widget.doAfterTextChanged
 import androidx.fragment.app.Fragment
+import android.util.Log
+import com.google.android.material.snackbar.Snackbar
 import androidx.fragment.app.viewModels
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
@@ -14,6 +16,9 @@ import com.example.androidbackupgui.R
 import com.example.androidbackupgui.backup.BackupConfig
 import com.example.androidbackupgui.databinding.FragmentConfigBinding
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.runBlocking
+import com.example.androidbackupgui.backup.ResticWrapper
 
 class ConfigFragment : Fragment() {
 
@@ -66,10 +71,15 @@ class ConfigFragment : Fragment() {
         // Initial async status check
         refreshResticStatus()
 
-        // Observe ViewModel state for derived UI updates
+        // Observe ViewModel state and one-shot operation events
         viewLifecycleOwner.lifecycleScope.launch {
             viewLifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
-                vm.uiState.collect { state -> applyState(state) }
+                launch {
+                    vm.uiState.collect { state -> applyState(state) }
+                }
+                launch {
+                    vm.operationEvents.collect { event -> handleOperationEvent(event) }
+                }
             }
         }
     }
@@ -133,6 +143,37 @@ class ConfigFragment : Fragment() {
         }
     }
 
+    // ── One-shot operation event handler ──────────────────────────────
+
+    /** Handle one-shot lifecycle events from ViewModel. */
+    private fun handleOperationEvent(event: OperationEvent) {
+        when (event) {
+            is OperationEvent.InitStarted -> Log.d(TAG, "init started")
+            is OperationEvent.InitCompleted -> {
+                Log.d(TAG, "init completed")
+                Snackbar.make(binding.root, "仓库初始化完成", Snackbar.LENGTH_SHORT).show()
+            }
+            is OperationEvent.InitFailed -> {
+                Log.d(TAG, "init failed")
+                Snackbar.make(binding.root, "仓库初始化失败", Snackbar.LENGTH_SHORT).show()
+            }
+            is OperationEvent.StatsStarted -> Log.d(TAG, "stats started")
+            is OperationEvent.StatsCompleted -> {
+                Log.d(TAG, "stats completed")
+                Snackbar.make(binding.root, "统计读取完成", Snackbar.LENGTH_SHORT).show()
+            }
+            is OperationEvent.PruneStarted -> Log.d(TAG, "prune started")
+            is OperationEvent.PruneFailed -> {
+                Log.d(TAG, "prune failed")
+                Snackbar.make(binding.root, "清理失败", Snackbar.LENGTH_SHORT).show()
+            }
+            is OperationEvent.PruneCompleted -> {
+                Log.d(TAG, "prune completed")
+                Snackbar.make(binding.root, "清理完成", Snackbar.LENGTH_SHORT).show()
+            }
+        }
+    }
+
     // ── Form building helpers ────────────────────────────────────────
 
     private fun readBackend(): String = when (binding.resticBackendGroup.checkedButtonId) {
@@ -156,25 +197,24 @@ class ConfigFragment : Fragment() {
     // ── User actions ─────────────────────────────────────────────────
 
     private fun saveConfig() {
-        vm.save(BackupConfig().also { config ->
-            config.backupMode = if (binding.backupModeSwitch.isChecked) 1 else 0
-            config.backupUserData = if (binding.backupUserDataSwitch.isChecked) 1 else 0
-            config.backupObbData = if (binding.backupObbSwitch.isChecked) 1 else 0
-            config.backgroundAppsIgnore = if (binding.ignoreRunningSwitch.isChecked) 1 else 0
-            config.outputPath = binding.outputPathEdit.text?.toString() ?: ""
-            config.compressionMethod = binding.compressionEdit.text?.toString()?.ifEmpty { "zstd" } ?: "zstd"
-            config.backupWifi = if (binding.backupWifiSwitch.isChecked) 1 else 0
-
-            config.resticEnabled = if (binding.resticEnabledSwitch.isChecked) 1 else 0
-            config.resticRepo = binding.resticRepoEdit.text?.toString()?.trim() ?: ""
-            config.resticPassword = binding.resticPasswordEdit.text?.toString() ?: ""
-            config.resticBackend = readBackend()
-            config.resticBackendUrl = binding.resticBackendUrlEdit.text?.toString()?.trim() ?: ""
-            config.resticBackendUser = binding.resticBackendUserEdit.text?.toString()?.trim() ?: ""
-            config.resticBackendPass = binding.resticBackendPassEdit.text?.toString() ?: ""
-            config.resticBackendShare = binding.resticBackendShareEdit.text?.toString()?.trim() ?: ""
-            config.resticBackendDomain = binding.resticBackendDomainEdit.text?.toString()?.trim() ?: ""
-        })
+        vm.save(BackupConfig(
+            backupMode = if (binding.backupModeSwitch.isChecked) 1 else 0,
+            backupUserData = if (binding.backupUserDataSwitch.isChecked) 1 else 0,
+            backupObbData = if (binding.backupObbSwitch.isChecked) 1 else 0,
+            backupWifi = if (binding.backupWifiSwitch.isChecked) 1 else 0,
+            backgroundAppsIgnore = if (binding.ignoreRunningSwitch.isChecked) 1 else 0,
+            outputPath = binding.outputPathEdit.text?.toString() ?: "",
+            compressionMethod = binding.compressionEdit.text?.toString()?.ifEmpty { "zstd" } ?: "zstd",
+            resticEnabled = if (binding.resticEnabledSwitch.isChecked) 1 else 0,
+            resticRepo = binding.resticRepoEdit.text?.toString()?.trim() ?: "",
+            resticPassword = binding.resticPasswordEdit.text?.toString() ?: "",
+            resticBackend = readBackend(),
+            resticBackendUrl = binding.resticBackendUrlEdit.text?.toString()?.trim() ?: "",
+            resticBackendUser = binding.resticBackendUserEdit.text?.toString()?.trim() ?: "",
+            resticBackendPass = binding.resticBackendPassEdit.text?.toString() ?: "",
+            resticBackendShare = binding.resticBackendShareEdit.text?.toString()?.trim() ?: "",
+            resticBackendDomain = binding.resticBackendDomainEdit.text?.toString()?.trim() ?: "",
+        ))
     }
 
     private fun onFormChanged() {
@@ -209,7 +249,10 @@ class ConfigFragment : Fragment() {
 
     override fun onDestroyView() {
         super.onDestroyView()
+        // Fallback: cleanup restic temp files in case ViewModel.onCleared() scope was cancelled
+        runBlocking(Dispatchers.IO) {
+            ResticWrapper.cleanup()
+        }
         _binding = null
-        // cleanup is handled by ViewModel.onCleared()
     }
 }
