@@ -19,6 +19,7 @@ import com.example.androidbackupgui.ui.RestoreFragment
 import com.google.android.material.color.DynamicColors
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 class MainActivity : AppCompatActivity() {
 
@@ -39,17 +40,43 @@ class MainActivity : AppCompatActivity() {
         RootShell.configure()
 
         // Request root access on startup
-        lifecycleScope.launch(Dispatchers.IO) {
-            RootShell.ensureSession()
-
-        // Initialize file-based logging
-        LogUtil.init(filesDir)
+        lifecycleScope.launch {
+            withContext(Dispatchers.IO) {
+                RootShell.ensureSession()
+            }
+            // Initialize file-based logging
+            LogUtil.init(filesDir)
         }
 
-        // Edge-to-edge: pad toolbar below status bar
-        ViewCompat.setOnApplyWindowInsetsListener(binding.topAppBar) { view, insets ->
+        // Edge-to-edge: distribute system bar insets (status bar, nav bar, cutout) to children
+        ViewCompat.setOnApplyWindowInsetsListener(binding.root) { _, insets ->
             val statusBars = insets.getInsets(WindowInsetsCompat.Type.statusBars())
-            view.setPadding(view.paddingLeft, statusBars.top, view.paddingRight, view.paddingBottom)
+            val navBars = insets.getInsets(WindowInsetsCompat.Type.navigationBars())
+
+            // Pad toolbar below status bar (preserve existing horizontal padding)
+            binding.topAppBar.setPadding(
+                binding.topAppBar.paddingLeft,
+                statusBars.top,
+                binding.topAppBar.paddingRight,
+                binding.topAppBar.paddingBottom
+            )
+
+            // Pad bottom nav above navigation bar so menu items are visible
+            binding.bottomNav.setPadding(
+                binding.bottomNav.paddingLeft,
+                binding.bottomNav.paddingTop,
+                binding.bottomNav.paddingRight,
+                navBars.bottom
+            )
+
+            // Pad view pager above navigation bar so fragment content doesn't overlap nav bar
+            binding.viewPager.setPadding(
+                binding.viewPager.paddingLeft,
+                binding.viewPager.paddingTop,
+                binding.viewPager.paddingRight,
+                navBars.bottom
+            )
+
             insets
         }
 
@@ -61,6 +88,7 @@ class MainActivity : AppCompatActivity() {
 
         binding.viewPager.adapter = TabAdapter(this, fragments)
         binding.viewPager.isUserInputEnabled = true
+        binding.viewPager.offscreenPageLimit = 2
 
         binding.bottomNav.setOnItemSelectedListener { item ->
             when (item.itemId) {

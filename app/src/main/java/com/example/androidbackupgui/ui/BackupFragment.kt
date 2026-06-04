@@ -287,11 +287,17 @@ class BackupFragment : Fragment() {
         binding.progressBar.visibility = if (running) View.VISIBLE else View.GONE
     }
 
+    private suspend fun updateStatus(text: String) {
+        withContext(Dispatchers.Main) { binding.statusText.text = text }
+    }
+
     override fun onDestroyView() {
         super.onDestroyView()
         // Cleanup restic temp files when leaving the fragment
-        viewLifecycleOwner.lifecycleScope.launch(Dispatchers.IO) {
-            ResticWrapper.cleanup()
+        viewLifecycleOwner.lifecycleScope.launch {
+            withContext(Dispatchers.IO) {
+                ResticWrapper.cleanup()
+            }
         }
         _binding = null
     }
