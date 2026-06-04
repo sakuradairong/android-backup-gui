@@ -274,99 +274,103 @@ class RestoreFragment : Fragment() {
         binding.selectDirButton.isEnabled = false
 
         viewLifecycleOwner.lifecycleScope.launch {
-            val result = if (selectedSnapshot != null && resticConfig != null) {
-                // Restic restore
-                val snapshot = selectedSnapshot!!
-                val config = resticConfig!!
-                val backupPath = snapshot.paths.firstOrNull() ?: return@launch
-                val staging = File(requireContext().cacheDir, "restic_restore_${snapshot.shortId}")
-                staging.mkdirs()
-                try {
-                    binding.statusText.text = "正在从 restic 快照恢复到暂存目录…"
-                    val restoreResult = ResticWrapper.restore(
-                        repoPath = config.resticRepo,
-                        password = config.resticPassword,
-                        snapshotId = snapshot.id,
-                        targetPath = staging.absolutePath,
-                        backend = config.resticBackend,
-                        backendUrl = config.resticBackendUrl,
-                        backendUser = config.resticBackendUser,
-                        backendPass = config.resticBackendPass,
-                        backendShare = config.resticBackendShare,
-                        onSyncProgress = { progress: RemoteTransport.TransferProgress ->
-                            withContext(Dispatchers.Main) {
-                                when (progress.phase) {
-                                    "list", "download", "upload", "delete_stale" ->
-                                        binding.statusText.text = "同步中: ${progress.current}/${progress.total} 个文件"
+            try {
+                val result = if (selectedSnapshot != null && resticConfig != null) {
+                    // Restic restore
+                    val snapshot = selectedSnapshot ?: return@launch
+                    val config = resticConfig ?: return@launch
+                    val backupPath = snapshot.paths.firstOrNull() ?: return@launch
+                    val staging = File(requireContext().cacheDir, "restic_restore_${snapshot.shortId}")
+                    staging.mkdirs()
+                    try {
+                        binding.progressBar.isIndeterminate = true
+
+                        binding.statusText.text = "正在从 restic 快照恢复到暂存目录…"
+                        val restoreResult = ResticWrapper.restore(
+                            repoPath = config.resticRepo,
+                            password = config.resticPassword,
+                            snapshotId = snapshot.id,
+                            targetPath = staging.absolutePath,
+                            backend = config.resticBackend,
+                            backendUrl = config.resticBackendUrl,
+                            backendUser = config.resticBackendUser,
+                            backendPass = config.resticBackendPass,
+                            backendShare = config.resticBackendShare,
+                            onSyncProgress = { progress: RemoteTransport.TransferProgress ->
+                                if (progress.phase in listOf("list", "download", "upload", "delete_stale")) {
+                                    updateStatus("同步中: ${progress.current}/${progress.total} 个文件")
                                 }
-                            }
-                        },
-                        onByteSyncProgress = { progress ->
-                            withContext(Dispatchers.Main) {
-                                binding.progressBar.max = progress.totalBytes.toInt().coerceAtLeast(1)
-                                binding.progressBar.progress = progress.bytesTransferred.toInt()
-                                binding.statusText.text = "同步中: ${progress.currentFile}\n" +
-                                    "${formatSize(progress.bytesTransferred)} / ${formatSize(progress.totalBytes)}"
-                            }
-                        },
-                        onProgress = { msg -> binding.statusText.text = msg }
-                    )
+                            },
+                            onByteSyncProgress = { progress ->
+                                withContext(Dispatchers.Main) {
+                                    binding.progressBar.max = progress.totalBytes.toInt().coerceAtLeast(1)
+                                    binding.progressBar.progress = progress.bytesTransferred.toInt()
+                                }
+                                updateStatus("同步中: ${progress.currentFile}\n" +
+                                    "${formatSize(progress.bytesTransferred)} / ${formatSize(progress.totalBytes)}")
+                            },
+                            onProgress = { msg -> withContext(Dispatchers.Main) { binding.statusText.text = msg } }
+                        )
 
-                    if (restoreResult.isFailure) {
-                        binding.statusText.text = "restic 恢复失败: ${restoreResult.exceptionOrNull()?.message}"
-                        setRunning(false)
-                        binding.selectDirButton.isEnabled = true
-                        return@launch
+                        if (restoreResult.isFailure) {
+                            updateStatus("restic 恢复失败: ${restoreResult.exceptionOrNull()?.message}")
+                            return@launch
+                        }
+
+                        // The restored backup directory: <staging>/<original_absolute_path>
+                        val restoredBackupDir = File(staging, backupPath.removePrefix("/"))
+                        updateStatus("正在从恢复的备份安装应用…")
+
+                        val r = RestoreOperation.restoreApps(
+                            context = requireContext(),
+                            backupDir = restoredBackupDir,
+                            userId = selectedUserId.toString(),
+                            filterPkgs = selectedPackages,
+                            onProgress = { progress ->
+                                val label = appInfos.find { it.packageName.value == progress.packageName }?.label
+                                val name = label?.ifEmpty { progress.packageName } ?: progress.packageName
+                                binding.statusText.text =
+                                    "[${progress.current}/${progress.total}] $name: ${progress.message}"
+                            }
+                        )
+                        // Also restore WiFi if backup exists
+                        WifiManager.restore(restoredBackupDir)
+                        r
+                    } finally {
+                        try { staging.deleteRecursively() } catch (_: Exception) {}
                     }
-
-                    // The restored backup directory: <staging>/<original_absolute_path>
-                    val restoredBackupDir = File(staging, backupPath.removePrefix("/"))
-                    binding.statusText.text = "正在从恢复的备份安装应用…"
-
+                } else {
+                    // Local restore
+                    val dir = backupDir ?: return@launch
                     val r = RestoreOperation.restoreApps(
-                        backupDir = restoredBackupDir,
+                        context = requireContext(),
+                        backupDir = dir,
                         userId = selectedUserId.toString(),
                         filterPkgs = selectedPackages,
                         onProgress = { progress ->
-                            val label = appInfos.find { it.packageName == progress.packageName }?.label
+                            val label = appInfos.find { it.packageName.value == progress.packageName }?.label
                             val name = label?.ifEmpty { progress.packageName } ?: progress.packageName
                             binding.statusText.text =
                                 "[${progress.current}/${progress.total}] $name: ${progress.message}"
                         }
                     )
-                    // Also restore WiFi if backup exists
-                    WifiManager.restore(restoredBackupDir)
+                    // Also restore WiFi if backup exists locally
+                    WifiManager.restore(dir)
                     r
-                } finally {
-                    try { staging.deleteRecursively() } catch (_: Exception) {}
                 }
-            } else {
-                // Local restore
-                val dir = backupDir ?: return@launch
-                val r = RestoreOperation.restoreApps(
-                    backupDir = dir,
-                    userId = selectedUserId.toString(),
-                    filterPkgs = selectedPackages,
-                    onProgress = { progress ->
-                        val label = appInfos.find { it.packageName == progress.packageName }?.label
-                        val name = label?.ifEmpty { progress.packageName } ?: progress.packageName
-                        binding.statusText.text =
-                            "[${progress.current}/${progress.total}] $name: ${progress.message}"
-                    }
-                )
-                // Also restore WiFi if backup exists locally
-                WifiManager.restore(dir)
-                r
-            }
 
-            binding.statusText.text = buildString {
-                appendLine("恢复完成！")
-                appendLine("成功: ${result.successCount}  失败: ${result.failCount}")
-                appendLine("耗时: ${result.elapsedMs / 1000}秒")
-                appendLine("如有 SSAID，请立即重启设备后再开启应用")
+                binding.statusText.text = buildString {
+                    appendLine("恢复完成！")
+                    appendLine("成功: ${result.successCount}  失败: ${result.failCount}")
+                    appendLine("耗时: ${result.elapsedMs / 1000}秒")
+                    appendLine("如有 SSAID，请立即重启设备后再开启应用")
+                }
+            } catch (e: Exception) {
+                binding.statusText.text = "恢复异常: ${e.message}"
+            } finally {
+                setRunning(false)
+                binding.selectDirButton.isEnabled = true
             }
-            setRunning(false)
-            binding.selectDirButton.isEnabled = true
         }
     }
 

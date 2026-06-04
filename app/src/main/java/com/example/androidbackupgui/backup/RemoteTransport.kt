@@ -185,14 +185,16 @@ interface RemoteTransport {
                 val staleCount = staleLocalPaths.size
                 for ((staleIdx, relPath) in staleLocalPaths.withIndex()) {
                     onProgress(TransferProgress("delete_stale", staleIdx + 1, staleCount))
-                    val localFile = localFiles[relPath]!!
+                    val localFile = localFiles[relPath] ?: continue
                     Log.i(TAG, "syncFromRemote deleting stale local: $relPath")
                     try { localFile.delete() } catch (_: Exception) {}
                 }
                 onProgress(TransferProgress("complete", transferred, syncTotal, "已传输: $transferred 跳过: $skipped"))
-                Result.success(Unit)
+                AppResult.Success(Unit)
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
-                Result.failure(Exception("syncFromRemote failed: ${e.message}", e))
+                err(AppError.Remote("syncFromRemote failed: ${e.message}", "sync", cause = e))
             }
         }
 

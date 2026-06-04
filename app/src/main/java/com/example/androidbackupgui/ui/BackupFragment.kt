@@ -211,60 +211,64 @@ class BackupFragment : Fragment() {
                             backendPass = config.resticBackendPass,
                             backendShare = config.resticBackendShare,
                             onSyncProgress = { progress: RemoteTransport.TransferProgress ->
-                                withContext(Dispatchers.Main) {
-                                    when (progress.phase) {
-                                        "list", "download", "upload", "delete_stale" ->
-                                            binding.statusText.text = "同步中: ${progress.current}/${progress.total} 个文件"
-                                    }
+                                if (progress.phase in listOf("list", "download", "upload", "delete_stale")) {
+                                    updateStatus("同步中: ${progress.current}/${progress.total} 个文件")
                                 }
                             },
                             onByteSyncProgress = { progress ->
                                 withContext(Dispatchers.Main) {
                                     binding.progressBar.max = progress.totalBytes.toInt().coerceAtLeast(1)
                                     binding.progressBar.progress = progress.bytesTransferred.toInt()
-                                    binding.statusText.text = "同步中: ${progress.currentFile}\n" +
-                                        "${formatSize(progress.bytesTransferred)} / ${formatSize(progress.totalBytes)}"
                                 }
+                                updateStatus("同步中: ${progress.currentFile}\n" +
+                                    "${formatSize(progress.bytesTransferred)} / ${formatSize(progress.totalBytes)}")
                             },
                             onProgress = { progress ->
                                 if (progress.messageType == "status") {
-                                    binding.statusText.text = "去重仓库: %.0f%% (%d/%d 个文件)".format(
+                                    updateStatus("去重仓库: %.0f%% (%d/%d 个文件)".format(
                                         progress.percentDone * 100,
                                         progress.filesDone,
                                         progress.totalFiles
-                                    )
+                                    ))
                                 }
                             }
                         )
-                        resticResult.fold(
-                            onSuccess = { resticSummary = it },
-                            onFailure = { e ->
-                                resticError = e.message
-                                binding.statusText.text = "restic 快照失败: ${e.message}"
-                            }
-                        )
+                        when (resticResult) {
+                            is AppResult.Success -> resticSummary = resticResult.data
+                            is AppResult.Failure -> {
+                                resticError = resticResult.error.message
+                                updateStatus("restic 快照失败: ${resticResult.error.message}")
+                        }
                     }
                 }
+                }
 
-                binding.statusText.text = buildString {
+                updateStatus(buildString {
                     appendLine("备份完成！")
                     appendLine("成功: ${result.successCount}  失败: ${result.failCount}")
                     appendLine("耗时: ${result.elapsedMs / 1000}秒")
                     appendLine("输出: ${result.outputDir}")
-                    if (resticSummary != null) {
+                    val summary = resticSummary
+                    if (summary != null) {
                         appendLine()
                         appendLine("── Restic 快照 ──")
-                        appendLine("ID: ${resticSummary!!.snapshotId.take(8)}…")
-                        appendLine("新增: ${resticSummary!!.dataAdded / 1024 / 1024} MB")
-                        appendLine("文件: ${resticSummary!!.totalFilesProcessed}")
-                    } else if (resticError != null) {
-                        appendLine()
-                        appendLine("── Restic 错误 ──")
-                        appendLine(resticError!!)
+                        appendLine("ID: ${summary.snapshotId.take(8)}…")
+                        appendLine("新增: ${summary.dataAdded / 1024 / 1024} MB")
+                        appendLine("文件: ${summary.totalFilesProcessed}")
+                    } else {
+                        val err = resticError
+                        if (err != null) {
+                            appendLine()
+                            appendLine("── Restic 错误 ──")
+                            appendLine(err)
+                        }
                     }
-                }
+                })
+            } catch (e: Exception) {
+                updateStatus("备份异常: ${e.message}")
             } finally {
                 setRunning(false)
+                binding.backupButton.isEnabled = true
                 binding.scanButton.isEnabled = true
                 // Stop foreground service
                 try {

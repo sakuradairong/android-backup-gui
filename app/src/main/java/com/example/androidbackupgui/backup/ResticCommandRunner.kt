@@ -96,28 +96,22 @@ class ResticCommandRunner {
 
             val stdoutText = StringBuilder()
             val reader = process.inputStream.bufferedReader()
-            val stderrReader = process.errorStream.bufferedReader()
-
-            val stderrText = StringBuilder()
-            val stderrThread = Thread({
-                try { stderrReader.use { stderrText.append(it.readText()) } } catch (_: Exception) {}
-            }, "restic-stderr").apply { isDaemon = true; start() }
 
             try {
-                var line: String?
+                var line: String
                 while (reader.readLine().also { line = it } != null) {
                     if (!coroutineContext.isActive) {
                         process.destroy()
                         break
                     }
-                    val l = line!!
-                    stdoutText.appendLine(l)
-                    onLine(l)
+                    stdoutText.appendLine(line)
+                    onLine(line)
                 }
             } finally {
                 try { reader.close() } catch (_: Exception) {}
             }
-            stderrThread.join(5000)
+            val stderrBytes = try { process.errorStream.readAllBytes() } catch (_: Exception) { byteArrayOf() }
+            val stderrText = stderrBytes.decodeToString().trim()
             val exitCode = try {
                 // Manual timeout loop (Process.waitFor(timeout,unit) requires API 26+)
                 val deadline = System.currentTimeMillis() + 60_000
