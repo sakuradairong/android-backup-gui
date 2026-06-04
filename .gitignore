@@ -22,3 +22,4 @@ memory:*
 
 # Restic test repository (contains encryption keys)
 test/
+kmboxnet
