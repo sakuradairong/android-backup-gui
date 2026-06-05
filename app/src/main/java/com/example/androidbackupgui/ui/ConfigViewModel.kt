@@ -190,7 +190,7 @@ class ConfigViewModel(application: Application) : AndroidViewModel(application) 
         viewModelScope.launch {
             try {
                 _operationEvents.emit(OperationEvent.InitStarted)
-                val result = withTimeoutOrNull(15 * 60 * 1000L) {
+                val result = withTimeoutOrNull(60_000L) {
                     ResticWrapper.init(form.repo, form.password,
                         backend = form.backend, backendUrl = form.backendUrl,
                         backendUser = form.backendUser, backendPass = form.backendPass,
@@ -199,9 +199,9 @@ class ConfigViewModel(application: Application) : AndroidViewModel(application) 
                 }
                 if (result == null) {
                     _operationEvents.emit(OperationEvent.InitFailed)
-                    Log.w(TAG, "initResticRepo timed out after 15 minutes")
+                    Log.w(TAG, "initResticRepo timed out after 1 minute")
                     _uiState.update { it.copy(resticStatus = it.resticStatus.copy(
-                        message = "初始化超时（15分钟），请检查网络/SMB 服务器是否正常"
+                        message = "初始化超时（1分钟），请检查网络/SMB 服务器是否正常"
                     ))}
                     refreshResticStatus(form)
                 } else if (result.isSuccess) {
