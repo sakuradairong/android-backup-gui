@@ -9,6 +9,7 @@ Android 应用备份与恢复工具，集成 [restic](https://restic.net/) 实�
 - **并行备份/恢复** — 备份并发数 3（Semaphore(3)），恢复并发数 2（Semaphore(2)）
 - **存档完整性校验** — 备份后自动 zstd/gzip 校验数据归档
 - **restic 增量去重** — 内建 `librestic.so`（~24MB），支持本地和远端仓库
+- **构建体积优化** — Release APK 仅 11.8 MB（ProGuard/R8 full mode + shrinkResources + BouncyCastle PQC 移除）
 - **远程后端** — WebDAV（如 123 云盘）/ SMB 协议，本地临时仓库 + 自动双向同步 + 进度回调
 - **配置持久化** — 仓库路径、密码、后端参数保存在 `backup_settings.conf`
 - **快照管理** — 初始化仓库、查看统计、按策略清理旧快照（保留 7 天/4 周/3 月）
@@ -98,17 +99,26 @@ ConfigViewModel                 ResticWrapper
 - **文件大小限制** — WebDAV 上传 50MB 上限（防止 ByteArray OOM）
 - **存档完整性校验** — 备份后 zstd/gzip 验证数据归档，校验失败回告
 
-## 编译
+## 构建
+
+### 版本历史
+
+|-|版本|更新内容|
+|-|---:|--------|
+| | v1.3 | 累积快照、AppResult 类型化错误、RootShell Mutex、kotlinx-serialization 迁移 |
+| | v1.4 | APK 体积优化（ProGuard/R8 + shrinkResources + 依赖裁剪），Release APK 从 25 MB 降至 11.8 MB（-52.8%） |
+
+### 编译命令
 
 ```bash
-# Debug APK
+# Debug APK（不压缩，适合开发调试）
 ./gradlew assembleDebug
 
-# Release (需配置签名)
+# Release APK（ProGuard/R8 混淆 + 资源裁剪 + 签名）
 ./gradlew assembleRelease
 ```
 
-`librestic.so` 需放在 `app/src/main/jniLibs/arm64-v8a/` 目录下，在 `build.gradle` 中禁用 `extractNativeLibs` 前的 `useLegacyPackaging`。
+> Release 构建需配置 `release.keystore` 签名文件；`librestic.so` 放在 `app/src/main/jniLibs/arm64-v8a/` 下。
 
 ## 使用说明
 
