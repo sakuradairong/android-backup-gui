@@ -109,13 +109,16 @@ class ResticRestBridge(
      * Stream body from session input to a temp file to avoid OOM on large blobs.
      * Returns the temp file (caller must delete).
      */
-    private fun streamBodyToFile(session: IHTTPSession, tmpDir: File): File? {
+    private fun streamBodyToFile(session: IHTTPSession, tmpDir: File): Result<File> {
         return try {
             val tmpFile = File(tmpDir, "restic_blob_${UUID.randomUUID()}")
             val input = (session as NanoHTTPD.HTTPSession).inputStream
             tmpFile.outputStream().use { output -> input.copyTo(output) }
-            tmpFile
-        } catch (_: Exception) { null }
+            Result.success(tmpFile)
+        } catch (e: Exception) {
+            Log.w(TAG, "stream body to file failed", e)
+            Result.failure(e)
+        }
     }
 
     @Suppress("UNUSED_PARAMETER")
@@ -145,8 +148,7 @@ class ResticRestBridge(
                 try {
                     when (transport.download(remotePath, tempFile.absolutePath)) {
                         is AppResult.Success -> {
-                            val bytes = tempFile.readBytes()
-                            newChunkedResponse(Response.Status.OK, "application/octet-stream", bytes.inputStream())
+                            newChunkedResponse(Response.Status.OK, "application/octet-stream", tempFile.inputStream())
                         }
                         is AppResult.Failure -> newFixedLengthResponse(
                             Response.Status.NOT_FOUND, "text/plain", ""
@@ -157,10 +159,12 @@ class ResticRestBridge(
                 }
             }
             NanoHTTPD.Method.POST -> {
-                val tmpFile = streamBodyToFile(session, cacheDir)
-                if (tmpFile == null) return@runBlocking newFixedLengthResponse(
-                    Response.Status.INTERNAL_ERROR, "text/plain", "body read failed"
+                val tmpResult = streamBodyToFile(session, cacheDir)
+                if (tmpResult.isFailure) return@runBlocking newFixedLengthResponse(
+                    Response.Status.INTERNAL_ERROR, "text/plain",
+                    "body read failed: ${tmpResult.exceptionOrNull()?.message ?: "unknown"}"
                 )
+                val tmpFile = tmpResult.getOrThrow()
                 try {
                     when (transport.upload(tmpFile.absolutePath, remotePath)) {
                         is AppResult.Success -> newFixedLengthResponse(
@@ -302,10 +306,12 @@ class ResticRestBridge(
         session: IHTTPSession
     ): Response = runBlocking {
         val remotePath = "$remoteBase/$type/$name"
-        val tmpFile = streamBodyToFile(session, cacheDir)
-        if (tmpFile == null) return@runBlocking newFixedLengthResponse(
-            Response.Status.INTERNAL_ERROR, "text/plain", "body read failed"
+        val tmpResult = streamBodyToFile(session, cacheDir)
+        if (tmpResult.isFailure) return@runBlocking newFixedLengthResponse(
+            Response.Status.INTERNAL_ERROR, "text/plain",
+            "body read failed: ${tmpResult.exceptionOrNull()?.message ?: "unknown"}"
         )
+        val tmpFile = tmpResult.getOrThrow()
         try {
             when (transport.upload(tmpFile.absolutePath, remotePath)) {
                 is AppResult.Success -> newFixedLengthResponse(

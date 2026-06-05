@@ -14,6 +14,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.CancellationException
 import java.io.File
 import java.util.Properties
+import java.util.concurrent.atomic.AtomicBoolean
 
 class SmbTransport(
     private val host: String,
@@ -22,10 +23,21 @@ class SmbTransport(
     private val password: String,
     private val domain: String = "",
     private val bufferSize: Int = 8192,
-    private val smbSigning: Boolean = true
+    private val smbSigning: Boolean = false
 ): RemoteTransport {
-    companion object { private const val TAG = "SmbTransport" }
+    companion object {
+        private const val TAG = "SmbTransport"
+
+        /** Register missing JCA algorithms for jcifs-ng (MD4, AESCMAC, etc.). */
+        private val patchesRegistered = AtomicBoolean(false)
+        fun registerMissingAlgorithms() {
+            if (patchesRegistered.compareAndSet(false, true)) {
+                MissingAlgoProvider.register()
+            }
+        }
+    }
     private val context: CIFSContext by lazy {
+        registerMissingAlgorithms()
         val props = Properties().apply {
             // Force SMB 2.0.2 minimum — SMB1 is disabled on modern Windows
             setProperty("jcifs.smb.client.minVersion", "SMB202")
@@ -33,7 +45,7 @@ class SmbTransport(
             // Shorter timeouts for Android
             setProperty("jcifs.smb.client.responseTimeout", "15000")
             setProperty("jcifs.smb.client.connTimeout", "10000")
-            // Enable SMB signing for security (prevents tampering) — disable for legacy servers
+            // SMB signing (disabled by default — most home servers don't support it)
             if (smbSigning) {
                 setProperty("jcifs.smb.client.signingEnabled", "true")
                 setProperty("jcifs.smb.client.encryptionEnabled", "true")
@@ -47,7 +59,9 @@ class SmbTransport(
         }
     }
 
+    /** Build a full SMB URL. If [path] is already a full URL, pass through. */
     private fun buildUrl(path: String): String {
+        if (path.startsWith("smb://")) return path
         val cleanPath = path.trimStart('/')
         val sharePath = if (share.isNotEmpty()) "$share/$cleanPath" else cleanPath
         return "smb://$host/$sharePath"
@@ -82,8 +96,18 @@ class SmbTransport(
                         }
                     }
                 }
+                // Re-read with a fresh SmbFile handle to verify (jcifs-ng may have stale handle)
+                val freshRemote = SmbFile(buildUrl(remotePath), context)
+                val actualSize = freshRemote.length()
+                Log.i(TAG, "upload done: $fileSize bytes local, $actualSize bytes on SMB")
+                if (actualSize != fileSize) {
+                    Log.w(TAG, "upload size mismatch: local=$fileSize smb=$actualSize")
+                    // Try re-opening the output stream to flush any pending writes
+                    SmbFileOutputStream(remote).use { it.write(ByteArray(0)) }
+                    val retrySize = freshRemote.length()
+                    Log.w(TAG, "upload retry: smb=$retrySize bytes")
+                }
                 onProgress(RemoteTransport.TransferProgress("completed", 1, 1, remotePath))
-                Log.i(TAG, "upload $localPath -> ${buildUrl(remotePath)} ($fileSize bytes)")
                 AppResult.Success(Unit)
             } catch (e: CancellationException) {
                 throw e
@@ -184,15 +208,15 @@ class SmbTransport(
             } catch (e: SmbException) {
                 // STATUS_OBJECT_NAME_COLLISION (0xC0000035): directory already exists — not an error
                 if (e.ntStatus == 0xC0000035.toInt()) {
-                AppResult.Success(Unit)
+                    AppResult.Success(Unit)
                 } else {
-                    Log.e(TAG, "mkdirs failed: $remotePath — ${e.message}")
+                    Log.e(TAG, "mkdirs failed: $remotePath — ntStatus=0x${e.ntStatus.toString(16)} msg=${e.message} cause=${e.cause}")
                     err(AppError.Remote("SMB 创建目录失败", "mkdirs", cause = e))
                 }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                Log.e(TAG, "mkdirs failed: $remotePath — ${e.message}")
+                Log.e(TAG, "mkdirs failed: $remotePath — ${e::class.java.name}: ${e.message} cause=${e.cause?.message}")
                 err(AppError.Remote("SMB 创建目录失败", "mkdirs", cause = e))
             }
         }

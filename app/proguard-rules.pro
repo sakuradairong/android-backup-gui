@@ -49,3 +49,10 @@
 # --- Keep R classes (referenced by code) ---
 -keep class com.example.androidbackupgui.R { *; }
 
+
+
+# --- jcifs-ng (SMB) — keep class/member names for MD4Provider reflection ---
+-keep class jcifs.util.Crypto { *; }
+-keep class jcifs.smb.NtlmUtil { *; }
+-keep class jcifs.ntlmssp.Type3Message { *; }
+-keep class jcifs.smb.NtlmContext { *; }

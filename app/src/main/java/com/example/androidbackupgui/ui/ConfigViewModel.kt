@@ -19,6 +19,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.util.concurrent.atomic.AtomicBoolean
 
 /** UI-visible state driven by [ConfigViewModel]. */
 data class ConfigUiState(
@@ -105,6 +106,8 @@ class ConfigViewModel(application: Application) : AndroidViewModel(application) 
     private val _uiState = MutableStateFlow(ConfigUiState())
     val uiState: StateFlow<ConfigUiState> = _uiState.asStateFlow()
 
+    /** Guards against concurrent [initResticRepo] calls. */
+    private val initGuard = AtomicBoolean(false)
     /** Read config from file and refresh restic status. */
     fun load() {
         val config = BackupConfig.fromFile(configFile)
@@ -159,6 +162,10 @@ class ConfigViewModel(application: Application) : AndroidViewModel(application) 
     // ── Async restic operations ──────────────────────────────────────
 
     fun initResticRepo(form: ResticForm) {
+        if (!initGuard.compareAndSet(false, true)) {
+            Log.w(TAG, "initResticRepo: already in progress, ignoring")
+            return
+        }
         Log.i(TAG, "initResticRepo called: repo=${form.repo} backend=${form.backend}")
 
         if (!prepareRestic()) {
@@ -190,18 +197,19 @@ class ConfigViewModel(application: Application) : AndroidViewModel(application) 
                 if (result.isSuccess) {
                     _operationEvents.emit(OperationEvent.InitCompleted)
                     _uiState.update { it.copy(resticStatus = it.resticStatus.copy(
-                        message = "仓库初始化成功: ${form.repo}", initButtonEnabled = true
+                        message = "仓库初始化成功: ${form.repo}"
                     ))}
                     refreshResticStatus(form)
                 } else {
                     _operationEvents.emit(OperationEvent.InitFailed)
                     Log.e(TAG, "initResticRepo failed: ${result.exceptionOrNull()?.message}")
                     _uiState.update { it.copy(resticStatus = it.resticStatus.copy(
-                        message = "初始化失败: ${result.exceptionOrNull()?.message}", initButtonEnabled = true
+                        message = "初始化失败: ${result.exceptionOrNull()?.message}"
                     ))}
+                    refreshResticStatus(form)
                 }
             } finally {
-                _uiState.update { it.copy(resticStatus = it.resticStatus.copy(initButtonEnabled = true)) }
+                initGuard.set(false)
             }
         }
     }

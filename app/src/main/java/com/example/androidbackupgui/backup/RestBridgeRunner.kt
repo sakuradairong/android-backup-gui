@@ -19,6 +19,10 @@ class RestBridgeRunner {
 
     private val TAG = "RestBridgeRunner"
 
+    /** Cached transport to reuse SMB sessions across bridge instances. */
+    private var cachedTransport: RemoteTransport? = null
+    private var cachedTransportKey: String? = null
+
     /**
      * Start a REST bridge for the given [backend], execute [block] with the
      * bridge URL, then stop and clean up.
@@ -49,14 +53,22 @@ class RestBridgeRunner {
             return block(repoPath)
         }
 
-        val transport = transportFactory(backend, backendUrl, backendUser, backendPass, backendShare, backendDomain)
-            ?: return block(repoPath)
+        // Reuse cached transport (same SMB session) for consistent cross-bridge visibility
+        val key = "$backend|$backendUrl|$backendUser|$backendShare|$backendDomain"
+        if (cachedTransportKey != key) {
+            cachedTransport?.let { Log.d(TAG, "discarding stale cached transport") }
+            val t = transportFactory(backend, backendUrl, backendUser, backendPass, backendShare, backendDomain)
+                ?: return block(repoPath)
+            cachedTransport = t
+            cachedTransportKey = key
+        }
+        val transport = cachedTransport!!
 
         val remoteBase = buildRemoteBase(backend, backendUrl, backendShare, repoPath)
         val bridge = ResticRestBridge(transport, remoteBase, cacheDir)
 
         try {
-            bridge.start()
+            bridge.start(300_000)
             val port = bridge.listeningPort
             if (port < 0) {
                 throw IllegalStateException("REST bridge failed to bind a port")
