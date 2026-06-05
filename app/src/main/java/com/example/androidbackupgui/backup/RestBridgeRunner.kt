@@ -65,7 +65,7 @@ class RestBridgeRunner {
         val transport = cachedTransport!!
 
         val remoteBase = buildRemoteBase(backend, backendUrl, backendShare, repoPath)
-        val bridge = ResticRestBridge(transport, remoteBase, cacheDir)
+        val bridge = ResticRestBridge(transport, remoteBase, repoPath, cacheDir)
 
         try {
             bridge.start(0)

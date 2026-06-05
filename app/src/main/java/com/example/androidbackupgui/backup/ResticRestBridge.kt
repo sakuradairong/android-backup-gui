@@ -6,7 +6,6 @@ import fi.iki.elonen.NanoHTTPD.IHTTPSession
 import kotlinx.coroutines.runBlocking
 import java.io.File
 import java.util.UUID
-
 /**
  * NanoHTTPD-based REST bridge implementing the restic REST backend API.
  *
@@ -14,10 +13,15 @@ import java.util.UUID
  * can read/write blobs directly to SMB/WebDAV without a local staging repo.
  *
  * Port is auto-assigned (0); use [listeningPort] after start().
+ *
+ * @param repoPath repository path from the bridge URL (e.g. "backup").
+ *                 Stripped from incoming URIs so that the remoteBase SMB path
+ *                 does not get double-nested with the repo prefix.
  */
 class ResticRestBridge(
     private val transport: RemoteTransport,
     private val remoteBase: String,
+    private val repoPath: String,
     private val cacheDir: File
 ) : NanoHTTPD(0) {
 
@@ -56,6 +60,14 @@ class ResticRestBridge(
         session: IHTTPSession
     ): Response {
         val path = uri.trimEnd('/')
+        // Strip the repoPath prefix (/backup/...) from the URI so that type/name
+        // parsing sees only the restic REST API segment.
+        val stripPrefix = if (repoPath.isNotEmpty()) "/${repoPath.trim('/')}" else ""
+        val strippedPath = if (stripPrefix.isNotEmpty() && path.startsWith(stripPrefix)) {
+            path.removePrefix(stripPrefix).ifEmpty { "/" }
+        } else {
+            path
+        }
 
         // POST {path}?create=true -> mkdirs
         if (method == NanoHTTPD.Method.POST && params["create"] == "true") {
@@ -71,7 +83,7 @@ class ResticRestBridge(
             }
         }
 
-        val segments = path.split("/").filter { it.isNotEmpty() }
+        val segments = strippedPath.split("/").filter { it.isNotEmpty() }
 
         if (segments.isEmpty()) {
             return newFixedLengthResponse(Response.Status.NOT_FOUND, "text/plain", "Invalid path")
