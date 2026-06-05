@@ -18,7 +18,6 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -190,21 +189,12 @@ class ConfigViewModel(application: Application) : AndroidViewModel(application) 
         viewModelScope.launch {
             try {
                 _operationEvents.emit(OperationEvent.InitStarted)
-                val result = withTimeoutOrNull(60_000L) {
-                    ResticWrapper.init(form.repo, form.password,
-                        backend = form.backend, backendUrl = form.backendUrl,
-                        backendUser = form.backendUser, backendPass = form.backendPass,
-                        backendShare = form.backendShare,
-                    )
-                }
-                if (result == null) {
-                    _operationEvents.emit(OperationEvent.InitFailed)
-                    Log.w(TAG, "initResticRepo timed out after 1 minute")
-                    _uiState.update { it.copy(resticStatus = it.resticStatus.copy(
-                        message = "初始化超时（1分钟），请检查网络/SMB 服务器是否正常"
-                    ))}
-                    refreshResticStatus(form)
-                } else if (result.isSuccess) {
+                val result = ResticWrapper.init(form.repo, form.password,
+                    backend = form.backend, backendUrl = form.backendUrl,
+                    backendUser = form.backendUser, backendPass = form.backendPass,
+                    backendShare = form.backendShare,
+                )
+                if (result.isSuccess) {
                     _operationEvents.emit(OperationEvent.InitCompleted)
                     _uiState.update { it.copy(resticStatus = it.resticStatus.copy(
                         message = "仓库初始化成功: ${form.repo}"

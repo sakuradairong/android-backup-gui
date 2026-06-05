@@ -68,7 +68,7 @@ class RestBridgeRunner {
         val bridge = ResticRestBridge(transport, remoteBase, cacheDir)
 
         try {
-            bridge.start(60_000)
+            bridge.start(0)
             val port = bridge.listeningPort
             if (port < 0) {
                 throw IllegalStateException("REST bridge failed to bind a port")

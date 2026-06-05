@@ -110,13 +110,19 @@ class ResticRestBridge(
      * Returns the temp file (caller must delete).
      */
     private fun streamBodyToFile(session: IHTTPSession, tmpDir: File): Result<File> {
+        val started = System.currentTimeMillis()
         return try {
             val tmpFile = File(tmpDir, "restic_blob_${UUID.randomUUID()}")
             val input = (session as NanoHTTPD.HTTPSession).inputStream
+            Log.d(TAG, "streamBodyToFile: reading body...")
             tmpFile.outputStream().use { output -> input.copyTo(output) }
+            val elapsed = System.currentTimeMillis() - started
+            val bytes = tmpFile.length()
+            Log.i(TAG, "streamBodyToFile: read $bytes bytes in ${elapsed}ms")
             Result.success(tmpFile)
         } catch (e: Exception) {
-            Log.w(TAG, "stream body to file failed", e)
+            val elapsed = System.currentTimeMillis() - started
+            Log.w(TAG, "streamBodyToFile failed after ${elapsed}ms", e)
             Result.failure(e)
         }
     }
