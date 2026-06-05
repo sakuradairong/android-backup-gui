@@ -253,4 +253,17 @@ class SmbTransport(
                 err(AppError.Remote("SMB 检查失败", "exists", cause = e))
             }
         }
+
+    override suspend fun fileSize(remotePath: String): AppResult<Long> =
+        withContext(Dispatchers.IO) {
+            try {
+                val file = smbFile(remotePath)
+                if (!file.exists()) return@withContext err(AppError.Remote("文件不存在", "fileSize"))
+                AppResult.Success(file.length())
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                err(AppError.Remote("SMB 获取文件大小失败", "fileSize", cause = e))
+            }
+        }
 }

@@ -4,6 +4,7 @@ import android.util.Log
 import fi.iki.elonen.NanoHTTPD
 import fi.iki.elonen.NanoHTTPD.IHTTPSession
 import kotlinx.coroutines.runBlocking
+import java.io.ByteArrayInputStream
 import java.io.File
 import java.util.UUID
 /**
@@ -168,10 +169,15 @@ class ResticRestBridge(
         val remotePath = "$remoteBase/config"
         when (method) {
             NanoHTTPD.Method.HEAD -> {
-                when (val result = transport.exists(remotePath)) {
+                when (val exists = transport.exists(remotePath)) {
                     is AppResult.Success -> {
-                        if (result.data) {
-                            newFixedLengthResponse(Response.Status.OK, "application/octet-stream", "")
+                        if (exists.data) {
+                            val sizeResult = transport.fileSize(remotePath)
+                            val fileSize = if (sizeResult is AppResult.Success) sizeResult.data else 0L
+                            newFixedLengthResponse(
+                                Response.Status.OK, "application/octet-stream",
+                                ByteArrayInputStream(ByteArray(0)), fileSize
+                            )
                         } else {
                             newFixedLengthResponse(Response.Status.NOT_FOUND, "text/plain", "")
                         }

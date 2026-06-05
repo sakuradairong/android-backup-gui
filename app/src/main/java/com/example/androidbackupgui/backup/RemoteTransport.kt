@@ -42,6 +42,8 @@ interface RemoteTransport {
 
     suspend fun delete(remotePath: String): AppResult<Unit>
     suspend fun exists(remotePath: String): AppResult<Boolean>
+    /** Get the size of a remote file in bytes. Returns [AppResult.Failure] if not found. */
+    suspend fun fileSize(remotePath: String): AppResult<Long>
 
     companion object {
 

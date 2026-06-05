@@ -180,4 +180,19 @@ class WebdavTransport(
                 err(AppError.Remote("WebDAV 检查失败", "exists", cause = e))
             }
         }
+
+    override suspend fun fileSize(remotePath: String): AppResult<Long> =
+        withContext(Dispatchers.IO) {
+            try {
+                val url = buildUrl(remotePath)
+                if (!sardine.exists(url)) return@withContext err(AppError.Remote("文件不存在", "fileSize"))
+                val resources = sardine.list(url)
+                val size = resources.firstOrNull()?.contentLength ?: 0L
+                AppResult.Success(size)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                err(AppError.Remote("WebDAV 获取文件大小失败", "fileSize", cause = e))
+            }
+        }
 }
