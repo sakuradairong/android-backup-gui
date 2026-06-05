@@ -174,7 +174,8 @@ class ResticRestBridge(
                 try {
                     when (transport.download(remotePath, tempFile.absolutePath)) {
                         is AppResult.Success -> {
-                            newChunkedResponse(Response.Status.OK, "application/octet-stream", tempFile.inputStream())
+                            val data = tempFile.readBytes()
+                            newFixedLengthResponse(Response.Status.OK, "application/octet-stream", data.inputStream(), data.size.toLong())
                         }
                         is AppResult.Failure -> newFixedLengthResponse(
                             Response.Status.NOT_FOUND, "text/plain", ""
@@ -305,14 +306,14 @@ class ResticRestBridge(
                         response.addHeader("Content-Length", chunkSize.toString())
                         return@runBlocking response
                     }
-
-                    // Full file — stream directly without loading into memory
+                    // Full file — read into memory (blobs are typically small)
+                    val data = tempFile.readBytes()
                     val response = newChunkedResponse(
                         Response.Status.OK,
                         "application/octet-stream",
-                        tempFile.inputStream()
+                        data.inputStream()
                     )
-                    response.addHeader("Content-Length", tempFile.length().toString())
+                    response.addHeader("Content-Length", data.size.toString())
                     response
                 }
                 is AppResult.Failure -> newFixedLengthResponse(
