@@ -5,32 +5,38 @@ package com.example.androidbackupgui.backup
  */
 class ResticEnvResolver {
 
-    /** Build environment for restic. For SMB/WebDAV backends, uses local temp dir as repo. */
-    fun buildFullEnv(
-        repoPath: String,
+
+    /** Build environment for non-local backends using the REST bridge URL. */
+    fun buildBridgeEnv(
         password: String,
-        backend: String = "local",
-        backendUrl: String = "",
-        backendUser: String = "",
-        backendPass: String = "",
-        backendShare: String = "",
-        tempRepoDir: String = ""
+        bridgeUrl: String,
+        cacheDir: String
     ): Map<String, String> {
         val env = HashMap(System.getenv() ?: emptyMap())
-        env["RESTIC_REPOSITORY"] = if (backend == "smb" || backend == "webdav") {
-            tempRepoDir
-        } else {
-            buildRepoUrl(backend, repoPath, backendUrl)
-        }
+        env["RESTIC_REPOSITORY"] = bridgeUrl
         env["RESTIC_PASSWORD"] = password
-        // Restic needs HOME for its cache on Android (no $HOME by default).
-        // Both local and remote backends use the same cache dir (sibling of tempRepoDir).
-        if (tempRepoDir.isNotEmpty()) {
-            val cacheDir = tempRepoDir.substringBeforeLast("/") + "/restic_cache"
+        if (cacheDir.isNotEmpty()) {
             env["HOME"] = cacheDir
             env["XDG_CACHE_HOME"] = cacheDir
-            // Restic needs a writable temp dir for pack files. Android has no /tmp.
-            val tmpDir = tempRepoDir.substringBeforeLast("/") + "/restic_tmp"
+            val tmpDir = "$cacheDir/restic_tmp"
+            env["TMPDIR"] = tmpDir
+        }
+        return env
+    }
+
+    /** Build environment for local repository. */
+    fun buildLocalEnv(
+        repoPath: String,
+        password: String,
+        cacheDir: String
+    ): Map<String, String> {
+        val env = HashMap(System.getenv() ?: emptyMap())
+        env["RESTIC_REPOSITORY"] = repoPath
+        env["RESTIC_PASSWORD"] = password
+        if (cacheDir.isNotEmpty()) {
+            env["HOME"] = cacheDir
+            env["XDG_CACHE_HOME"] = cacheDir
+            val tmpDir = "$cacheDir/restic_tmp"
             env["TMPDIR"] = tmpDir
         }
         return env

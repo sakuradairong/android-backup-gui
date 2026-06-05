@@ -158,6 +158,90 @@ class ResticCommandRunner {
             CommandResult("", e.message ?: "Unknown error", -1)
         }
     }
+
+    /**
+     * Run restic with stdin redirected from [stdinFile] (FIFO or regular file).
+     * Calls [onLine] for each stdout line (for streaming progress).
+     */
+    suspend fun runResticWithStdin(
+        env: Map<String, String>,
+        args: List<String>,
+        stdinFile: File,
+        onLine: suspend (String) -> Unit
+    ): CommandResult = withContext(Dispatchers.IO) {
+        val cmdArgs = buildCommandArgs(args)
+        Log.i(TAG, "runResticWithStdin cmd=${cmdArgs.joinToString(" ")} stdin=${stdinFile.absolutePath}")
+        Log.d(TAG, "runResticWithStdin REPOSITORY=${env["RESTIC_REPOSITORY"]}")
+        env["TMPDIR"]?.let { File(it).mkdirs() }
+
+        var process: Process? = null
+        try {
+
+            val pb = ProcessBuilder(cmdArgs)
+            pb.environment().putAll(env)
+            pb.redirectErrorStream(false)
+            process = pb.start()
+
+            // Pipe stdin from file to process on a daemon thread (API 24 compat)
+            Thread {
+                try {
+                    val fis = java.io.FileInputStream(stdinFile)
+                    val pos = process!!.outputStream
+                    fis.use { input -> pos.use { output -> input.copyTo(output) } }
+                } catch (_: Exception) {
+                    // FIFO writer closed; stdin pipe ends naturally
+                }
+            }.apply { isDaemon = true; start() }
+            val stdoutText = StringBuilder()
+            val reader = process.inputStream.bufferedReader()
+
+            try {
+                var line: String
+                while (reader.readLine().also { line = it } != null) {
+                    if (!coroutineContext.isActive) {
+                        process.destroy()
+                        break
+                    }
+                    stdoutText.appendLine(line)
+                    onLine(line)
+                }
+            } finally {
+                try { reader.close() } catch (_: Exception) {}
+            }
+            val stderrBytes = try { process.errorStream.use { it.readAllBytesCompat() } } catch (_: Exception) { byteArrayOf() }
+            val stderrText = stderrBytes.decodeToString().trim()
+            val exitCode = try {
+                val deadline = System.currentTimeMillis() + 60_000
+                var exited = false
+                while (System.currentTimeMillis() < deadline && !exited) {
+                    try {
+                        process.exitValue()
+                        exited = true
+                    } catch (_: IllegalThreadStateException) {
+                        Thread.sleep(100)
+                    }
+                }
+                if (exited) {
+                    process.exitValue()
+                } else {
+                    Log.w(TAG, "runResticWithStdin: process did not exit within 60s, destroying")
+                    process.destroy()
+                    process.waitFor()
+                    process.exitValue()
+                }
+            } catch (_: Exception) { -1 }
+
+            Log.i(TAG, "runResticWithStdin exitCode=$exitCode stdout_len=${stdoutText.length}")
+            if (stderrText.isNotEmpty()) Log.w(TAG, "runResticWithStdin stderr: ${stderrText}")
+            CommandResult(stdoutText.toString().trim(), stderrText.trim(), exitCode)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.e(TAG, "runResticWithStdin exception", e)
+            try { process?.destroy() } catch (_: Exception) {}
+            CommandResult("", e.message ?: "Unknown error", -1)
+        }
+    }
 }
 
 /**

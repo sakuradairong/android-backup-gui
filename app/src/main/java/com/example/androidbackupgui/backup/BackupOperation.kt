@@ -353,7 +353,7 @@ object BackupOperation {
         }
     }
 
-    private suspend fun buildAppDetailsJson(
+    internal suspend fun buildAppDetailsJson(
         apps: List<AppInfo>,
         legacyApps: Map<String, SnapshotAppInfo>? = null
     ): String {

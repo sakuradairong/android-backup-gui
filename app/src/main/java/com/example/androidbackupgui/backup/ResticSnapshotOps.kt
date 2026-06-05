@@ -5,21 +5,31 @@ import kotlinx.coroutines.withContext
 import com.example.androidbackupgui.backup.AppError
 import com.example.androidbackupgui.backup.AppResult
 import com.example.androidbackupgui.backup.err
+import java.io.File
 
 
 /**
  * Snapshot listing and retention policy operations.
  *
- * [listSnapshots] is download-only; [forget] requires both download and upload
- * (forget removes snapshots from the remote).
+ * [listSnapshots] is download-only; [forget] removes snapshots from the remote.
+ *
+ * For "local" backends, invokes restic directly against [repoPath].
+ * For remote backends (SMB/WebDAV/rest-server), starts a temporary REST bridge
+ * via [RestBridgeRunner.withBridge] and points restic at the bridge URL.
+ *
  * Delegates execution to [ResticCommandRunner], [ResticEnvResolver], and
- * [RemoteSyncManager] which are shared across sub-modules.
+ * [RestBridgeRunner] which are shared across sub-modules.
  */
 class ResticSnapshotOps(
     private val runner: ResticCommandRunner,
     private val envResolver: ResticEnvResolver,
-    private val syncManager: RemoteSyncManager
+    private val bridgeRunner: RestBridgeRunner
 ) {
+    /** Cache directory for restic env and bridge temp files. Set by ResticWrapper. */
+    var cacheDir: String = ""
+    /** NTLM domain for SMB authentication. Set by ResticWrapper. */
+    var backendDomain: String = ""
+
     // ── List snapshots ─────────────────────────────────
 
     suspend fun listSnapshots(
@@ -31,22 +41,16 @@ class ResticSnapshotOps(
         backendUser: String = "",
         backendPass: String = "",
         backendShare: String = "",
-        onSyncProgress: suspend (RemoteTransport.TransferProgress) -> Unit = {},
-        onByteSyncProgress: suspend (RemoteTransport.ByteProgress) -> Unit = {},
     ): AppResult<List<ResticWrapper.ResticSnapshot>> = withContext(Dispatchers.IO) {
-        syncManager.withRemoteSync(backend, backendUrl, backendUser, backendPass, backendShare, repoPath,
-            needsDownload = true, needsUpload = false,
-            onProgress = onSyncProgress,
-            onByteProgress = onByteSyncProgress,
-        ) {
+        if (backend == "local") {
             val args = mutableListOf("snapshots", "--json")
             if (tag != null) { args.add("--tag"); args.add(tag) }
 
-            val env = envResolver.buildFullEnv(repoPath, password, backend, backendUrl, backendUser, backendPass, backendShare, syncManager.tempRepoDir)
+            val env = envResolver.buildLocalEnv(repoPath, password, cacheDir)
             val result = runner.runRestic(env, args)
 
             if (result.exitCode != 0) {
-                return@withRemoteSync err(AppError.Restic("restic snapshots 失败", result.exitCode, result.stderr))
+                return@withContext err(AppError.Restic("restic snapshots 失败", result.exitCode, result.stderr))
             }
 
             try {
@@ -54,8 +58,32 @@ class ResticSnapshotOps(
                     result.stdout.ifEmpty { "[]" }
                 )
                 AppResult.Success(snapshots.sortedByDescending { it.time })
-        } catch (e: Exception) {
+            } catch (e: Exception) {
                 err(AppError.Parse("解析快照 JSON 失败", e.message ?: ""))
+            }
+        } else {
+            bridgeRunner.withBridge(
+                backend, backendUrl, backendUser, backendPass, backendShare,
+                backendDomain, repoPath, File(cacheDir)
+            ) { bridgeUrl ->
+                val args = mutableListOf("snapshots", "--json")
+                if (tag != null) { args.add("--tag"); args.add(tag) }
+
+                val env = envResolver.buildBridgeEnv(password, bridgeUrl, cacheDir)
+                val result = runner.runRestic(env, args)
+
+                if (result.exitCode != 0) {
+                    return@withBridge err(AppError.Restic("restic snapshots 失败", result.exitCode, result.stderr))
+                }
+
+                try {
+                    val snapshots = resticJson.decodeFromString<List<ResticWrapper.ResticSnapshot>>(
+                        result.stdout.ifEmpty { "[]" }
+                    )
+                    AppResult.Success(snapshots.sortedByDescending { it.time })
+                } catch (e: Exception) {
+                    err(AppError.Parse("解析快照 JSON 失败", e.message ?: ""))
+                }
             }
         }
     }
@@ -74,14 +102,8 @@ class ResticSnapshotOps(
         backendUser: String = "",
         backendPass: String = "",
         backendShare: String = "",
-        onSyncProgress: suspend (RemoteTransport.TransferProgress) -> Unit = {},
-        onByteSyncProgress: suspend (RemoteTransport.ByteProgress) -> Unit = {},
     ): AppResult<String> = withContext(Dispatchers.IO) {
-        syncManager.withRemoteSync(backend, backendUrl, backendUser, backendPass, backendShare, repoPath,
-            needsDownload = true, needsUpload = true,
-            onProgress = onSyncProgress,
-            onByteProgress = onByteSyncProgress,
-        ) {
+        if (backend == "local") {
             val args = mutableListOf(
                 "forget",
                 "--keep-daily", keepDaily.toString(),
@@ -90,11 +112,30 @@ class ResticSnapshotOps(
             )
             if (dryRun) args.add("--dry-run")
 
-            val env = envResolver.buildFullEnv(repoPath, password, backend, backendUrl, backendUser, backendPass, backendShare, syncManager.tempRepoDir)
+            val env = envResolver.buildLocalEnv(repoPath, password, cacheDir)
             val result = runner.runRestic(env, args)
 
             if (result.exitCode == 0) AppResult.Success(result.stdout)
             else err(AppError.Restic("restic forget 失败", result.exitCode, result.stderr))
+        } else {
+            bridgeRunner.withBridge(
+                backend, backendUrl, backendUser, backendPass, backendShare,
+                backendDomain, repoPath, File(cacheDir)
+            ) { bridgeUrl ->
+                val args = mutableListOf(
+                    "forget",
+                    "--keep-daily", keepDaily.toString(),
+                    "--keep-weekly", keepWeekly.toString(),
+                    "--keep-monthly", keepMonthly.toString()
+                )
+                if (dryRun) args.add("--dry-run")
+
+                val env = envResolver.buildBridgeEnv(password, bridgeUrl, cacheDir)
+                val result = runner.runRestic(env, args)
+
+                if (result.exitCode == 0) AppResult.Success(result.stdout)
+                else err(AppError.Restic("restic forget 失败", result.exitCode, result.stderr))
+            }
         }
     }
 }

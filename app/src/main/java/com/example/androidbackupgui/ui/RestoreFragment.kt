@@ -18,13 +18,11 @@ import com.example.androidbackupgui.backup.RestoreOperation
 import com.example.androidbackupgui.backup.ResticBinary
 import com.example.androidbackupgui.backup.ResticWrapper
 import com.example.androidbackupgui.backup.WifiManager
-import com.example.androidbackupgui.backup.RemoteTransport
 import com.example.androidbackupgui.databinding.FragmentRestoreBinding
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
-import com.example.androidbackupgui.backup.formatSize
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlin.coroutines.resume
 
@@ -64,7 +62,7 @@ class RestoreFragment : Fragment() {
             val binaryPath = ResticBinary.prepare(requireContext())
             if (binaryPath != null) {
                 ResticWrapper.binaryPath = binaryPath
-                ResticWrapper.tempRepoDir = ResticBinary.getTempRepoDir(requireContext())
+                ResticWrapper.cacheDir = requireContext().cacheDir.absolutePath
                 ResticWrapper.backendDomain = config.resticBackendDomain
                 binding.selectResticButton.visibility = View.VISIBLE
             }
@@ -120,15 +118,14 @@ class RestoreFragment : Fragment() {
         // Skip redundant preparation if binary and backend config are already set
         if (resticConfig != null &&
             ResticWrapper.binaryPath.isNotEmpty() &&
-            ResticWrapper.binaryPath != "restic" &&
-            ResticWrapper.backendDomain == config.resticBackendDomain
+            ResticWrapper.binaryPath != "restic"
         ) {
             binding.selectResticButton.visibility = View.VISIBLE
         } else {
             val binaryPath = ResticBinary.prepare(requireContext())
             if (binaryPath != null && resticConfig != null) {
                 ResticWrapper.binaryPath = binaryPath
-                ResticWrapper.tempRepoDir = ResticBinary.getTempRepoDir(requireContext())
+                ResticWrapper.cacheDir = requireContext().cacheDir.absolutePath
                 ResticWrapper.backendDomain = config.resticBackendDomain
                 binding.selectResticButton.visibility = View.VISIBLE
             }
@@ -189,12 +186,6 @@ class RestoreFragment : Fragment() {
                     backendUser = config.resticBackendUser,
                     backendPass = config.resticBackendPass,
                     backendShare = config.resticBackendShare,
-                    onSyncProgress = { p ->
-                        updateStatus("同步中: ${p.current}/${p.total} [${p.currentFile}]")
-                    },
-                    onByteSyncProgress = { bp ->
-                        updateStatus("下载中: ${bp.bytesTransferred / 1024 / 1024} MB / ${bp.totalBytes / 1024 / 1024} MB")
-                    }
                 )
                 if (snapshotsResult.isFailure) {
                     updateStatus("读取快照失败: ${snapshotsResult.exceptionOrNull()?.message}")
@@ -332,19 +323,6 @@ class RestoreFragment : Fragment() {
                             backendUser = config.resticBackendUser,
                             backendPass = config.resticBackendPass,
                             backendShare = config.resticBackendShare,
-                            onSyncProgress = { progress: RemoteTransport.TransferProgress ->
-                                if (progress.phase in listOf("list", "download", "upload", "delete_stale")) {
-                                    updateStatus("同步中: ${progress.current}/${progress.total} 个文件")
-                                }
-                            },
-                            onByteSyncProgress = { progress ->
-                                withContext(Dispatchers.Main) {
-                                    binding.progressBar.max = progress.totalBytes.toInt().coerceAtLeast(1)
-                                    binding.progressBar.progress = progress.bytesTransferred.toInt()
-                                }
-                                updateStatus("同步中: ${progress.currentFile}\n" +
-                                    "${formatSize(progress.bytesTransferred)} / ${formatSize(progress.totalBytes)}")
-                            },
                             onProgress = { msg -> withContext(Dispatchers.Main) { binding.statusText.text = msg } }
                         )
 

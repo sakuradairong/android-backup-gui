@@ -8,7 +8,6 @@ import com.example.androidbackupgui.backup.BackupConfig
 import com.example.androidbackupgui.backup.formatSize
 import com.example.androidbackupgui.backup.ResticBinary
 import com.example.androidbackupgui.backup.ResticWrapper
-import com.example.androidbackupgui.backup.RemoteTransport
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -18,7 +17,6 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import java.io.File
 
@@ -154,7 +152,7 @@ class ConfigViewModel(application: Application) : AndroidViewModel(application) 
         val binaryPath = ResticBinary.prepare(ctx)
         if (binaryPath == null) return false
         ResticWrapper.binaryPath = binaryPath
-        ResticWrapper.tempRepoDir = ResticBinary.getTempRepoDir(ctx)
+        ResticWrapper.cacheDir = ctx.cacheDir.absolutePath
         return true
     }
 
@@ -188,8 +186,6 @@ class ConfigViewModel(application: Application) : AndroidViewModel(application) 
                     backend = form.backend, backendUrl = form.backendUrl,
                     backendUser = form.backendUser, backendPass = form.backendPass,
                     backendShare = form.backendShare,
-                    onSyncProgress = { p -> onSyncProgress(p) },
-                    onByteSyncProgress = { p -> onByteProgress(p) },
                 )
                 if (result.isSuccess) {
                     _operationEvents.emit(OperationEvent.InitCompleted)
@@ -235,8 +231,6 @@ class ConfigViewModel(application: Application) : AndroidViewModel(application) 
                 backend = form.backend, backendUrl = form.backendUrl,
                 backendUser = form.backendUser, backendPass = form.backendPass,
                 backendShare = form.backendShare,
-                onSyncProgress = { p -> onSyncProgress(p) },
-                onByteSyncProgress = { p -> onByteProgress(p) },
             )
             if (snapshotsResult.isSuccess) {
                 val snapshots = snapshotsResult.getOrDefault(emptyList())
@@ -265,15 +259,11 @@ class ConfigViewModel(application: Application) : AndroidViewModel(application) 
                     backend = form.backend, backendUrl = form.backendUrl,
                     backendUser = form.backendUser, backendPass = form.backendPass,
                     backendShare = form.backendShare,
-                    onSyncProgress = { p -> onSyncProgress(p) },
-                    onByteSyncProgress = { p -> onByteProgress(p) },
                 )
                 val snapshotsResult = ResticWrapper.listSnapshots(form.repo, form.password,
                     backend = form.backend, backendUrl = form.backendUrl,
                     backendUser = form.backendUser, backendPass = form.backendPass,
                     backendShare = form.backendShare,
-                    onSyncProgress = { p -> onSyncProgress(p) },
-                    onByteSyncProgress = { p -> onByteProgress(p) },
                 )
 
                 val snapshotCount = snapshotsResult.getOrDefault(emptyList()).size
@@ -310,8 +300,6 @@ class ConfigViewModel(application: Application) : AndroidViewModel(application) 
                     backend = form.backend, backendUrl = form.backendUrl,
                     backendUser = form.backendUser, backendPass = form.backendPass,
                     backendShare = form.backendShare,
-                    onSyncProgress = { p -> onSyncProgress(p) },
-                    onByteSyncProgress = { p -> onByteProgress(p) },
                 )
                 if (forgetResult.isFailure) {
                     _operationEvents.emit(OperationEvent.PruneFailed)
@@ -328,8 +316,6 @@ class ConfigViewModel(application: Application) : AndroidViewModel(application) 
                     backend = form.backend, backendUrl = form.backendUrl,
                     backendUser = form.backendUser, backendPass = form.backendPass,
                     backendShare = form.backendShare,
-                    onSyncProgress = { p -> onSyncProgress(p) },
-                    onByteSyncProgress = { p -> onByteProgress(p) },
                 )
                 _uiState.update { it.copy(resticStatus = it.resticStatus.copy(
                     message = if (pruneResult.isSuccess)
@@ -349,29 +335,5 @@ class ConfigViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    // ── Internal progress helpers ─────────────────────────────────────
 
-    private fun onSyncProgress(p: RemoteTransport.TransferProgress) {
-        _uiState.update {
-            it.copy(resticStatus = it.resticStatus.copy(
-                message = "同步中: ${p.current}/${p.total} 个文件"
-            ))
-        }
-    }
-
-    private fun onByteProgress(p: RemoteTransport.ByteProgress) {
-        _uiState.update {
-            it.copy(resticStatus = it.resticStatus.copy(
-                message = "同步中: ${p.currentFile}\n${formatSize(p.bytesTransferred)} / ${formatSize(p.totalBytes)}"
-            ))
-        }
-    }
-
-    /** Cleanup ResticWrapper resources when ViewModel is cleared. */
-    override fun onCleared() {
-        super.onCleared()
-        runBlocking(Dispatchers.IO) {
-            ResticWrapper.cleanup()
-        }
-    }
 }

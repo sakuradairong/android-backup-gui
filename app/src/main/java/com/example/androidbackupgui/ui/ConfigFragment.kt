@@ -247,13 +247,4 @@ class ConfigFragment : Fragment() {
         vm.pruneResticSnapshots(readResticForm())
     }
 
-    override fun onDestroyView() {
-        lifecycleScope.launch {
-            withContext(Dispatchers.IO) {
-                ResticWrapper.cleanup()
-            }
-        }
-        super.onDestroyView()
-        _binding = null
-    }
 }

@@ -8,20 +8,23 @@ import kotlin.coroutines.coroutineContext
 import com.example.androidbackupgui.backup.AppError
 import com.example.androidbackupgui.backup.AppResult
 import com.example.androidbackupgui.backup.err
+import java.io.File
 
 
 /**
  * Backup operations: running restic backup and parsing its summary output.
  *
  * Delegates execution to [ResticCommandRunner], [ResticEnvResolver], and
- * [RemoteSyncManager] which are shared across sub-modules.
+ * [RestBridgeRunner] which are shared across sub-modules.
  */
 class ResticBackup(
     private val runner: ResticCommandRunner,
     private val envResolver: ResticEnvResolver,
-    private val syncManager: RemoteSyncManager
+    private val bridgeRunner: RestBridgeRunner
 ) {
     private val TAG = "ResticBackup"
+    var cacheDir: String = ""
+    var backendDomain: String = ""
 
     // ── Backup ─────────────────────────────────────────
 
@@ -36,35 +39,103 @@ class ResticBackup(
         backendUser: String = "",
         backendPass: String = "",
         backendShare: String = "",
-        onSyncProgress: suspend (RemoteTransport.TransferProgress) -> Unit = {},
-        onByteSyncProgress: suspend (RemoteTransport.ByteProgress) -> Unit = {},
         onProgress: suspend (ResticWrapper.ResticProgress) -> Unit = {}
     ): AppResult<ResticWrapper.BackupSummary> = withContext(Dispatchers.IO) {
         val emit: suspend (ResticWrapper.ResticProgress) -> Unit = { p -> withContext(Dispatchers.Main) { onProgress(p) } }
-        syncManager.withRemoteSync(backend, backendUrl, backendUser, backendPass, backendShare, repoPath,
-            needsDownload = true, needsUpload = true,
-            onProgress = onSyncProgress,
-            onByteProgress = onByteSyncProgress,
-        ) {
+
+        if (backend == "local") {
             val args = mutableListOf("backup", "--json")
             for (path in paths) args.add(path)
             for (tag in tags) { args.add("--tag"); args.add(tag) }
             if (hostname != null) { args.add("--host"); args.add(hostname) }
 
-            val env = envResolver.buildFullEnv(repoPath, password, backend, backendUrl, backendUser, backendPass, backendShare, syncManager.tempRepoDir)
+            val env = envResolver.buildLocalEnv(repoPath, password, cacheDir)
             val result = runner.runResticStreaming(env, args) { line ->
                 if (!coroutineContext.isActive) return@runResticStreaming
                 try {
                     val progress = resticJson.decodeFromString<ResticWrapper.ResticProgress>(line)
                     if (progress.messageType == "status") emit(progress)
-                } catch (_: Exception) { /* ignore non-JSON lines */ }
+                } catch (_: Exception) { }
             }
 
-            if (result.exitCode != 0) {
-                return@withRemoteSync err(AppError.Restic("restic backup 失败", result.exitCode, result.stderr))
-            }
-
+            if (result.exitCode != 0) return@withContext err(AppError.Restic("restic backup 失败", result.exitCode, result.stderr))
             parseBackupSummary(result.stdout)
+        } else {
+            bridgeRunner.withBridge(backend, backendUrl, backendUser, backendPass, backendShare, backendDomain, repoPath, File(cacheDir)) { bridgeUrl ->
+                val args = mutableListOf("backup", "--json")
+                for (path in paths) args.add(path)
+                for (tag in tags) { args.add("--tag"); args.add(tag) }
+                if (hostname != null) { args.add("--host"); args.add(hostname) }
+
+                val env = envResolver.buildBridgeEnv(password, bridgeUrl, cacheDir)
+                val result = runner.runResticStreaming(env, args) { line ->
+                    if (!coroutineContext.isActive) return@runResticStreaming
+                    try {
+                        val progress = resticJson.decodeFromString<ResticWrapper.ResticProgress>(line)
+                        if (progress.messageType == "status") emit(progress)
+                    } catch (_: Exception) { }
+                }
+
+                if (result.exitCode != 0) return@withBridge err(AppError.Restic("restic backup 失败", result.exitCode, result.stderr))
+                parseBackupSummary(result.stdout)
+            }
+        }
+    }
+
+    // ── Streaming backup (stdin) ──────────────────────
+
+    /**
+     * Run restic backup in --stdin mode, reading tar data from [stdinFile] (FIFO).
+     * [extraPaths] are files/directories backed up alongside the streaming data
+     * (e.g. APK paths, metadata directory).
+     */
+    suspend fun backupStdin(
+        repoPath: String,
+        password: String,
+        stdinFile: File,
+        extraPaths: List<String>,
+        tags: List<String> = emptyList(),
+        hostname: String? = null,
+        backend: String = "local",
+        backendUrl: String = "",
+        backendUser: String = "",
+        backendPass: String = "",
+        backendShare: String = "",
+        onProgress: suspend (ResticWrapper.ResticProgress) -> Unit = {}
+    ): AppResult<ResticWrapper.BackupSummary> = withContext(Dispatchers.IO) {
+        val emit: suspend (ResticWrapper.ResticProgress) -> Unit = { p -> withContext(Dispatchers.Main) { onProgress(p) } }
+
+        val args = mutableListOf("backup", "--json", "--stdin", "--stdin-filename", "app_data.tar")
+        for (path in extraPaths) args.add(path)
+        for (tag in tags) { args.add("--tag"); args.add(tag) }
+        if (hostname != null) { args.add("--host"); args.add(hostname) }
+
+        if (backend == "local") {
+            val env = envResolver.buildLocalEnv(repoPath, password, cacheDir)
+            val result = runner.runResticWithStdin(env, args, stdinFile) { line ->
+                if (!coroutineContext.isActive) return@runResticWithStdin
+                try {
+                    val progress = resticJson.decodeFromString<ResticWrapper.ResticProgress>(line)
+                    if (progress.messageType == "status") emit(progress)
+                } catch (_: Exception) { }
+            }
+
+            if (result.exitCode != 0) return@withContext err(AppError.Restic("restic stream backup 失败", result.exitCode, result.stderr))
+            parseBackupSummary(result.stdout)
+        } else {
+            bridgeRunner.withBridge(backend, backendUrl, backendUser, backendPass, backendShare, backendDomain, repoPath, File(cacheDir)) { bridgeUrl ->
+                val env = envResolver.buildBridgeEnv(password, bridgeUrl, cacheDir)
+                val result = runner.runResticWithStdin(env, args, stdinFile) { line ->
+                    if (!coroutineContext.isActive) return@runResticWithStdin
+                    try {
+                        val progress = resticJson.decodeFromString<ResticWrapper.ResticProgress>(line)
+                        if (progress.messageType == "status") emit(progress)
+                    } catch (_: Exception) { }
+                }
+
+                if (result.exitCode != 0) return@withBridge err(AppError.Restic("restic stream backup 失败", result.exitCode, result.stderr))
+                parseBackupSummary(result.stdout)
+            }
         }
     }
 

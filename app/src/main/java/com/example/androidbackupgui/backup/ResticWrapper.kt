@@ -19,13 +19,14 @@ import com.example.androidbackupgui.backup.err
  * Uses environment variables (RESTIC_REPOSITORY, RESTIC_PASSWORD) rather than
  * command-line flags to avoid leaking secrets in the process list.
  *
- * For SMB/WebDAV backends, restic runs against a local temp directory;
- * RemoteTransport syncs files to/from the remote backend.
+ * For SMB/WebDAV backends, restic connects via a local REST bridge
+ * ([ResticRestBridge]) that translates HTTP requests to [RemoteTransport] calls,
+ * eliminating the need for a local staging repo and full-directory sync.
  *
  * All public methods are suspend and run on Dispatchers.IO.
  *
  * This object is a facade that delegates to [ResticCommandRunner],
- * [ResticEnvResolver], [RemoteSyncManager], and sub-module classes
+ * [ResticEnvResolver], [RestBridgeRunner], and sub-module classes
  * ([ResticRepoInit], [ResticBackup], [ResticRestore], [ResticSnapshotOps],
  * [ResticMaintenance]).
  */
@@ -35,15 +36,15 @@ object ResticWrapper {
 
     private val runner = ResticCommandRunner()
     private val envResolver = ResticEnvResolver()
-    private val syncManager = RemoteSyncManager()
+    private val bridgeRunner = RestBridgeRunner()
 
     // ── Sub-module instances ───────────────────────────
 
-    private val repoInit = ResticRepoInit(runner, envResolver, syncManager)
-    private val backupOp = ResticBackup(runner, envResolver, syncManager)
-    private val restoreOp = ResticRestore(runner, envResolver, syncManager)
-    private val snapshotOps = ResticSnapshotOps(runner, envResolver, syncManager)
-    private val maintenance = ResticMaintenance(runner, envResolver, syncManager)
+    private val repoInit = ResticRepoInit(runner, envResolver, bridgeRunner)
+    private val backupOp = ResticBackup(runner, envResolver, bridgeRunner)
+    private val restoreOp = ResticRestore(runner, envResolver, bridgeRunner)
+    private val snapshotOps = ResticSnapshotOps(runner, envResolver, bridgeRunner)
+    private val maintenance = ResticMaintenance(runner, envResolver, bridgeRunner)
 
     // ── Property delegation ───────────────────────────
 
@@ -52,16 +53,28 @@ object ResticWrapper {
         get() = runner.binaryPath
         set(v) { runner.binaryPath = v }
 
-    /** Local temp directory used as restic repo for SMB/WebDAV backends. */
-    var tempRepoDir: String
-        get() = syncManager.tempRepoDir
-        set(v) { syncManager.tempRepoDir = v }
+    /** Cache directory for restic (XDG_CACHE_HOME) and bridge tmp blobs. */
+    var cacheDir: String = ""
+        set(v) {
+            field = v
+            repoInit.cacheDir = v
+            backupOp.cacheDir = v
+            restoreOp.cacheDir = v
+            snapshotOps.cacheDir = v
+            maintenance.cacheDir = v
+        }
 
-    /** Domain for SMB NTLM authentication. */
-    var backendDomain: String
-        get() = syncManager.backendDomain
-        set(v) { syncManager.backendDomain = v }
 
+    /** Domain for SMB NTLM authentication. Propagated to sub-modules. */
+    var backendDomain: String = ""
+        set(v) {
+            field = v
+            repoInit.backendDomain = v
+            backupOp.backendDomain = v
+            restoreOp.backendDomain = v
+            snapshotOps.backendDomain = v
+            maintenance.backendDomain = v
+        }
     // ── Progress data ─────────────────────────────────
 
     @Serializable
@@ -102,11 +115,8 @@ object ResticWrapper {
         backendUser: String = "",
         backendPass: String = "",
         backendShare: String = "",
-        onSyncProgress: suspend (RemoteTransport.TransferProgress) -> Unit = {},
-        onByteSyncProgress: suspend (RemoteTransport.ByteProgress) -> Unit = {},
     ): AppResult<Unit> = repoInit.init(
-        repoPath, password, backend, backendUrl, backendUser, backendPass, backendShare,
-        onSyncProgress, onByteSyncProgress
+        repoPath, password, backend, backendUrl, backendUser, backendPass, backendShare
     )
 
     // ── Backup ─────────────────────────────────────────
@@ -140,13 +150,32 @@ object ResticWrapper {
         backendUser: String = "",
         backendPass: String = "",
         backendShare: String = "",
-        onSyncProgress: suspend (RemoteTransport.TransferProgress) -> Unit = {},
-        onByteSyncProgress: suspend (RemoteTransport.ByteProgress) -> Unit = {},
         onProgress: suspend (ResticProgress) -> Unit = {}
     ): AppResult<BackupSummary> = backupOp.backup(
         repoPath, password, paths, tags, hostname,
         backend, backendUrl, backendUser, backendPass, backendShare,
-        onSyncProgress, onByteSyncProgress, onProgress
+        onProgress
+    )
+
+    // ── Streaming backup (stdin) ─────────────────────
+
+    suspend fun backupStdin(
+        repoPath: String,
+        password: String,
+        stdinFile: File,
+        extraPaths: List<String>,
+        tags: List<String> = emptyList(),
+        hostname: String? = null,
+        backend: String = "local",
+        backendUrl: String = "",
+        backendUser: String = "",
+        backendPass: String = "",
+        backendShare: String = "",
+        onProgress: suspend (ResticProgress) -> Unit = {}
+    ): AppResult<BackupSummary> = backupOp.backupStdin(
+        repoPath, password, stdinFile, extraPaths, tags, hostname,
+        backend, backendUrl, backendUser, backendPass, backendShare,
+        onProgress
     )
 
     // ── Restore ────────────────────────────────────────
@@ -162,13 +191,11 @@ object ResticWrapper {
         backendUser: String = "",
         backendPass: String = "",
         backendShare: String = "",
-        onSyncProgress: suspend (RemoteTransport.TransferProgress) -> Unit = {},
-        onByteSyncProgress: suspend (RemoteTransport.ByteProgress) -> Unit = {},
         onProgress: suspend (String) -> Unit = {}
     ): AppResult<Unit> = restoreOp.restore(
         repoPath, password, snapshotId, targetPath, include,
         backend, backendUrl, backendUser, backendPass, backendShare,
-        onSyncProgress, onByteSyncProgress, onProgress
+        onProgress
     )
 
     // ── File dump ──────────────────────────────────────
@@ -183,12 +210,9 @@ object ResticWrapper {
         backendUser: String = "",
         backendPass: String = "",
         backendShare: String = "",
-        onSyncProgress: suspend (RemoteTransport.TransferProgress) -> Unit = {},
-        onByteSyncProgress: suspend (RemoteTransport.ByteProgress) -> Unit = {},
     ): AppResult<String> = restoreOp.dump(
         repoPath, password, snapshotId, filePath,
-        backend, backendUrl, backendUser, backendPass, backendShare,
-        onSyncProgress, onByteSyncProgress
+        backend, backendUrl, backendUser, backendPass, backendShare
     )
 
     // ── Snapshot management ────────────────────────────
@@ -202,12 +226,9 @@ object ResticWrapper {
         backendUser: String = "",
         backendPass: String = "",
         backendShare: String = "",
-        onSyncProgress: suspend (RemoteTransport.TransferProgress) -> Unit = {},
-        onByteSyncProgress: suspend (RemoteTransport.ByteProgress) -> Unit = {},
     ): AppResult<List<ResticSnapshot>> = snapshotOps.listSnapshots(
         repoPath, password, tag,
-        backend, backendUrl, backendUser, backendPass, backendShare,
-        onSyncProgress, onByteSyncProgress
+        backend, backendUrl, backendUser, backendPass, backendShare
     )
 
     suspend fun forget(
@@ -222,12 +243,9 @@ object ResticWrapper {
         backendUser: String = "",
         backendPass: String = "",
         backendShare: String = "",
-        onSyncProgress: suspend (RemoteTransport.TransferProgress) -> Unit = {},
-        onByteSyncProgress: suspend (RemoteTransport.ByteProgress) -> Unit = {},
     ): AppResult<String> = snapshotOps.forget(
         repoPath, password, keepDaily, keepWeekly, keepMonthly, dryRun,
-        backend, backendUrl, backendUser, backendPass, backendShare,
-        onSyncProgress, onByteSyncProgress
+        backend, backendUrl, backendUser, backendPass, backendShare
     )
 
     /**
@@ -243,13 +261,10 @@ object ResticWrapper {
         backendUser: String = "",
         backendPass: String = "",
         backendShare: String = "",
-        onSyncProgress: suspend (RemoteTransport.TransferProgress) -> Unit = {},
-        onByteSyncProgress: suspend (RemoteTransport.ByteProgress) -> Unit = {},
     ): Map<String, SnapshotAppInfo>? = withContext(Dispatchers.IO) {
         val snapsResult = snapshotOps.listSnapshots(
             repoPath, password, tag = null,
-            backend, backendUrl, backendUser, backendPass, backendShare,
-            onSyncProgress, onByteSyncProgress
+            backend, backendUrl, backendUser, backendPass, backendShare
         )
         val snaps = when (snapsResult) {
             is AppResult.Failure -> {
@@ -266,8 +281,7 @@ object ResticWrapper {
 
         val dumpResult = restoreOp.dump(
             repoPath, password, latestId, "$basePath/app_details.json",
-            backend, backendUrl, backendUser, backendPass, backendShare,
-            onSyncProgress, onByteSyncProgress
+            backend, backendUrl, backendUser, backendPass, backendShare
         )
 
         val jsonStr = when (dumpResult) {
@@ -314,12 +328,9 @@ object ResticWrapper {
         backendUser: String = "",
         backendPass: String = "",
         backendShare: String = "",
-        onSyncProgress: suspend (RemoteTransport.TransferProgress) -> Unit = {},
-        onByteSyncProgress: suspend (RemoteTransport.ByteProgress) -> Unit = {},
     ): AppResult<String> = maintenance.prune(
         repoPath, password,
-        backend, backendUrl, backendUser, backendPass, backendShare,
-        onSyncProgress, onByteSyncProgress
+        backend, backendUrl, backendUser, backendPass, backendShare
     )
 
     suspend fun check(
@@ -330,12 +341,9 @@ object ResticWrapper {
         backendUser: String = "",
         backendPass: String = "",
         backendShare: String = "",
-        onSyncProgress: suspend (RemoteTransport.TransferProgress) -> Unit = {},
-        onByteSyncProgress: suspend (RemoteTransport.ByteProgress) -> Unit = {},
     ): AppResult<String> = maintenance.check(
         repoPath, password,
-        backend, backendUrl, backendUser, backendPass, backendShare,
-        onSyncProgress, onByteSyncProgress
+        backend, backendUrl, backendUser, backendPass, backendShare
     )
 
     suspend fun stats(
@@ -346,12 +354,9 @@ object ResticWrapper {
         backendUser: String = "",
         backendPass: String = "",
         backendShare: String = "",
-        onSyncProgress: suspend (RemoteTransport.TransferProgress) -> Unit = {},
-        onByteSyncProgress: suspend (RemoteTransport.ByteProgress) -> Unit = {},
     ): AppResult<String> = maintenance.stats(
         repoPath, password,
-        backend, backendUrl, backendUser, backendPass, backendShare,
-        onSyncProgress, onByteSyncProgress
+        backend, backendUrl, backendUser, backendPass, backendShare
     )
 
     // ── Public URL helper ──────────────────────────────
@@ -359,15 +364,5 @@ object ResticWrapper {
     /** Build a display-friendly repository URL for UI. */
     fun buildRepoUrl(backend: String, repoPath: String, backendUrl: String): String {
         return repoInit.buildRepoUrl(backend, repoPath, backendUrl)
-    }
-
-    // ── Lifecycle ──────────────────────────────────────
-
-    /**
-     * Public safety-net cleanup called by fragment lifecycle.
-     * Waits for any in-progress operation to finish, then deletes temp dirs.
-     */
-    suspend fun cleanup() {
-        syncManager.cleanup()
     }
 }

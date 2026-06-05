@@ -33,13 +33,6 @@ object ResticBinary {
         }
     }
 
-    /** Get the temp directory used as local restic repo for remote backends. */
-    fun getTempRepoDir(context: Context): String {
-        val dir = File(context.cacheDir, "restic_remote_repo")
-        dir.mkdirs()
-        Log.d(TAG, "tempRepoDir = ${dir.absolutePath}")
-        return dir.absolutePath
-    }
 
     fun isReady(): Boolean = cachedBinaryPath != null
 }
