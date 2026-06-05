@@ -113,9 +113,29 @@ class ResticRestBridge(
         val started = System.currentTimeMillis()
         return try {
             val tmpFile = File(tmpDir, "restic_blob_${UUID.randomUUID()}")
+            val contentLength = session.headers["content-length"]?.toLongOrNull() ?: -1L
             val input = (session as NanoHTTPD.HTTPSession).inputStream
-            Log.d(TAG, "streamBodyToFile: reading body...")
-            tmpFile.outputStream().use { output -> input.copyTo(output) }
+            Log.d(TAG, "streamBodyToFile: reading body (content-length=$contentLength)...")
+            tmpFile.outputStream().use { output ->
+                if (contentLength > 0) {
+                    // Read exactly Content-Length bytes to avoid blocking on keep-alive
+                    val buf = ByteArray(8192)
+                    var remaining = contentLength
+                    while (remaining > 0) {
+                        val toRead = minOf(buf.size.toLong(), remaining).toInt()
+                        val n = input.read(buf, 0, toRead)
+                        if (n == -1) break
+                        output.write(buf, 0, n)
+                        remaining -= n
+                    }
+                    if (remaining > 0) {
+                        Log.w(TAG, "streamBodyToFile: body truncated, expected $contentLength bytes but got EOF after ${contentLength - remaining}")
+                    }
+                    Unit
+                } else {
+                    input.copyTo(output)
+                }
+            }
             val elapsed = System.currentTimeMillis() - started
             val bytes = tmpFile.length()
             Log.i(TAG, "streamBodyToFile: read $bytes bytes in ${elapsed}ms")
