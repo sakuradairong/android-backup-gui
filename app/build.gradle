@@ -37,13 +37,10 @@ android {
     }
     signingConfigs {
         release {
-            def keystoreFile = file("release.keystore")
-            if (keystoreFile.exists()) {
-                storeFile keystoreFile
-                storePassword System.getenv("KEYSTORE_PASSWORD") ?: "android"
-                keyAlias "release"
-                keyPassword System.getenv("KEY_PASSWORD") ?: "android"
-            }
+            storeFile file("release.keystore")
+            storePassword System.getenv("KEYSTORE_PASSWORD") ?: "android"
+            keyAlias "release"
+            keyPassword System.getenv("KEY_PASSWORD") ?: "android"
         }
     }
     buildTypes {
