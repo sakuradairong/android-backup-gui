@@ -52,8 +52,8 @@ class ResticMaintenance(
                 bridgeRunner.withBridge(
                     backend, backendUrl, backendUser, backendPass, backendShare,
                     backendDomain, repoPath, File(cacheDir)
-                ) { bridgeUrl ->
-                    val env = envResolver.buildBridgeEnv(password, bridgeUrl, cacheDir)
+                ) { bridgeUrl, authToken ->
+                    val env = envResolver.buildBridgeEnv(password, bridgeUrl, cacheDir, authToken)
                     val result = runner.runRestic(env, "prune")
                     if (result.exitCode == 0) AppResult.Success(result.stdout)
                     else err(AppError.Restic("restic prune 失败", result.exitCode, result.stderr))
@@ -82,8 +82,8 @@ class ResticMaintenance(
                 bridgeRunner.withBridge(
                     backend, backendUrl, backendUser, backendPass, backendShare,
                     backendDomain, repoPath, File(cacheDir)
-                ) { bridgeUrl ->
-                    val env = envResolver.buildBridgeEnv(password, bridgeUrl, cacheDir)
+                ) { bridgeUrl, authToken ->
+                    val env = envResolver.buildBridgeEnv(password, bridgeUrl, cacheDir, authToken)
                     val result = runner.runRestic(env, "check")
                     if (result.exitCode == 0) AppResult.Success(result.stdout)
                     else err(AppError.Restic("restic check 失败", result.exitCode, result.stderr))
@@ -112,8 +112,8 @@ class ResticMaintenance(
                 bridgeRunner.withBridge(
                     backend, backendUrl, backendUser, backendPass, backendShare,
                     backendDomain, repoPath, File(cacheDir)
-                ) { bridgeUrl ->
-                    val env = envResolver.buildBridgeEnv(password, bridgeUrl, cacheDir)
+                ) { bridgeUrl, authToken ->
+                    val env = envResolver.buildBridgeEnv(password, bridgeUrl, cacheDir, authToken)
                     val result = runner.runRestic(env, "stats")
                     if (result.exitCode == 0) AppResult.Success(result.stdout)
                     else err(AppError.Restic("restic stats 失败", result.exitCode, result.stderr))

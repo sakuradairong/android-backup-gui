@@ -7,15 +7,6 @@ import com.example.androidbackupgui.root.shellEscape
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
-@Serializable
-data class DataSizes(
-    val apkBytes: Long = 0,
-    val userBytes: Long = 0,
-    val userDeBytes: Long = 0,
-    val dataBytes: Long = 0,
-    val obbBytes: Long = 0,
-    val mediaBytes: Long = 0,
-)
 
 @Serializable
 data class AppInfo(
@@ -30,7 +21,6 @@ data class AppInfo(
     val userId: UserId = UserId(0),
     val hasKeystore: Boolean = false,
     val iconPath: String? = null,
-    val dataSizes: DataSizes = DataSizes(),
 )
 
 object AppScanner {
@@ -101,16 +91,6 @@ object AppScanner {
             .filter { it.isNotEmpty() }
     }
 
-    /** Get the app label/name. */
-    suspend fun getAppLabel(packageName: String): String = withContext(Dispatchers.IO) {
-        val result = RootShell.exec("dumpsys package '${packageName.shellEscape()}' | grep -A1 'ApplicationInfo' | grep 'label=' | head -1")
-        val label = result.output
-            .substringAfter("label=", "")
-            .substringBefore(" ")
-            .removeSurrounding("\"")
-            .trim()
-        label.ifEmpty { packageName }
-    }
 
     /** Check if a package has OBB data. */
     suspend fun hasObbData(packageName: String): Boolean = withContext(Dispatchers.IO) {

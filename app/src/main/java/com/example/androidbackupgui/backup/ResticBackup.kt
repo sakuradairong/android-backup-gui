@@ -4,6 +4,7 @@ import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.CancellationException
 import kotlin.coroutines.coroutineContext
 import com.example.androidbackupgui.backup.AppError
 import com.example.androidbackupgui.backup.AppResult
@@ -55,25 +56,25 @@ class ResticBackup(
                 try {
                     val progress = resticJson.decodeFromString<ResticWrapper.ResticProgress>(line)
                     if (progress.messageType == "status") emit(progress)
-                } catch (_: Exception) { }
+                } catch (e: Exception) { if (e is CancellationException) throw e }
             }
 
             if (result.exitCode != 0) return@withContext err(AppError.Restic("restic backup 失败", result.exitCode, result.stderr))
             parseBackupSummary(result.stdout)
         } else {
-            bridgeRunner.withBridge(backend, backendUrl, backendUser, backendPass, backendShare, backendDomain, repoPath, File(cacheDir)) { bridgeUrl ->
+            bridgeRunner.withBridge(backend, backendUrl, backendUser, backendPass, backendShare, backendDomain, repoPath, File(cacheDir)) { bridgeUrl, authToken ->
                 val args = mutableListOf("backup", "--json")
                 for (path in paths) args.add(path)
                 for (tag in tags) { args.add("--tag"); args.add(tag) }
                 if (hostname != null) { args.add("--host"); args.add(hostname) }
 
-                val env = envResolver.buildBridgeEnv(password, bridgeUrl, cacheDir)
+                val env = envResolver.buildBridgeEnv(password, bridgeUrl, cacheDir, authToken)
                 val result = runner.runResticStreaming(env, args) { line ->
                     if (!coroutineContext.isActive) return@runResticStreaming
                     try {
                         val progress = resticJson.decodeFromString<ResticWrapper.ResticProgress>(line)
                         if (progress.messageType == "status") emit(progress)
-                    } catch (_: Exception) { }
+                } catch (e: Exception) { if (e is CancellationException) throw e }
                 }
 
                 if (result.exitCode != 0) return@withBridge err(AppError.Restic("restic backup 失败", result.exitCode, result.stderr))
@@ -117,20 +118,20 @@ class ResticBackup(
                 try {
                     val progress = resticJson.decodeFromString<ResticWrapper.ResticProgress>(line)
                     if (progress.messageType == "status") emit(progress)
-                } catch (_: Exception) { }
+                } catch (e: Exception) { if (e is CancellationException) throw e }
             }
 
             if (result.exitCode != 0) return@withContext err(AppError.Restic("restic stream backup 失败", result.exitCode, result.stderr))
             parseBackupSummary(result.stdout)
         } else {
-            bridgeRunner.withBridge(backend, backendUrl, backendUser, backendPass, backendShare, backendDomain, repoPath, File(cacheDir)) { bridgeUrl ->
-                val env = envResolver.buildBridgeEnv(password, bridgeUrl, cacheDir)
+            bridgeRunner.withBridge(backend, backendUrl, backendUser, backendPass, backendShare, backendDomain, repoPath, File(cacheDir)) { bridgeUrl, authToken ->
+                val env = envResolver.buildBridgeEnv(password, bridgeUrl, cacheDir, authToken)
                 val result = runner.runResticWithStdin(env, args, stdinFile) { line ->
                     if (!coroutineContext.isActive) return@runResticWithStdin
                     try {
                         val progress = resticJson.decodeFromString<ResticWrapper.ResticProgress>(line)
                         if (progress.messageType == "status") emit(progress)
-                    } catch (_: Exception) { }
+                } catch (e: Exception) { if (e is CancellationException) throw e }
                 }
 
                 if (result.exitCode != 0) return@withBridge err(AppError.Restic("restic stream backup 失败", result.exitCode, result.stderr))

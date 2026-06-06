@@ -49,8 +49,8 @@ class ResticRepoInit(
                 bridgeRunner.withBridge(
                     backend, backendUrl, backendUser, backendPass, backendShare,
                     backendDomain, repoPath, File(cacheDir)
-                ) { bridgeUrl ->
-                    val env = envResolver.buildBridgeEnv(password, bridgeUrl, cacheDir)
+                ) { bridgeUrl, authToken ->
+                    val env = envResolver.buildBridgeEnv(password, bridgeUrl, cacheDir, authToken)
                     runInit(env)
                 }
             }

@@ -66,6 +66,9 @@ class PackageListAdapter(
             setTextColor(
                 MaterialColors.getColor(ctx, com.google.android.material.R.attr.colorOnSurfaceVariant, 0)
             )
+            contentDescription = res.getString(R.string.exclude_data_toggle)
+            isFocusable = true
+            isClickable = true
         }
         layout.addView(cb)
         layout.addView(tv)

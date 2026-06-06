@@ -4,6 +4,7 @@ import android.util.Log
 import com.topjohnwu.superuser.Shell
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
@@ -63,7 +64,9 @@ object RootShell {
     suspend fun ensureSession(): Boolean = withContext(Dispatchers.IO) {
         try {
             Shell.getShell().isRoot
-        } catch (_: Exception) { false }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) { false }
     }
 
     suspend fun exec(command: String, timeoutMs: Long = COMMAND_TIMEOUT_MS): ShellResult =
@@ -81,6 +84,8 @@ object RootShell {
             } catch (e: TimeoutCancellationException) {
                 Log.w(TAG, "exec timeout (${timeoutMs}ms): $command")
                 ShellResult("", "Command timed out after ${timeoutMs}ms", -1)
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 Log.e(TAG, "exec failed: $command", e)
                 ShellResult("", e.message ?: "Unknown error", -1)

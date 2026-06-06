@@ -51,7 +51,7 @@
 
 
 
-# --- jcifs-ng (SMB) — keep class/member names for MD4Provider reflection ---
+# --- jcifs-ng (SMB) — keep class/member names for reflection (was MD4Provider) ---
 -keep class jcifs.util.Crypto { *; }
 -keep class jcifs.smb.NtlmUtil { *; }
 -keep class jcifs.ntlmssp.Type3Message { *; }

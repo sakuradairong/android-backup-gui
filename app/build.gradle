@@ -38,9 +38,9 @@ android {
     signingConfigs {
         release {
             storeFile rootProject.file("app/release.keystore")
-            storePassword System.getenv("KEYSTORE_PASSWORD") ?: "android"
+            storePassword System.getenv("KEYSTORE_PASSWORD")
             keyAlias "release"
-            keyPassword System.getenv("KEY_PASSWORD") ?: "android"
+            keyPassword System.getenv("KEY_PASSWORD")
             v1SigningEnabled true
             v2SigningEnabled true
         }
@@ -48,7 +48,11 @@ android {
     buildTypes {
         release {
             if (rootProject.file("app/release.keystore").exists()) {
-                signingConfig signingConfigs.release
+                def ksPass = System.getenv("KEYSTORE_PASSWORD")
+                def kPass = System.getenv("KEY_PASSWORD")
+                if (ksPass != null && kPass != null) {
+                    signingConfig signingConfigs.release
+                }
             }
         }
     }

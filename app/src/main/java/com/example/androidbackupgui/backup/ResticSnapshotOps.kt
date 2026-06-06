@@ -65,11 +65,11 @@ class ResticSnapshotOps(
             bridgeRunner.withBridge(
                 backend, backendUrl, backendUser, backendPass, backendShare,
                 backendDomain, repoPath, File(cacheDir)
-            ) { bridgeUrl ->
+            ) { bridgeUrl, authToken ->
                 val args = mutableListOf("snapshots", "--json")
                 if (tag != null) { args.add("--tag"); args.add(tag) }
 
-                val env = envResolver.buildBridgeEnv(password, bridgeUrl, cacheDir)
+                val env = envResolver.buildBridgeEnv(password, bridgeUrl, cacheDir, authToken)
                 val result = runner.runRestic(env, args)
 
                 if (result.exitCode != 0) {
@@ -121,7 +121,7 @@ class ResticSnapshotOps(
             bridgeRunner.withBridge(
                 backend, backendUrl, backendUser, backendPass, backendShare,
                 backendDomain, repoPath, File(cacheDir)
-            ) { bridgeUrl ->
+            ) { bridgeUrl, authToken ->
                 val args = mutableListOf(
                     "forget",
                     "--keep-daily", keepDaily.toString(),
@@ -130,7 +130,7 @@ class ResticSnapshotOps(
                 )
                 if (dryRun) args.add("--dry-run")
 
-                val env = envResolver.buildBridgeEnv(password, bridgeUrl, cacheDir)
+                val env = envResolver.buildBridgeEnv(password, bridgeUrl, cacheDir, authToken)
                 val result = runner.runRestic(env, args)
 
                 if (result.exitCode == 0) AppResult.Success(result.stdout)

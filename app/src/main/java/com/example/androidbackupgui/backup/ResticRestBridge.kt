@@ -7,6 +7,7 @@ import kotlinx.coroutines.runBlocking
 import java.io.ByteArrayInputStream
 import java.io.File
 import java.util.UUID
+import android.util.Base64
 /**
  * NanoHTTPD-based REST bridge implementing the restic REST backend API.
  *
@@ -23,8 +24,9 @@ class ResticRestBridge(
     private val transport: RemoteTransport,
     private val remoteBase: String,
     private val repoPath: String,
-    private val cacheDir: File
-) : NanoHTTPD(0) {
+    private val cacheDir: File,
+    private val authToken: String = ""
+) : NanoHTTPD("127.0.0.1", 0) {
 
     private val TAG = "ResticRestBridge"
 
@@ -38,6 +40,21 @@ class ResticRestBridge(
         val method = session.method
         val headers = session.headers
         val params = session.parms
+
+        // Auth check (defense-in-depth — bridge is already bound to 127.0.0.1)
+        if (authToken.isNotEmpty()) {
+            val expected = "Basic " + Base64.encodeToString(
+                "$authToken:$authToken".toByteArray(Charsets.UTF_8),
+                Base64.NO_WRAP
+            )
+            val auth = headers["authorization"]
+            if (auth != expected) {
+                Log.w(TAG, "auth failed (got=${auth?.take(20)}..., expected=Basic $authToken)")
+                return newFixedLengthResponse(
+                    Response.Status.UNAUTHORIZED, "text/plain", "Unauthorized"
+                )
+            }
+        }
 
         Log.d(TAG, "$method $uri")
 

@@ -55,6 +55,14 @@ object MissingAlgoProvider {
             } catch (ve: Exception) {
                 Log.w(TAG, "Verification failed after injection", ve)
             }
+            
+            // 3. Fallback: register a global provider that wraps BC + MD4 + AESCMAC
+            try {
+                Security.insertProviderAt(GlobalPatchProvider(), 1)
+                Log.i(TAG, "Registered GlobalPatchProvider at position 1")
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to register global patch provider", e)
+            }
 
         } catch (e: Exception) {
             Log.e(TAG, "Failed to inject algorithms", e)
@@ -133,5 +141,20 @@ object MissingAlgoProvider {
             s.addAll(super.getServices())
             return s
         }
+    }
+}
+
+/**
+ * Standalone provider registered globally as fallback so that
+ * [java.security.Security.getProvider]("BC") or any lazy-loaded
+ * BouncyCastleProvider instance can find MD4 and AESCMAC.
+ * Named differently ("MissingAlgoProvider") to avoid conflict with "BC".
+ */
+private class GlobalPatchProvider : Provider(
+    "MissingAlgoProvider", 1.0, "MD4 + AESCMAC fallback"
+) {
+    init {
+        put("MessageDigest.MD4", MissingAlgoProvider.Md4Spi::class.java.name)
+        put("Mac.AESCMAC", MissingAlgoProvider.AesCmacSpi::class.java.name)
     }
 }

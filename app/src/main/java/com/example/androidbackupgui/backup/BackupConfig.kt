@@ -183,6 +183,8 @@ data class BackupConfig(
                 appendLine("restic_backend_share=\"${config.resticBackendShare}\"")
                 appendLine("restic_backend_domain=\"${config.resticBackendDomain}\"")
             })
+            file.setReadable(true, true)   // owner only
+            file.setWritable(true, true)   // owner only
         }
     }
 }

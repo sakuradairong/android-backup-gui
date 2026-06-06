@@ -24,6 +24,8 @@ jobs:
 
       - name: Lint
         run: ./gradlew lint
+      - name: Test
+        run: ./gradlew test
 
       - name: Build release APK
         run: ./gradlew assembleRelease

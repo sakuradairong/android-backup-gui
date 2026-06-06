@@ -111,14 +111,15 @@ class ResticCommandRunner {
             val reader = process.inputStream.bufferedReader()
 
             try {
-                var line: String
-                while (reader.readLine().also { line = it } != null) {
+                var line = reader.readLine()
+                while (line != null) {
                     if (!coroutineContext.isActive) {
                         process.destroy()
                         break
                     }
                     stdoutText.appendLine(line)
                     onLine(line)
+                    line = reader.readLine()
                 }
             } finally {
                 try { reader.close() } catch (_: Exception) {}
@@ -196,14 +197,15 @@ class ResticCommandRunner {
             val reader = process.inputStream.bufferedReader()
 
             try {
-                var line: String
-                while (reader.readLine().also { line = it } != null) {
+                var line = reader.readLine()
+                while (line != null) {
                     if (!coroutineContext.isActive) {
                         process.destroy()
                         break
                     }
                     stdoutText.appendLine(line)
                     onLine(line)
+                    line = reader.readLine()
                 }
             } finally {
                 try { reader.close() } catch (_: Exception) {}

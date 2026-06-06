@@ -70,55 +70,53 @@ class SmbTransport(
     private fun smbFile(path: String): SmbFile = SmbFile(buildUrl(path), context)
 
     override suspend fun upload(localPath: String, remotePath: String, onProgress: suspend (RemoteTransport.TransferProgress) -> Unit, onByteProgress: suspend (RemoteTransport.ByteProgress) -> Unit): AppResult<Unit> =
-        withContext(Dispatchers.IO) {
-            try {
-                val localFile = File(localPath)
-                val remote = smbFile(remotePath)
-                // Ensure parent directories exist (parent can be null at share root)
-                val parentPath = remote.parent
-                if (parentPath != null) {
-                    val parent = SmbFile(parentPath, context)
-                    if (!parent.exists()) parent.mkdirs()
-                }
-                onProgress(RemoteTransport.TransferProgress("connecting", 0, 1, remotePath))
-                val fileSize = localFile.length()
-                SmbFileOutputStream(remote).use { output ->
-                    localFile.inputStream().use { input ->
-                        onProgress(RemoteTransport.TransferProgress("transferring", 0, 1, remotePath))
-                        val buffer = ByteArray(bufferSize)
-                        var totalRead = 0L
-                        var n = input.read(buffer)
-                        while (n != -1) {
-                            output.write(buffer, 0, n)
-                            totalRead += n
-                            onByteProgress(RemoteTransport.ByteProgress(totalRead, fileSize, remotePath))
-                            n = input.read(buffer)
+        retryWithBackoff(TAG, "SMB 上传") {
+            withContext(Dispatchers.IO) {
+                try {
+                    val localFile = File(localPath)
+                    val remote = smbFile(remotePath)
+                    val parentPath = remote.parent
+                    if (parentPath != null) {
+                        val parent = SmbFile(parentPath, context)
+                        if (!parent.exists()) parent.mkdirs()
+                    }
+                    onProgress(RemoteTransport.TransferProgress("connecting", 0, 1, remotePath))
+                    val fileSize = localFile.length()
+                    SmbFileOutputStream(remote).use { output ->
+                        localFile.inputStream().use { input ->
+                            onProgress(RemoteTransport.TransferProgress("transferring", 0, 1, remotePath))
+                            val buffer = ByteArray(bufferSize)
+                            var totalRead = 0L
+                            var n = input.read(buffer)
+                            while (n != -1) {
+                                output.write(buffer, 0, n)
+                                totalRead += n
+                                onByteProgress(RemoteTransport.ByteProgress(totalRead, fileSize, remotePath))
+                                n = input.read(buffer)
+                            }
                         }
                     }
+                    val freshRemote = SmbFile(buildUrl(remotePath), context)
+                    val actualSize = freshRemote.length()
+                    Log.i(TAG, "upload done: $fileSize bytes local, $actualSize bytes on SMB")
+                    if (actualSize != fileSize) {
+                        Log.e(TAG, "upload size mismatch: local=$fileSize smb=$actualSize")
+                        return@withContext err(AppError.Remote("SMB 上传大小不匹配", "upload"))
+                    }
+                    onProgress(RemoteTransport.TransferProgress("completed", 1, 1, remotePath))
+                    AppResult.Success(Unit)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    Log.e(TAG, "upload failed: ${buildUrl(remotePath)}", e)
+                    err(AppError.Remote("SMB 上传失败", "upload", cause = e))
                 }
-                // Re-read with a fresh SmbFile handle to verify (jcifs-ng may have stale handle)
-                val freshRemote = SmbFile(buildUrl(remotePath), context)
-                val actualSize = freshRemote.length()
-                Log.i(TAG, "upload done: $fileSize bytes local, $actualSize bytes on SMB")
-                if (actualSize != fileSize) {
-                    Log.w(TAG, "upload size mismatch: local=$fileSize smb=$actualSize")
-                    // Try re-opening the output stream to flush any pending writes
-                    SmbFileOutputStream(remote).use { it.write(ByteArray(0)) }
-                    val retrySize = freshRemote.length()
-                    Log.w(TAG, "upload retry: smb=$retrySize bytes")
-                }
-                onProgress(RemoteTransport.TransferProgress("completed", 1, 1, remotePath))
-                AppResult.Success(Unit)
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                Log.e(TAG, "upload failed: ${buildUrl(remotePath)}", e)
-                err(AppError.Remote("SMB 上传失败", "upload", cause = e))
             }
         }
 
     override suspend fun download(remotePath: String, localPath: String, onProgress: suspend (RemoteTransport.TransferProgress) -> Unit, onByteProgress: suspend (RemoteTransport.ByteProgress) -> Unit): AppResult<Unit> =
-        withContext(Dispatchers.IO) {
+        retryWithBackoff(TAG, "SMB 下载") {
+            withContext(Dispatchers.IO) {
             try {
                 val localFile = File(localPath)
                 localFile.parentFile?.mkdirs()
@@ -148,6 +146,7 @@ class SmbTransport(
                 Log.e(TAG, "download failed: $remotePath", e)
                 err(AppError.Remote("SMB 下载失败", "download", cause = e))
             }
+        }
         }
 
     override suspend fun listFiles(remoteDir: String): AppResult<List<RemoteTransport.RemoteFileInfo>> =

@@ -7,20 +7,30 @@ import com.thegrizzlylabs.sardineandroid.impl.SardineException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.CancellationException
+import android.util.Base64
+import java.net.HttpURLConnection
+import java.net.URL
 import java.io.ByteArrayOutputStream
 import java.io.File
+import java.io.IOException
 
 class WebdavTransport(
     private val baseUrl: String,
     private val username: String,
     private val password: String,
-    private val bufferSize: Int = 8192
+    private val bufferSize: Int = 8192,
+    private val connectTimeoutSeconds: Int = 15,
+    private val readTimeoutSeconds: Int = 30
 ): RemoteTransport {
 
     companion object { private const val TAG = "WebdavTransport" }
 
     private val sardine: Sardine by lazy {
-        OkHttpSardine().apply {
+        val client = okhttp3.OkHttpClient.Builder()
+            .connectTimeout(connectTimeoutSeconds.toLong(), java.util.concurrent.TimeUnit.SECONDS)
+            .readTimeout(readTimeoutSeconds.toLong(), java.util.concurrent.TimeUnit.SECONDS)
+            .build()
+        OkHttpSardine(client).apply {
             if (username.isNotEmpty()) {
                 setCredentials(username, password)
             }
@@ -33,73 +43,138 @@ class WebdavTransport(
     }
 
     override suspend fun upload(localPath: String, remotePath: String, onProgress: suspend (RemoteTransport.TransferProgress) -> Unit, onByteProgress: suspend (RemoteTransport.ByteProgress) -> Unit): AppResult<Unit> =
-        withContext(Dispatchers.IO) {
-            try {
-                val url = buildUrl(remotePath)
-                val file = File(localPath)
-                val fileSize = file.length()
-                if (fileSize > 50 * 1024 * 1024L) {
-                    return@withContext err(AppError.Remote("WebDAV 上传: 文件过大 (${fileSize / 1024 / 1024}MB), 上限 50MB", "upload"))
-                }
-                Log.d(TAG, "upload $localPath -> $url ($fileSize bytes)")
-                onProgress(RemoteTransport.TransferProgress("connecting", 0, 1, remotePath))
-                // Read file into ByteArray with progress (sardine.put lacks InputStream variant)
-                val data = file.inputStream().buffered(bufferSize).use { input ->
-                    onProgress(RemoteTransport.TransferProgress("transferring", 0, 1, remotePath))
-                    val out = ByteArrayOutputStream()
-                    val buffer = ByteArray(bufferSize)
-                    var totalRead = 0L
-                    var n = input.read(buffer)
-                    while (n != -1) {
-                        out.write(buffer, 0, n)
-                        totalRead += n
-                        onByteProgress(RemoteTransport.ByteProgress(totalRead, fileSize, remotePath))
-                        n = input.read(buffer)
+        retryWithBackoff(TAG, "WebDAV 上传") {
+            withContext(Dispatchers.IO) {
+                try {
+                    val url = buildUrl(remotePath)
+                    val file = File(localPath)
+                    val fileSize = file.length()
+                    if (fileSize > 50 * 1024 * 1024L) {
+                        return@withContext err(AppError.Remote("WebDAV 上传: 文件过大 (${fileSize / 1024 / 1024}MB), 上限 50MB", "upload"))
                     }
-                    out.toByteArray()
-                }
-                sardine.put(url, data, "application/octet-stream")
-                onProgress(RemoteTransport.TransferProgress("completed", 1, 1, remotePath))
-                AppResult.Success(Unit)
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                Log.e(TAG, "upload failed: $remotePath", e)
-                err(AppError.Remote("WebDAV 上传失败", "upload", cause = e))
-            }
-        }
-
-    override suspend fun download(remotePath: String, localPath: String, onProgress: suspend (RemoteTransport.TransferProgress) -> Unit, onByteProgress: suspend (RemoteTransport.ByteProgress) -> Unit): AppResult<Unit> =
-        withContext(Dispatchers.IO) {
-            try {
-                val url = buildUrl(remotePath)
-                val localFile = File(localPath)
-                localFile.parentFile?.mkdirs()
-                onProgress(RemoteTransport.TransferProgress("connecting", 0, 1, remotePath))
-                sardine.get(url).use { input ->
-                    localFile.outputStream().use { output ->
+                    Log.d(TAG, "upload $localPath -> $url ($fileSize bytes)")
+                    onProgress(RemoteTransport.TransferProgress("connecting", 0, 1, remotePath))
+                    val data = file.inputStream().buffered(bufferSize).use { input ->
                         onProgress(RemoteTransport.TransferProgress("transferring", 0, 1, remotePath))
+                        val out = ByteArrayOutputStream()
                         val buffer = ByteArray(bufferSize)
                         var totalRead = 0L
                         var n = input.read(buffer)
                         while (n != -1) {
-                            output.write(buffer, 0, n)
+                            out.write(buffer, 0, n)
                             totalRead += n
-                            onByteProgress(RemoteTransport.ByteProgress(totalRead, 0, remotePath))
+                            onByteProgress(RemoteTransport.ByteProgress(totalRead, fileSize, remotePath))
                             n = input.read(buffer)
                         }
+                        out.toByteArray()
                     }
+                    sardine.put(url, data, "application/octet-stream")
+                    onProgress(RemoteTransport.TransferProgress("completed", 1, 1, remotePath))
+                    AppResult.Success(Unit)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    Log.e(TAG, "upload failed: $remotePath", e)
+                    err(AppError.Remote("WebDAV 上传失败", "upload", cause = e))
                 }
-                onProgress(RemoteTransport.TransferProgress("completed", 1, 1, remotePath))
-                Log.d(TAG, "download $url -> $localPath (${localFile.length()} bytes)")
-                AppResult.Success(Unit)
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                Log.e(TAG, "download failed: $remotePath", e)
-                err(AppError.Remote("WebDAV 下载失败", "download", cause = e))
             }
         }
+
+    override suspend fun download(remotePath: String, localPath: String, onProgress: suspend (RemoteTransport.TransferProgress) -> Unit, onByteProgress: suspend (RemoteTransport.ByteProgress) -> Unit): AppResult<Unit> =
+        retryWithBackoff(TAG, "WebDAV 下载") {
+            withContext(Dispatchers.IO) {
+                try {
+                    val url = buildUrl(remotePath)
+                    val localFile = File(localPath)
+                    localFile.parentFile?.mkdirs()
+                    val partFile = File(localPath + ".part")
+                    val existingBytes = if (partFile.exists()) partFile.length() else 0L
+
+                    onProgress(RemoteTransport.TransferProgress("connecting", 0, 1, remotePath))
+
+                    if (existingBytes > 0L) {
+                        Log.d(TAG, "download 发现 .part 文件, 从 offset=$existingBytes 续传: $remotePath")
+                        downloadRangeResume(url, partFile, existingBytes, onByteProgress, remotePath)
+                    } else {
+                        sardine.get(url).use { input ->
+                            partFile.outputStream().use { output ->
+                                onProgress(RemoteTransport.TransferProgress("transferring", 0, 1, remotePath))
+                                val buffer = ByteArray(bufferSize)
+                                var totalRead = 0L
+                                var n = input.read(buffer)
+                                while (n != -1) {
+                                    output.write(buffer, 0, n)
+                                    totalRead += n
+                                    onByteProgress(RemoteTransport.ByteProgress(totalRead, 0, remotePath))
+                                    n = input.read(buffer)
+                                }
+                            }
+                        }
+                    }
+
+                    if (partFile.exists()) {
+                        partFile.renameTo(localFile)
+                    }
+                    onProgress(RemoteTransport.TransferProgress("completed", 1, 1, remotePath))
+                    Log.d(TAG, "download $url -> $localPath (${localFile.length()} bytes)")
+                    AppResult.Success(Unit)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    Log.e(TAG, "download failed: $remotePath", e)
+                    err(AppError.Remote("WebDAV 下载失败", "download", cause = e))
+                }
+            }
+        }   // retryWithBackoff
+
+    /**
+     * Resume a partial WebDAV download using HTTP Range header.
+     * Reads from [partFile] which already has [offset] bytes, requests remaining bytes via
+     * [HttpURLConnection] with Basic auth, and appends to the file.
+     */
+    private suspend fun downloadRangeResume(
+        url: String,
+        partFile: File,
+        offset: Long,
+        onByteProgress: suspend (RemoteTransport.ByteProgress) -> Unit,
+        remotePath: String
+    ) {
+        val conn = URL(url).openConnection() as HttpURLConnection
+        try {
+            conn.requestMethod = "GET"
+            if (username.isNotEmpty()) {
+                val basicAuth = "Basic " + Base64.encodeToString(
+                    "$username:$password".toByteArray(Charsets.UTF_8),
+                    Base64.NO_WRAP
+                )
+                conn.setRequestProperty("Authorization", basicAuth)
+            }
+            conn.setRequestProperty("Range", "bytes=$offset-")
+            conn.connect()
+
+            val statusCode = conn.responseCode
+            if (statusCode != 206 && statusCode != 200) {
+                throw IOException("WebDAV Range resume 失败: HTTP $statusCode (需要 206)")
+            }
+
+            val totalSize = offset + conn.contentLength
+            java.io.FileOutputStream(partFile, true).use { output ->
+                conn.inputStream.use { input ->
+                    val buffer = ByteArray(bufferSize)
+                    var totalRead = offset
+                    var n = input.read(buffer)
+                    while (n != -1) {
+                        output.write(buffer, 0, n)
+                        totalRead += n
+                        onByteProgress(RemoteTransport.ByteProgress(totalRead, totalSize, remotePath))
+                        n = input.read(buffer)
+                    }
+                }
+            }
+        } finally {
+            conn.disconnect()
+        }
+    }
     override suspend fun listFiles(remoteDir: String): AppResult<List<RemoteTransport.RemoteFileInfo>> =
         withContext(Dispatchers.IO) {
             try {
@@ -150,8 +225,8 @@ class WebdavTransport(
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                Log.w(TAG, "mkdirs failed: $remotePath — ${e.message}")
-                AppResult.Success(Unit)  // best-effort; upload will fail if dir can't be created
+                Log.e(TAG, "mkdirs failed: $remotePath — ${e.message}")
+                err(AppError.Remote("WebDAV mkdirs 失败", "mkdirs", cause = e))
             }
         }
 

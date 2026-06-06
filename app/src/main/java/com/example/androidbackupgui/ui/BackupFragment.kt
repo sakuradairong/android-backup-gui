@@ -24,14 +24,7 @@ import com.example.androidbackupgui.backup.AppResult
 import com.example.androidbackupgui.databinding.FragmentBackupBinding
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.async
-import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
-import android.os.StatFs
-import com.example.androidbackupgui.backup.StreamingBackup
-import com.example.androidbackupgui.root.RootShell
-import com.example.androidbackupgui.root.shellEscape
-import com.example.androidbackupgui.backup.formatSize
 import java.io.File
 import java.util.Locale
 
@@ -399,11 +392,11 @@ class BackupFragment : Fragment() {
 
 
     private fun setRunning(running: Boolean) {
-        binding.progressBar.visibility = if (running) View.VISIBLE else View.GONE
+        _binding?.progressBar?.visibility = if (running) View.VISIBLE else View.GONE
     }
 
     private suspend fun updateStatus(text: String) {
-        withContext(Dispatchers.Main) { binding.statusText.text = text }
+        withContext(Dispatchers.Main) { _binding?.statusText?.text = text }
     }
 
     private fun updateOutputPathDisplay() {
@@ -431,117 +424,9 @@ class BackupFragment : Fragment() {
             .show()
     }
 
-        // ── Space detection & streaming backup ────────────
+    override fun onDestroyView() {
+        _binding = null
+        super.onDestroyView()
+    }
 
-        /**
-         * Estimate the total size of data to back up using `du -sb`.
-         * Only counts data directories (not APKs) since that's the bulk.
-         */
-        private suspend fun estimateBackupSize(apps: List<com.example.androidbackupgui.backup.AppInfo>): Long = withContext(Dispatchers.IO) {
-            var total = 0L
-            for (app in apps) {
-            val pkgEsc = app.packageName.value.shellEscape()
-            val result = RootShell.exec("du -sb /data/data/$pkgEsc 2>/dev/null | cut -f1")
-            val size = result.output.trim().toLongOrNull() ?: 0L
-                total += size
-            }
-            total
-        }
-
-        /**
-         * Check if [path] has at least [neededBytes] bytes free.
-         * Uses [StatFs] to query the filesystem.
-         */
-        private fun hasEnoughSpace(path: File, neededBytes: Long): Boolean {
-            try {
-                val stat = StatFs(path.absolutePath)
-                val available = stat.availableBlocksLong * stat.blockSizeLong
-                // Require 1.5x headroom for temp files and metadata
-                return available >= neededBytes * 3 / 2
-            } catch (_: Exception) {
-                // If we can't check, assume enough space (staging mode)
-                return true
-            }
-        }
-
-        /**
-         * Run streaming backup via [StreamingBackup] + [ResticWrapper.backupStdin].
-         * Used when staging space is insufficient.
-         */
-        @Suppress("UNUSED_PARAMETER")
-        private suspend fun runStreamingResticBackup(
-            config: com.example.androidbackupgui.backup.BackupConfig,
-            apps: List<com.example.androidbackupgui.backup.AppInfo>,
-            outputDir: File,
-            cacheDir: String
-        ): ResticWrapper.BackupSummary? {
-            updateStatus("空间不足，启动流式备份模式…")
-
-            val cacheDirFile = File(cacheDir, "streaming_tmp")
-            cacheDirFile.mkdirs()
-
-            // Prepare streaming: create FIFO, metadata, collect APK paths
-            val streamingResult = StreamingBackup.prepareStreaming(
-                cacheDirFile, apps, null
-            )
-
-            // Start restic with stdin from FIFO, in parallel with data producer
-            var summary: ResticWrapper.BackupSummary? = null
-            var backupError: String? = null
-
-            coroutineScope {
-                // Launch restic backup (consumer)
-                val resticJob = async {
-                    val result = ResticWrapper.backupStdin(
-                        repoPath = config.resticRepo,
-                        password = config.resticPassword,
-                        stdinFile = streamingResult.dataFifo,
-                        extraPaths = streamingResult.apkPaths + streamingResult.metaDir.absolutePath,
-                        tags = listOf("streaming_${System.currentTimeMillis() / 1000}"),
-                        hostname = "android-backup-gui",
-                        backend = config.resticBackend,
-                        backendUrl = config.resticBackendUrl,
-                        backendUser = config.resticBackendUser,
-                        backendPass = config.resticBackendPass,
-                        backendShare = config.resticBackendShare,
-                        onProgress = { progress ->
-                            if (progress.messageType == "status") {
-                                updateStatus("流式去重仓库: %.0f%% (%d/%d 个文件)".format(
-                                    progress.percentDone * 100,
-                                    progress.filesDone,
-                                    progress.totalFiles
-                                ))
-                            }
-                        }
-                    )
-                    when (result) {
-                        is AppResult.Success -> summary = result.data
-                        is AppResult.Failure -> backupError = result.error.message
-                    }
-                }
-
-                // Launch data producer (writes tar to FIFO)
-                val producerJob = async {
-                    StreamingBackup.launchDataProducer(
-                        apps = apps,
-                        noDataBackup = excludeDataFromBackup.toSet(),
-                        userId = selectedUserId.toString(),
-                        fifoPath = streamingResult.dataFifo.absolutePath
-                    )
-                }
-
-                // Wait for both to complete
-                producerJob.await()
-                resticJob.await()
-            }
-
-            // Cleanup FIFO
-            try { streamingResult.dataFifo.delete() } catch (_: Exception) {}
-            try { streamingResult.metaDir.deleteRecursively() } catch (_: Exception) {}
-
-            if (backupError != null) {
-                updateStatus("流式备份失败: $backupError")
-            }
-            return summary
-        }
 }

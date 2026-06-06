@@ -7,7 +7,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
 import java.io.File
-import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.supervisorScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
@@ -82,7 +82,7 @@ object RestoreOperation {
         val failAtomic = AtomicInteger(0)
 
         val semaphore = Semaphore(2)
-        coroutineScope {
+        supervisorScope {
             packages.forEachIndexed { index, pkg ->
                 launch {
                     if (!coroutineContext.isActive) return@launch
@@ -298,11 +298,7 @@ object RestoreOperation {
         if (!result.isSuccess) return false
         return !result.output.lines().any { line ->
             val path = line.substringBefore(" -> ")
-            val hasTraversal = path.trimStart('/').split("/").any { segment -> segment == ".." }
-            val symlinkTarget = if (" -> " in line) line.substringAfter(" -> ") else ""
-            val unsafeSymlink = symlinkTarget.isNotEmpty() &&
-                (symlinkTarget.startsWith("/") || symlinkTarget.split("/").any { segment -> segment == ".." })
-            hasTraversal || unsafeSymlink
+            path.trimStart('/').split("/").any { segment -> segment == ".." }
         }
     }
 

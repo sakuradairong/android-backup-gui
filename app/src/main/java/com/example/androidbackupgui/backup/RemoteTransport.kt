@@ -70,6 +70,3 @@ interface RemoteTransport {
     }
 }
 
-/** Extension to check if an [AppError] represents a "not found" remote error. */
-internal fun AppError.isFileNotFound(): Boolean =
-    this is AppError.Remote && this.isNotFound

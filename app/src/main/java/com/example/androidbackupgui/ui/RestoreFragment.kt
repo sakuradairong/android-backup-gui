@@ -392,15 +392,15 @@ class RestoreFragment : Fragment() {
 
 
     private fun setRunning(running: Boolean) {
-        binding.progressBar.visibility = if (running) View.VISIBLE else View.GONE
+        _binding?.progressBar?.visibility = if (running) View.VISIBLE else View.GONE
     }
 
     private suspend fun updateStatus(text: String) {
-        binding.statusText.text = text
+        _binding?.statusText?.text = text
     }
 
     override fun onDestroyView() {
-        super.onDestroyView()
         _binding = null
+        super.onDestroyView()
     }
 }

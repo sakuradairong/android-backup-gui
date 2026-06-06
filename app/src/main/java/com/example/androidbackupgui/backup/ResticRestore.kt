@@ -3,6 +3,7 @@ package com.example.androidbackupgui.backup
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.CancellationException
 import java.io.File
 import kotlin.coroutines.coroutineContext
 import com.example.androidbackupgui.backup.AppError
@@ -75,7 +76,7 @@ class ResticRestore(
                             emit("恢复完成: ${progress.totalFiles} 个文件")
                         }
                     }
-                } catch (_: Exception) { emit(line) }
+                } catch (e: Exception) { if (e is CancellationException) throw e; emit(line) }
             }
 
             if (result.exitCode == 0) AppResult.Success(Unit)
@@ -84,13 +85,13 @@ class ResticRestore(
             bridgeRunner.withBridge(
                 backend, backendUrl, backendUser, backendPass, backendShare, backendDomain,
                 repoPath, File(cacheDir)
-            ) { bridgeUrl ->
+            ) { bridgeUrl, authToken ->
                 File(targetPath).mkdirs()
 
                 val args = mutableListOf("restore", snapshotId, "--target", targetPath, "--json")
                 if (include != null) { args.add("--include"); args.add(include) }
 
-                val env = envResolver.buildBridgeEnv(password, bridgeUrl, cacheDir)
+                val env = envResolver.buildBridgeEnv(password, bridgeUrl, cacheDir, authToken)
                 val result = runner.runResticStreaming(env, args) { line ->
                     if (!coroutineContext.isActive) return@runResticStreaming
                     try {
@@ -104,7 +105,7 @@ class ResticRestore(
                                 emit("恢复完成: ${progress.totalFiles} 个文件")
                             }
                         }
-                    } catch (_: Exception) { emit(line) }
+                } catch (e: Exception) { if (e is CancellationException) throw e; emit(line) }
                 }
 
                 if (result.exitCode == 0) AppResult.Success(Unit)
@@ -142,8 +143,8 @@ class ResticRestore(
             bridgeRunner.withBridge(
                 backend, backendUrl, backendUser, backendPass, backendShare, backendDomain,
                 repoPath, File(cacheDir)
-            ) { bridgeUrl ->
-                val env = envResolver.buildBridgeEnv(password, bridgeUrl, cacheDir)
+            ) { bridgeUrl, authToken ->
+                val env = envResolver.buildBridgeEnv(password, bridgeUrl, cacheDir, authToken)
                 val result = runner.runRestic(env, "dump", snapshotId, filePath)
                 if (result.exitCode == 0) AppResult.Success(result.stdout)
                 else err(AppError.Restic(result.stderr.ifEmpty { "restic dump 失败" }, result.exitCode, result.stderr))

@@ -10,11 +10,16 @@ class ResticEnvResolver {
     fun buildBridgeEnv(
         password: String,
         bridgeUrl: String,
-        cacheDir: String
+        cacheDir: String,
+        authToken: String = ""
     ): Map<String, String> {
         val env = HashMap(System.getenv() ?: emptyMap())
         env["RESTIC_REPOSITORY"] = bridgeUrl
         env["RESTIC_PASSWORD"] = password
+        if (authToken.isNotEmpty()) {
+            env["RESTIC_REST_USERNAME"] = authToken
+            env["RESTIC_REST_PASSWORD"] = authToken
+        }
         if (cacheDir.isNotEmpty()) {
             env["HOME"] = cacheDir
             env["XDG_CACHE_HOME"] = cacheDir

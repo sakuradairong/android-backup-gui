@@ -254,7 +254,7 @@ object BackupOperation {
 
         if (!archiveCreated) {
             Log.w(TAG, "backupUserData: $packageName all methods failed — no data dirs (or inaccessible)")
-            return true
+            return false
         }
 
         // Verify compression integrity
