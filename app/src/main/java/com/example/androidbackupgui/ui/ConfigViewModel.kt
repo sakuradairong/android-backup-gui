@@ -16,7 +16,9 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.concurrent.atomic.AtomicBoolean
@@ -110,6 +112,14 @@ class ConfigViewModel(application: Application) : AndroidViewModel(application) 
 
     /** Guards against concurrent [initResticRepo] calls. */
     private val initGuard = AtomicBoolean(false)
+
+    /** Guards against stale [refreshResticStatus] coroutines. */
+    private var refreshJob: Job? = null
+
+    init {
+        load()
+    }
+
     /** Read config from file and refresh restic status. */
     fun load() {
         val config = BackupConfig.fromFile(configFile)
@@ -146,8 +156,17 @@ class ConfigViewModel(application: Application) : AndroidViewModel(application) 
                 BackupConfig.toFile(formConfig, configFile)
             }
             _uiState.update {
-                it.copy(resticStatus = it.resticStatus.copy(message = "配置已保存到 $configFile"))
+                it.copy(
+                    config = formConfig,
+                    backendDisplay = deriveBackendDisplay(
+                        formConfig.resticBackend,
+                        formConfig.resticRepo,
+                        formConfig.resticBackendUrl
+                    ),
+                    resticStatus = it.resticStatus.copy(message = "配置已保存到 $configFile")
+                )
             }
+            refreshResticStatus(readResticForm())
         }
     }
 
@@ -236,7 +255,9 @@ class ConfigViewModel(application: Application) : AndroidViewModel(application) 
 
         _uiState.update { it.copy(resticStatus = it.resticStatus.copy(message = "正在检测仓库状态…")) }
 
-        viewModelScope.launch {
+        // Cancel any stale status check so a slow old coroutine doesn't overwrite new results
+        refreshJob?.cancel()
+        refreshJob = viewModelScope.launch {
             val snapshotsResult = ResticWrapper.listSnapshots(form.repo, form.password,
                 backend = form.backend, backendUrl = form.backendUrl,
                 backendUser = form.backendUser, backendPass = form.backendPass,
@@ -253,11 +274,40 @@ class ConfigViewModel(application: Application) : AndroidViewModel(application) 
             } else {
                 val errMsg = snapshotsResult.errorOrNull()?.message ?: ""
                 val hasLock = errMsg.contains("lock", ignoreCase = true) || errMsg.contains("already locked", ignoreCase = true)
-                _uiState.update { it.copy(resticStatus = ResticStatus(
-                    message = if (hasLock) "仓库被锁定，请先解锁" else "仓库未初始化或认证失败",
-                    initButtonVisible = !hasLock, statsButtonVisible = false, pruneButtonVisible = false,
-                    unlockButtonVisible = hasLock
-                ))}
+
+                if (hasLock) {
+                    _uiState.update { it.copy(resticStatus = ResticStatus(
+                        message = "仓库被锁定，请先解锁",
+                        initButtonVisible = false, statsButtonVisible = false, pruneButtonVisible = false,
+                        unlockButtonVisible = true
+                    ))}
+                } else {
+                    // snapshots 失败时自动尝试 init（处理已初始化的旧仓库）
+                    val initResult = ResticWrapper.init(form.repo, form.password,
+                        backend = form.backend, backendUrl = form.backendUrl,
+                        backendUser = form.backendUser, backendPass = form.backendPass,
+                        backendShare = form.backendShare,
+                    )
+                    if (initResult.isSuccess) {
+                        val snaps = ResticWrapper.listSnapshots(form.repo, form.password,
+                            backend = form.backend, backendUrl = form.backendUrl,
+                            backendUser = form.backendUser, backendPass = form.backendPass,
+                            backendShare = form.backendShare,
+                        ).getOrDefault(emptyList())
+                        _uiState.update { it.copy(resticStatus = ResticStatus(
+                            message = "仓库就绪，${snaps.size} 个快照",
+                            snapshotCount = snaps.size,
+                            initButtonVisible = false, statsButtonVisible = true, pruneButtonVisible = true,
+                            unlockButtonVisible = true
+                        ))}
+                    } else {
+                        _uiState.update { it.copy(resticStatus = ResticStatus(
+                            message = "仓库未初始化或认证失败",
+                            initButtonVisible = true, statsButtonVisible = false, pruneButtonVisible = false,
+                            unlockButtonVisible = false
+                        ))}
+                    }
+                }
             }
         }
     }

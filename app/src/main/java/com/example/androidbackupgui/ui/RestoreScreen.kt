@@ -1,0 +1,444 @@
+package com.example.androidbackupgui.ui
+
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.unit.dp
+import com.example.androidbackupgui.backup.*
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.File
+
+@Composable
+fun RestoreScreen() {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+
+    // ── State ──
+    var backupDir by remember { mutableStateOf<File?>(null) }
+    var packages by remember { mutableStateOf<List<String>>(emptyList()) }
+    var appInfos by remember { mutableStateOf<List<AppInfo>>(emptyList()) }
+    var selectedPackages by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var resticConfig by remember { mutableStateOf<BackupConfig?>(null) }
+    var config by remember { mutableStateOf(BackupConfig()) }
+    var selectedSnapshot by remember { mutableStateOf<ResticWrapper.ResticSnapshot?>(null) }
+    var isRunning by remember { mutableStateOf(false) }
+    var statusText by remember { mutableStateOf("请选择备份源") }
+    var showSnapshotPicker by remember { mutableStateOf(false) }
+    var availableSnapshots by remember { mutableStateOf<List<ResticWrapper.ResticSnapshot>>(emptyList()) }
+    val configFile = remember { File(context.filesDir, "backup_settings.conf") }
+
+    // Load config
+    LaunchedEffect(Unit) {
+        config = BackupConfig.fromFile(configFile)
+        if (config.resticEnabled == 1 && config.resticRepo.isNotBlank()) {
+            resticConfig = config
+        }
+    }
+
+    Column(modifier = Modifier.fillMaxSize()) {
+        // ── Top controls card ──
+        Card(modifier = Modifier.fillMaxWidth().padding(12.dp)) {
+            Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+
+                // Source buttons row
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(
+                        onClick = {
+                            scope.launch {
+                                try {
+                                    val defaultDir = context.filesDir
+                                    val backupDirs = withContext(Dispatchers.IO) {
+                                        defaultDir.listFiles()
+                                            ?.filter { it.isDirectory && it.name.startsWith("Backup_") }
+                                            ?: emptyList()
+                                    }
+                                    if (backupDirs.isNotEmpty()) {
+                                        val dir = backupDirs.first()
+                                        backupDir = dir
+                                        selectedSnapshot = null
+                                        loadFromDir(context, dir) { pkgs, infos, status ->
+                                            packages = pkgs; appInfos = infos
+                                            selectedPackages = pkgs.toSet()
+                                            statusText = status
+                                        }
+                                    } else {
+                                        statusText = "未找到备份目录"
+                                    }
+                                } catch (e: Exception) {
+                                    statusText = "选择目录失败: ${e.message}"
+                                }
+                            }
+                        },
+                        enabled = !isRunning,
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text("本地备份")
+                    }
+
+                    Button(
+                        onClick = {
+                            val config = resticConfig ?: run {
+                                statusText = "未配置 Restic，请先在设置中配置"
+                                return@Button
+                            }
+                            scope.launch {
+                                isRunning = true
+                                statusText = "正在读取快照…"
+                                try {
+                                    val result = withContext(Dispatchers.IO) {
+                                        ResticWrapper.listSnapshots(
+                                            config.resticRepo, config.resticPassword,
+                                            backend = config.resticBackend,
+                                            backendUrl = config.resticBackendUrl,
+                                            backendUser = config.resticBackendUser,
+                                            backendPass = config.resticBackendPass,
+                                            backendShare = config.resticBackendShare,
+                                        )
+                                    }
+                                    if (result.isFailure) {
+                                        statusText = "读取快照失败: ${result.exceptionOrNull()?.message}"
+                                        return@launch
+                                    }
+                                    val snaps = result.getOrThrow()
+                                    if (snaps.isEmpty()) {
+                                        statusText = "没有可用的 restic 快照"
+                                        return@launch
+                                    }
+                                    availableSnapshots = snaps
+                                    if (snaps.size == 1) {
+                                        loadResticSnapshot(context, snaps.first(), resticConfig!!) { pkgs, infos, status ->
+                                            backupDir = null; selectedSnapshot = snaps.first()
+                                            packages = pkgs; appInfos = infos
+                                            selectedPackages = pkgs.toSet(); statusText = status
+                                        }
+                                    } else {
+                                        showSnapshotPicker = true
+                                    }
+                                } catch (e: Exception) {
+                                    statusText = "选择快照失败: ${e.message}"
+                                } finally {
+                                    isRunning = false
+                                }
+                            }
+                        },
+                        enabled = !isRunning && resticConfig != null,
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text("Restic 快照")
+                    }
+                }
+
+                // Source info text
+                val sourceText = if (backupDir != null) backupDir!!.absolutePath
+                else if (selectedSnapshot != null) "restic: ${selectedSnapshot!!.time.take(19)}"
+                else ""
+                if (sourceText.isNotEmpty()) {
+                    Text(
+                        text = sourceText,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        }
+
+        // ── Status ──
+        Text(
+            text = statusText,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
+        )
+
+        // ── App list ──
+        LazyColumn(
+            modifier = Modifier.weight(1f).fillMaxWidth(),
+            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            items(appInfos, key = { it.packageName.value }) { app ->
+                Card(
+                    onClick = {
+                        val pkg = app.packageName.value
+                        selectedPackages = if (pkg in selectedPackages) selectedPackages - pkg
+                        else selectedPackages + pkg
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier.padding(12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Checkbox(
+                            checked = app.packageName.value in selectedPackages,
+                            onCheckedChange = { checked ->
+                                val pkg = app.packageName.value
+                                selectedPackages = if (checked) selectedPackages + pkg
+                                else selectedPackages - pkg
+                            }
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Column {
+                            Text(
+                                text = app.label.ifEmpty { app.packageName.value },
+                                style = MaterialTheme.typography.bodyLarge
+                            )
+                            Text(
+                                text = app.packageName.value,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── Bottom bar ──
+        Surface(modifier = Modifier.fillMaxWidth(), tonalElevation = 3.dp) {
+            Button(
+                onClick = {
+                    val toRestore = packages.filter { it in selectedPackages }
+                    if (toRestore.isEmpty()) return@Button
+                    isRunning = true
+                    statusText = "开始恢复 ${toRestore.size} 个应用…"
+
+                    scope.launch {
+                        try {
+                            if (selectedSnapshot != null && resticConfig != null) {
+                                val snapshot = selectedSnapshot!!
+                                val config = resticConfig!!
+                                val backupPath = snapshot.paths.firstOrNull() ?: return@launch
+                                val staging = File(context.cacheDir, "restic_restore_${snapshot.shortId}")
+                                staging.mkdirs()
+
+                                try {
+                                    statusText = "正在从 restic 快照恢复…"
+                                    val restoreResult = withContext(Dispatchers.IO) {
+                                        ResticWrapper.restore(
+                                            repoPath = config.resticRepo,
+                                            password = config.resticPassword,
+                                            snapshotId = snapshot.id,
+                                            targetPath = staging.absolutePath,
+                                            backend = config.resticBackend,
+                                            backendUrl = config.resticBackendUrl,
+                                            backendUser = config.resticBackendUser,
+                                            backendPass = config.resticBackendPass,
+                                            backendShare = config.resticBackendShare,
+                                        )
+                                    }
+                                    if (restoreResult.isFailure) {
+                                        statusText = "restic 恢复失败: ${restoreResult.exceptionOrNull()?.message}"
+                                        return@launch
+                                    }
+                                    val restoredDir = File(staging, backupPath.removePrefix("/"))
+                                    statusText = "正在从恢复的备份安装应用…"
+
+                                    val result = withContext(Dispatchers.IO) {
+                                        RestoreOperation.restoreApps(
+                                            context = context,
+                                            backupDir = restoredDir,
+                                            userId = config.backupUserId.toString(),
+                                            filterPkgs = selectedPackages,
+                                            onProgress = { progress ->
+                                                statusText = "[${progress.current}/${progress.total}] ${progress.packageName}: ${progress.message}"
+                                            }
+                                        )
+                                    }
+                                    WifiManager.restore(restoredDir)
+                                    statusText = buildString {
+                                        appendLine("恢复完成！")
+                                        appendLine("成功: ${result.successCount} 失败: ${result.failCount}")
+                                        append("耗时: ${result.elapsedMs / 1000}秒")
+                                    }
+                                } finally {
+                                    try { staging.deleteRecursively() } catch (_: Exception) {}
+                                }
+                            } else if (backupDir != null) {
+                                val dir = backupDir!!
+                                val result = withContext(Dispatchers.IO) {
+                                    RestoreOperation.restoreApps(
+                                        context = context,
+                                        backupDir = dir,
+                                        userId = config.backupUserId.toString(),
+                                        filterPkgs = selectedPackages,
+                                        onProgress = { progress ->
+                                            statusText = "[${progress.current}/${progress.total}] ${progress.packageName}: ${progress.message}"
+                                        }
+                                    )
+                                }
+                                WifiManager.restore(dir)
+                                statusText = buildString {
+                                    appendLine("恢复完成！")
+                                    appendLine("成功: ${result.successCount} 失败: ${result.failCount}")
+                                    append("耗时: ${result.elapsedMs / 1000}秒")
+                                }
+                            }
+                        } catch (e: Exception) {
+                            statusText = "恢复异常: ${e.message}"
+                        } finally {
+                            isRunning = false
+                        }
+                    }
+                },
+                enabled = !isRunning && selectedPackages.isNotEmpty() && (backupDir != null || selectedSnapshot != null),
+                modifier = Modifier.fillMaxWidth().padding(12.dp)
+            ) {
+                if (isRunning) {
+                    CircularProgressIndicator(modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(8.dp))
+                }
+                Text("开始恢复 (${selectedPackages.size})")
+            }
+        }
+    }
+
+    // ── Snapshot picker dialog ──
+    if (showSnapshotPicker && availableSnapshots.isNotEmpty()) {
+        AlertDialog(
+            onDismissRequest = { showSnapshotPicker = false },
+            title = { Text("选择快照") },
+            text = {
+                Column {
+                    availableSnapshots.forEach { snap ->
+                        val label = "${snap.time.take(19)} (${snap.shortId})"
+                        TextButton(
+                            onClick = {
+                                showSnapshotPicker = false
+                                scope.launch {
+                                    loadResticSnapshot(context, snap, resticConfig!!) { pkgs, infos, status ->
+                                        backupDir = null; selectedSnapshot = snap
+                                        packages = pkgs; appInfos = infos
+                                        selectedPackages = pkgs.toSet(); statusText = status
+                                    }
+                                }
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        ) { Text(label) }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showSnapshotPicker = false }) { Text("取消") }
+            }
+        )
+    }
+}
+
+// ── Sub-composables ──
+
+// ── Helper functions ──
+
+private suspend fun loadFromDir(
+    context: android.content.Context,
+    dir: File,
+    onResult: (packages: List<String>, appInfos: List<AppInfo>, status: String) -> Unit
+) {
+    withContext(Dispatchers.IO) {
+        val appListFile = File(dir, "appList.txt")
+        val pkgs = if (appListFile.exists()) {
+            appListFile.readLines()
+                .map { it.trim() }
+                .filter { it.isNotEmpty() && !it.startsWith("#") }
+        } else {
+            dir.listFiles()
+                ?.filter { it.isDirectory }
+                ?.map { it.name }
+                ?: emptyList()
+        }
+        // Read cached labels from app_details.json (includes uninstalled apps)
+        val cachedLabels = readLocalAppDetails(dir)
+        val preLabeled = pkgs.map { pkg ->
+            AppInfo(packageName = PackageName(pkg), label = cachedLabels[pkg] ?: "")
+        }
+        // Resolve labels for currently installed apps, keep cached labels for uninstalled
+        val resolved = AppScanner.resolveLabels(context, preLabeled)
+        // For apps that resolveLabels fell back to package name, restore cached label
+        val infos = resolved.map { app ->
+            val cachedLabel = cachedLabels[app.packageName.value]
+            if (cachedLabel != null && app.label == app.packageName.value) app.copy(label = cachedLabel)
+            else app
+        }
+        onResult(pkgs, infos, "共 ${pkgs.size} 个备份应用")
+    }
+}
+
+private suspend fun loadResticSnapshot(
+    context: android.content.Context,
+    snapshot: ResticWrapper.ResticSnapshot,
+    config: BackupConfig,
+    onResult: (packages: List<String>, appInfos: List<AppInfo>, status: String) -> Unit
+) {
+    val backupPath = snapshot.paths.firstOrNull() ?: run {
+        onResult(emptyList(), emptyList(), "快照中找不到备份路径")
+        return
+    }
+    val dumpResult = ResticWrapper.dump(
+        config.resticRepo, config.resticPassword,
+        snapshot.id, "$backupPath/appList.txt",
+        backend = config.resticBackend,
+        backendUrl = config.resticBackendUrl,
+        backendUser = config.resticBackendUser,
+        backendPass = config.resticBackendPass,
+        backendShare = config.resticBackendShare,
+    )
+    val content = dumpResult.getOrNull()
+    if (content == null) {
+        onResult(emptyList(), emptyList(), "无法从快照读取应用列表")
+        return
+    }
+    val pkgs = content.lines()
+        .map { it.trim() }
+        .filter { it.isNotEmpty() && !it.startsWith("#") }
+
+    // Read cached labels from app_details.json in the snapshot
+    val cachedLabels = loadResticAppDetails(config, snapshot.id, backupPath)
+    val preLabeled = pkgs.map { pkg ->
+        AppInfo(packageName = PackageName(pkg), label = cachedLabels[pkg] ?: "")
+    }
+    val resolved = AppScanner.resolveLabels(context, preLabeled)
+    val infos = resolved.map { app ->
+        val cachedLabel = cachedLabels[app.packageName.value]
+        if (cachedLabel != null && app.label == app.packageName.value) app.copy(label = cachedLabel)
+        else app
+    }
+    onResult(pkgs, infos, "restic 快照共 ${pkgs.size} 个应用")
+}
+
+/** Read app_details.json from a local backup directory and return a package→label map. */
+private suspend fun readLocalAppDetails(dir: File): Map<String, String> = withContext(Dispatchers.IO) {
+    val metaFile = File(dir, "app_details.json")
+    if (!metaFile.exists()) return@withContext emptyMap()
+    try {
+        val json = metaFile.readText()
+        ResticWrapper.parseAppDetailsJson(json).mapValues { it.value.label }
+    } catch (_: Exception) { emptyMap() }
+}
+
+/** Dump app_details.json from a restic snapshot and return a package→label map. */
+private suspend fun loadResticAppDetails(
+    config: BackupConfig,
+    snapshotId: String,
+    backupPath: String
+): Map<String, String> {
+    val dumpResult = ResticWrapper.dump(
+        config.resticRepo, config.resticPassword,
+        snapshotId, "$backupPath/app_details.json",
+        backend = config.resticBackend,
+        backendUrl = config.resticBackendUrl,
+        backendUser = config.resticBackendUser,
+        backendPass = config.resticBackendPass,
+        backendShare = config.resticBackendShare,
+    )
+    val json = dumpResult.getOrNull() ?: return emptyMap()
+    return try {
+        ResticWrapper.parseAppDetailsJson(json).mapValues { it.value.label }
+    } catch (_: Exception) { emptyMap() }
+}
