@@ -56,7 +56,7 @@ class RestBridgeRunner {
 
         val authToken = UUID.randomUUID().toString().replace("-", "").take(32)
 
-        val key = "$backend|$backendUrl|$backendUser|$backendShare|$backendDomain"
+        val key = "$backend|$backendUrl|$backendUser|$backendPass|$backendShare|$backendDomain"
         if (cachedTransportKey != key) {
             cachedTransport?.let { Log.d(TAG, "discarding stale cached transport") }
             val t = transportFactory(backend, backendUrl, backendUser, backendPass, backendShare, backendDomain)

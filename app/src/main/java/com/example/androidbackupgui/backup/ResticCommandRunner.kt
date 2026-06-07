@@ -36,6 +36,22 @@ class ResticCommandRunner {
             Log.d(TAG, "buildCommandArgs: binaryPath=$binaryPath args=$args -> cmd=$cmd")
         }
 
+    /** Wait for process to exit with a polling loop (compatible with API 24+). */
+    private fun Process.waitForCompat(deadlineMs: Long = 60_000): Int {
+        val deadline = System.currentTimeMillis() + deadlineMs
+        while (System.currentTimeMillis() < deadline) {
+            try {
+                return exitValue()
+            } catch (_: IllegalThreadStateException) {
+                Thread.sleep(100)
+            }
+        }
+        Log.w(TAG, "process did not exit within ${deadlineMs}ms, destroying")
+        destroy()
+        waitFor()
+        return exitValue()
+    }
+
     /** Run restic (non-streaming). */
     fun runRestic(env: Map<String, String>, args: List<String>): CommandResult {
         val cmdArgs = buildCommandArgs(args)
@@ -53,24 +69,7 @@ class ResticCommandRunner {
             val stdout = process.inputStream.bufferedReader().use(BufferedReader::readText)
             val stderrBytes = process.errorStream.use { it.readAllBytesCompat() }
             val exitCode = try {
-                val deadline = System.currentTimeMillis() + 60_000
-                var exited = false
-                while (System.currentTimeMillis() < deadline && !exited) {
-                    try {
-                        process.exitValue()
-                        exited = true
-                    } catch (_: IllegalThreadStateException) {
-                        Thread.sleep(100)
-                    }
-                }
-                if (exited) {
-                    process.exitValue()
-                } else {
-                    Log.w(TAG, "runRestic: process did not exit within 60s, destroying")
-                    process.destroy()
-                    process.waitFor()
-                    process.exitValue()
-                }
+                process.waitForCompat()
             } catch (_: Exception) { -1 }
             val stderrText = stderrBytes.decodeToString()
             Log.i(TAG, "runRestic exitCode=$exitCode stdout_len=${stdout.length}")
@@ -127,25 +126,7 @@ class ResticCommandRunner {
             val stderrBytes = try { process.errorStream.use { it.readAllBytesCompat() } } catch (_: Exception) { byteArrayOf() }
             val stderrText = stderrBytes.decodeToString().trim()
             val exitCode = try {
-                // Manual timeout loop (Process.waitFor(timeout,unit) requires API 26+)
-                val deadline = System.currentTimeMillis() + 60_000
-                var exited = false
-                while (System.currentTimeMillis() < deadline && !exited) {
-                    try {
-                        process.exitValue()
-                        exited = true
-                    } catch (_: IllegalThreadStateException) {
-                        Thread.sleep(100)
-                    }
-                }
-                if (exited) {
-                    process.exitValue()
-                } else {
-                    Log.w(TAG, "runResticStreaming: process did not exit within 60s after stdout EOF, destroying")
-                    process.destroy()
-                    process.waitFor()
-                    process.exitValue()
-                }
+                process.waitForCompat()
             } catch (_: Exception) { -1 }
 
             Log.i(TAG, "runResticStreaming exitCode=$exitCode stdout_len=${stdoutText.length}")
@@ -213,24 +194,7 @@ class ResticCommandRunner {
             val stderrBytes = try { process.errorStream.use { it.readAllBytesCompat() } } catch (_: Exception) { byteArrayOf() }
             val stderrText = stderrBytes.decodeToString().trim()
             val exitCode = try {
-                val deadline = System.currentTimeMillis() + 60_000
-                var exited = false
-                while (System.currentTimeMillis() < deadline && !exited) {
-                    try {
-                        process.exitValue()
-                        exited = true
-                    } catch (_: IllegalThreadStateException) {
-                        Thread.sleep(100)
-                    }
-                }
-                if (exited) {
-                    process.exitValue()
-                } else {
-                    Log.w(TAG, "runResticWithStdin: process did not exit within 60s, destroying")
-                    process.destroy()
-                    process.waitFor()
-                    process.exitValue()
-                }
+                process.waitForCompat()
             } catch (_: Exception) { -1 }
 
             Log.i(TAG, "runResticWithStdin exitCode=$exitCode stdout_len=${stdoutText.length}")

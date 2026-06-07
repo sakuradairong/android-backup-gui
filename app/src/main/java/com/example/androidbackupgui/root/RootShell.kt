@@ -50,15 +50,21 @@ object RootShell {
         }
     }
 
-    /** Call once at app startup to configure libsu. */
+    /** Call once at app startup to configure libsu. Safe to call multiple times. */
     fun configure() {
         Shell.enableVerboseLogging = true
-        Shell.setDefaultBuilder(
-            Shell.Builder.create()
-                .setFlags(Shell.FLAG_MOUNT_MASTER)
-                .setInitializers(GlobalNamespaceInitializer::class.java)
-                .setTimeout(30)
-        )
+        try {
+            Shell.setDefaultBuilder(
+                Shell.Builder.create()
+                    .setFlags(Shell.FLAG_MOUNT_MASTER)
+                    .setInitializers(GlobalNamespaceInitializer::class.java)
+                    .setTimeout(30)
+            )
+        } catch (_: IllegalStateException) {
+            // Shell already created (e.g. from Application superclass or prior session).
+            // The default builder is already in effect — our custom config is ignored
+            // but the shell is still functional.
+        }
     }
 
     suspend fun ensureSession(): Boolean = withContext(Dispatchers.IO) {

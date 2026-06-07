@@ -1,13 +1,16 @@
 package com.example.androidbackupgui.backup
 
+import android.util.Base64
 import android.util.Log
 import fi.iki.elonen.NanoHTTPD
 import fi.iki.elonen.NanoHTTPD.IHTTPSession
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
 import java.io.ByteArrayInputStream
 import java.io.File
 import java.util.UUID
-import android.util.Base64
 /**
  * NanoHTTPD-based REST bridge implementing the restic REST backend API.
  *
@@ -260,17 +263,12 @@ class ResticRestBridge(
         }
     }
 
+    @Serializable
+    data class BlobEntry(val name: String, val size: Long)
+
     private fun buildV2Json(items: List<RemoteTransport.RemoteFileInfo>): String {
-        val sb = StringBuilder("[")
-        var first = true
-        for (item in items) {
-            if (item.isDirectory) continue
-            if (!first) sb.append(",")
-            first = false
-            sb.append("{\"name\":\"${item.name}\",\"size\":${item.size}}")
-        }
-        sb.append("]")
-        return sb.toString()
+        val blobs = items.filter { !it.isDirectory }.map { BlobEntry(it.name, it.size) }
+        return Json.encodeToString(blobs)
     }
 
     // -- Blob HEAD (exists + size) ----------------------------------

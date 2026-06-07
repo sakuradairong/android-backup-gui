@@ -428,8 +428,9 @@ object RestoreOperation {
 
         val pkgEsc = packageName.shellEscape()
 
-        // Reset app ops first (clears any previous modes)
-        RootShell.exec("appops reset '$pkgEsc' 2>/dev/null")
+        // NOTE: Intentionally skipping "appops reset" because we don't capture
+        // app ops state (battery optimization, notification settings, etc.)
+        // in the backup. Resetting would lose those user customizations.
 
         val grantedPerms = parsedPerms.filter { it.second }.map { it.first }
         val deniedPerms = parsedPerms.filter { !it.second }.map { it.first }
