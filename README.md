@@ -104,6 +104,7 @@ restic 通过 REST HTTP API 与本地桥通信，桥接器将请求翻译为 SMB
 
 | 版本 | 更新内容 |
 |------|---------|
+| v1.14 | 修复 shell 转义/管道死锁/配置序列化缺陷，新增配置导出与 BackupConfig 单元测试 |
 | v1.13 | Compose Material 3 UI 重构、Unlock 支持、ResticBinary 启动初始化、修复 500 错误和刷新竞态 |
 | v1.12 | 引擎 + Compose Material 3 UI 重构 |
 | v1.11 | 构建系统改进、LSP 支持 |
