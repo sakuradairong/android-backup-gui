@@ -35,6 +35,7 @@ data class BackupConfig(
     val backupObbData: Int = 1,
     val backupMedia: Int = 0,
     val backgroundAppsIgnore: Int = 0,
+    val backupUserId: Int = 0,              // Android user ID (0=Owner)
 
     // Custom paths
     val customPath: List<String> = listOf(
@@ -114,6 +115,7 @@ data class BackupConfig(
                 backupObbData = int("Backup_obb_data", default = 1),
                 backupMedia = int("backup_media"),
                 backgroundAppsIgnore = int("Background_apps_ignore"),
+                backupUserId = int("backup_user_id"),
                 customPath = lines("Custom_path"),
                 blacklistMode = int("blacklist_mode"),
                 blacklist = lines("blacklist"),
@@ -154,6 +156,7 @@ data class BackupConfig(
                 appendLine("Backup_user_data=${config.backupUserData}")
                 appendLine("Backup_obb_data=${config.backupObbData}")
                 appendLine("backup_media=${config.backupMedia}")
+                appendLine("backup_user_id=${config.backupUserId}")
                 appendLine("Background_apps_ignore=${config.backgroundAppsIgnore}")
                 append("Custom_path=\"")
                 config.customPath.forEach { append(" ${it.replace(" ", "%20")}") }
