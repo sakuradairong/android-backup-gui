@@ -1,11 +1,14 @@
 package com.example.androidbackupgui.ui
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.FileUpload
 import androidx.compose.material.icons.filled.Save
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -93,6 +96,8 @@ fun ConfigScreen(
                 is OperationEvent.PruneStarted -> "正在清理快照…"
                 is OperationEvent.PruneCompleted -> "清理完成"
                 is OperationEvent.PruneFailed -> "清理失败"
+                is OperationEvent.ConfigExported -> "配置已导出"
+                is OperationEvent.ConfigExportFailed -> "配置导出失败"
                 else -> null
             }
             if (msg != null) {
@@ -102,6 +107,13 @@ fun ConfigScreen(
     }
 
     val scrollState = rememberScrollState()
+
+    // SAF launcher: create a .conf document at a user-chosen location, then export.
+    val exportLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("text/plain")
+    ) { uri ->
+        if (uri != null) viewModel.exportConfig(uri)
+    }
 
     Column(
         modifier = Modifier
@@ -380,6 +392,23 @@ fun ConfigScreen(
             Icon(Icons.Filled.Save, contentDescription = null)
             Spacer(Modifier.width(8.dp))
             Text("保存配置")
+        }
+
+        // ── Export config button ──
+        OutlinedButton(
+            onClick = { exportLauncher.launch("backup_settings.conf") },
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Icon(Icons.Filled.FileUpload, contentDescription = null)
+            Spacer(Modifier.width(8.dp))
+            Text("导出配置")
+        }
+        if (resticEnabled && resticPassword.isNotEmpty()) {
+            Text(
+                text = "注意：导出的配置包含明文 Restic 密码，请妥善保管导出的文件。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error
+            )
         }
 
         Spacer(Modifier.height(32.dp))

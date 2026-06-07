@@ -72,6 +72,8 @@ sealed interface OperationEvent {
     data object PruneStarted : OperationEvent
     data object PruneFailed : OperationEvent
     data object PruneCompleted : OperationEvent
+    data object ConfigExported : OperationEvent
+    data object ConfigExportFailed : OperationEvent
 }
 
 class ConfigViewModel(application: Application) : AndroidViewModel(application) {
@@ -167,6 +169,45 @@ class ConfigViewModel(application: Application) : AndroidViewModel(application) 
                 )
             }
             refreshResticStatus(readResticForm())
+        }
+    }
+
+    /**
+     * Export the current saved config to a user-selected destination [Uri] (SAF).
+     * Writes the same on-disk config format, including the plaintext restic password,
+     * so the warning is surfaced in the UI before export.
+     */
+    fun exportConfig(uri: android.net.Uri) {
+        viewModelScope.launch {
+            val ok = withContext(Dispatchers.IO) {
+                try {
+                    // Ensure the latest saved config exists; serialize current UI config
+                    // if the file isn't there yet.
+                    val content = if (configFile.exists()) {
+                        configFile.readText()
+                    } else {
+                        val tmp = File.createTempFile("cfg", ".conf", getApplication<Application>().cacheDir)
+                        BackupConfig.toFile(_uiState.value.config, tmp)
+                        tmp.readText().also { tmp.delete() }
+                    }
+                    getApplication<Application>().contentResolver
+                        .openOutputStream(uri)?.use { out ->
+                            out.write(content.toByteArray())
+                            out.flush()
+                        } ?: return@withContext false
+                    true
+                } catch (e: Exception) {
+                    Log.e(TAG, "exportConfig failed", e)
+                    false
+                }
+            }
+            if (ok) {
+                _operationEvents.emit(OperationEvent.ConfigExported)
+                _uiState.update { it.copy(resticStatus = it.resticStatus.copy(message = "配置已导出")) }
+            } else {
+                _operationEvents.emit(OperationEvent.ConfigExportFailed)
+                _uiState.update { it.copy(resticStatus = it.resticStatus.copy(message = "配置导出失败")) }
+            }
         }
     }
 
