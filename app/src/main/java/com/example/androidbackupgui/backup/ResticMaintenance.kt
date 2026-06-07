@@ -61,6 +61,36 @@ class ResticMaintenance(
             }
         }
 
+    // ── Unlock ──────────────────────────────────────────
+
+    suspend fun unlock(
+        repoPath: String,
+        password: String,
+        backend: String = "local",
+        backendUrl: String = "",
+        backendUser: String = "",
+        backendPass: String = "",
+        backendShare: String = "",
+    ): AppResult<String> =
+        withContext(Dispatchers.IO) {
+            if (backend == "local") {
+                val env = envResolver.buildLocalEnv(repoPath, password, cacheDir)
+                val result = runner.runRestic(env, "unlock")
+                if (result.exitCode == 0) AppResult.Success(result.stdout)
+                else err(AppError.Restic("restic unlock 失败", result.exitCode, result.stderr))
+            } else {
+                bridgeRunner.withBridge(
+                    backend, backendUrl, backendUser, backendPass, backendShare,
+                    backendDomain, repoPath, File(cacheDir)
+                ) { bridgeUrl, authToken ->
+                    val env = envResolver.buildBridgeEnv(password, bridgeUrl, cacheDir, authToken)
+                    val result = runner.runRestic(env, "unlock")
+                    if (result.exitCode == 0) AppResult.Success(result.stdout)
+                    else err(AppError.Restic("restic unlock 失败", result.exitCode, result.stderr))
+                }
+            }
+        }
+
     // ── Check ──────────────────────────────────────────
 
     suspend fun check(

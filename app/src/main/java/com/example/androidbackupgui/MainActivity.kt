@@ -13,6 +13,8 @@ import androidx.viewpager2.widget.ViewPager2
 import com.example.androidbackupgui.databinding.ActivityMainBinding
 import com.example.androidbackupgui.root.RootShell
 import com.example.androidbackupgui.backup.LogUtil
+import com.example.androidbackupgui.backup.ResticBinary
+import com.example.androidbackupgui.backup.ResticWrapper
 import com.example.androidbackupgui.ui.BackupFragment
 import com.example.androidbackupgui.ui.ConfigFragment
 import com.example.androidbackupgui.ui.RestoreFragment
@@ -38,6 +40,9 @@ class MainActivity : AppCompatActivity() {
 
         // Configure libsu with global mount namespace support
         RootShell.configure()
+
+        // Initialize restic binary path
+        ResticBinary.prepare(this)?.let { ResticWrapper.binaryPath = it }
 
         // Request root access on startup
         lifecycleScope.launch {

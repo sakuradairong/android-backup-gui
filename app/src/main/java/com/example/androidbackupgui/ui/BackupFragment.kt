@@ -97,8 +97,8 @@ class BackupFragment : Fragment() {
                 val names = userList.map { (id, name) -> "$name (ID: $id)" }
                 val adapter = ArrayAdapter(requireContext(), android.R.layout.simple_spinner_item, names)
                 adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
-                binding.userSelector.adapter = adapter
-                binding.userSelector.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+                binding.backupUserSelector.adapter = adapter
+                binding.backupUserSelector.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
                     override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
                         selectedUserId = userList.getOrNull(position)?.first ?: 0
                     }
@@ -401,7 +401,7 @@ class BackupFragment : Fragment() {
 
     private fun updateOutputPathDisplay() {
         val path = config.outputPath.ifEmpty { requireContext().filesDir.absolutePath }
-        binding.outputPathLabel.text = path
+        binding.outputPathLabel.text = "目录: $path"
     }
 
 

@@ -7,6 +7,7 @@
     android:padding="@dimen/fragment_horizontal_padding"
     android:background="?attr/colorSurface">
 
+    <!-- Title + user selector -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
@@ -18,38 +19,33 @@
             android:layout_height="wrap_content"
             android:layout_weight="1"
             android:text="应用备份"
-            android:textAppearance="@style/TextAppearance.Material3.HeadlineSmall"
+            android:textAppearance="@style/TextAppearance.Material3.TitleLarge"
             android:textColor="?attr/colorOnSurface" />
-
-        <com.google.android.material.button.MaterialButton
-            android:id="@+id/scanButton"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="扫描应用"
-            style="@style/Widget.Material3.Button.TonalButton" />
-    </LinearLayout>
-
-    <LinearLayout
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="8dp"
-        android:gravity="center_vertical"
-        android:orientation="horizontal">
 
         <TextView
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:text="用户: "
-            android:textAppearance="@style/TextAppearance.Material3.BodyMedium"
+            android:textAppearance="@style/TextAppearance.Material3.LabelSmall"
             android:textColor="?attr/colorOnSurfaceVariant" />
 
         <Spinner
-            android:id="@+id/userSelector"
-            android:layout_width="0dp"
+            android:id="@+id/backupUserSelector"
+            android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_weight="1" />
+            android:minWidth="80dp"
+            android:spinnerMode="dropdown" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/scanButton"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="8dp"
+            android:text="扫描"
+            style="@style/Widget.Material3.Button.TonalButton" />
     </LinearLayout>
 
+    <!-- Output path + sort toolbar -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
@@ -58,20 +54,13 @@
         android:orientation="horizontal">
 
         <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="输出目录: "
-            android:textAppearance="@style/TextAppearance.Material3.BodySmall"
-            android:textColor="?attr/colorOnSurfaceVariant" />
-
-        <TextView
             android:id="@+id/outputPathLabel"
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
             android:ellipsize="middle"
             android:maxLines="1"
-            android:textAppearance="@style/TextAppearance.Material3.BodySmall"
+            android:textAppearance="@style/TextAppearance.Material3.LabelSmall"
             android:textColor="?attr/colorOnSurfaceVariant" />
 
         <com.google.android.material.button.MaterialButton
@@ -80,9 +69,11 @@
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_marginStart="4dp"
-            android:text="修改" />
+            android:text="修改"
+            android:textSize="12sp" />
     </LinearLayout>
 
+    <!-- Sort/filter row -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
@@ -133,10 +124,11 @@
             style="@style/Widget.Material3.Button.TonalButton" />
     </LinearLayout>
 
+    <!-- System apps toggle + status -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_marginTop="4dp"
+        android:layout_marginTop="2dp"
         android:gravity="center_vertical"
         android:orientation="horizontal">
 
@@ -144,46 +136,49 @@
             android:id="@+id/showSystemSwitch"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="显示系统应用"
-            android:textAppearance="@style/TextAppearance.Material3.BodySmall"
+            android:text="系统应用"
+            android:textAppearance="@style/TextAppearance.Material3.LabelSmall"
             android:checked="false" />
+
+        <Space
+            android:layout_width="0dp"
+            android:layout_height="1dp"
+            android:layout_weight="1" />
+
+        <TextView
+            android:id="@+id/statusText"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:maxLines="1"
+            android:ellipsize="end"
+            android:text="点击扫描"
+            android:textAppearance="@style/TextAppearance.Material3.LabelSmall"
+            android:textColor="?attr/colorOnSurfaceVariant" />
     </LinearLayout>
 
     <com.google.android.material.progressindicator.LinearProgressIndicator
         android:id="@+id/progressBar"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_marginTop="12dp"
         android:indeterminate="true"
         android:visibility="gone"
         app:indicatorColor="?attr/colorPrimary"
         app:trackColor="?attr/colorSurfaceVariant" />
-
-    <TextView
-        android:id="@+id/statusText"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="8dp"
-        android:maxLines="3"
-        android:ellipsize="end"
-        android:text="点击扫描以载入应用列表"
-        android:textAppearance="@style/TextAppearance.Material3.BodySmall"
-        android:textColor="?attr/colorOnSurfaceVariant" />
 
     <androidx.recyclerview.widget.RecyclerView
         android:id="@+id/appList"
         android:layout_width="match_parent"
         android:layout_height="0dp"
         android:layout_weight="1"
-        android:layout_marginTop="12dp"
+        android:layout_marginTop="4dp"
         android:clipToPadding="false"
-        android:paddingBottom="8dp" />
+        android:paddingBottom="4dp" />
 
     <com.google.android.material.button.MaterialButton
         android:id="@+id/backupButton"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_marginTop="12dp"
+        android:layout_marginTop="8dp"
         android:enabled="false"
         android:text="开始备份选中应用"
         style="@style/Widget.Material3.Button" />

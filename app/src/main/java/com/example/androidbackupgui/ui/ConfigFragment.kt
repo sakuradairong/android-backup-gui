@@ -67,6 +67,9 @@ class ConfigFragment : Fragment() {
         binding.initResticButton.setOnClickListener { initResticRepo() }
         binding.resticStatsButton.setOnClickListener { showResticStats() }
         binding.resticPruneButton.setOnClickListener { pruneResticSnapshots() }
+        binding.resticUnlockButton.setOnClickListener {
+            vm.unlockResticRepo(readResticForm())
+        }
 
         // Initial async status check
         refreshResticStatus()
@@ -140,6 +143,8 @@ class ConfigFragment : Fragment() {
             binding.resticStatsButton.visibility = if (statsButtonVisible) View.VISIBLE else View.GONE
             binding.resticPruneButton.isEnabled = pruneButtonEnabled
             binding.resticPruneButton.visibility = if (pruneButtonVisible) View.VISIBLE else View.GONE
+            binding.resticUnlockButton.isEnabled = unlockButtonEnabled
+            binding.resticUnlockButton.visibility = if (unlockButtonVisible) View.VISIBLE else View.GONE
         }
     }
 

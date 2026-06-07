@@ -359,6 +359,20 @@ object ResticWrapper {
         backend, backendUrl, backendUser, backendPass, backendShare
     )
 
+    suspend fun unlock(
+        repoPath: String,
+        password: String,
+        backend: String = "local",
+        backendUrl: String = "",
+        backendUser: String = "",
+        backendPass: String = "",
+        backendShare: String = "",
+    ): AppResult<String> =
+        maintenance.unlock(
+            repoPath, password,
+            backend, backendUrl, backendUser, backendPass, backendShare,
+        )
+
     // ── Public URL helper ──────────────────────────────
 
     /** Build a display-friendly repository URL for UI. */

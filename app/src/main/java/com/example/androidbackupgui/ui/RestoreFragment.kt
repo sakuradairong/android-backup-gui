@@ -83,8 +83,8 @@ class RestoreFragment : Fragment() {
                 val names = userList.map { (id, name) -> "$name (ID: $id)" }
                 val adapter = ArrayAdapter(requireContext(), android.R.layout.simple_spinner_item, names)
                 adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
-                binding.userSelector.adapter = adapter
-                binding.userSelector.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+                binding.restoreUserSelector.adapter = adapter
+                binding.restoreUserSelector.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
                     override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
                         selectedUserId = userList.getOrNull(position)?.first ?: 0
                     }

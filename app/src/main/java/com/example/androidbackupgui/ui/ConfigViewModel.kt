@@ -44,7 +44,9 @@ data class ResticStatus(
     val statsButtonVisible: Boolean = false,
     val statsButtonEnabled: Boolean = true,
     val pruneButtonVisible: Boolean = false,
-    val pruneButtonEnabled: Boolean = true
+    val pruneButtonEnabled: Boolean = true,
+    val unlockButtonVisible: Boolean = false,
+    val unlockButtonEnabled: Boolean = true
 )
 
 /** Restic credential/form snapshot passed from Fragment on every user interaction. */
@@ -245,16 +247,39 @@ class ConfigViewModel(application: Application) : AndroidViewModel(application) 
                 _uiState.update { it.copy(resticStatus = ResticStatus(
                     message = "仓库就绪，${snapshots.size} 个快照",
                     snapshotCount = snapshots.size,
-                    initButtonVisible = false, statsButtonVisible = true, pruneButtonVisible = true
+                    initButtonVisible = false, statsButtonVisible = true, pruneButtonVisible = true,
+                    unlockButtonVisible = true
                 ))}
             } else {
+                val errMsg = snapshotsResult.errorOrNull()?.message ?: ""
+                val hasLock = errMsg.contains("lock", ignoreCase = true) || errMsg.contains("already locked", ignoreCase = true)
                 _uiState.update { it.copy(resticStatus = ResticStatus(
-                    message = "仓库未初始化或认证失败",
-                    initButtonVisible = true, statsButtonVisible = false, pruneButtonVisible = false
+                    message = if (hasLock) "仓库被锁定，请先解锁" else "仓库未初始化或认证失败",
+                    initButtonVisible = !hasLock, statsButtonVisible = false, pruneButtonVisible = false,
+                    unlockButtonVisible = hasLock
                 ))}
             }
         }
     }
+    fun unlockResticRepo(form: ResticForm) {
+        _uiState.update { it.copy(resticStatus = it.resticStatus.copy(
+            message = "正在解锁仓库…", unlockButtonEnabled = false
+        ))}
+        viewModelScope.launch {
+            ResticWrapper.backendDomain = form.backendDomain
+            val result = ResticWrapper.unlock(form.repo, form.password,
+                backend = form.backend, backendUrl = form.backendUrl,
+                backendUser = form.backendUser, backendPass = form.backendPass,
+                backendShare = form.backendShare,
+            )
+            _uiState.update { it.copy(resticStatus = it.resticStatus.copy(
+                message = if (result.isSuccess) "解锁完成" else "解锁失败: ${result.errorOrNull()?.message}",
+                unlockButtonEnabled = true
+            ))}
+            refreshResticStatus(form)
+        }
+    }
+
     fun showResticStats(form: ResticForm) {
         _uiState.update { it.copy(resticStatus = it.resticStatus.copy(
             message = "正在读取统计…", statsButtonEnabled = false
@@ -303,6 +328,15 @@ class ConfigViewModel(application: Application) : AndroidViewModel(application) 
         viewModelScope.launch {
             try {
                 _operationEvents.emit(OperationEvent.PruneStarted)
+
+                // Remove stale locks before forget/prune
+                ResticWrapper.backendDomain = form.backendDomain
+                ResticWrapper.unlock(form.repo, form.password,
+                    backend = form.backend, backendUrl = form.backendUrl,
+                    backendUser = form.backendUser, backendPass = form.backendPass,
+                    backendShare = form.backendShare,
+                )
+
                 val forgetResult = ResticWrapper.forget(form.repo, form.password,
                     keepDaily = 7, keepWeekly = 4, keepMonthly = 3,
                     backend = form.backend, backendUrl = form.backendUrl,

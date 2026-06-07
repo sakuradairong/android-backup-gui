@@ -173,7 +173,8 @@
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
                         app:singleSelection="true"
-                        app:selectionRequired="true">
+                        app:selectionRequired="true"
+                        app:checkedButton="@id/resticBackendLocal">
 
                         <com.google.android.material.button.MaterialButton
                             android:id="@+id/resticBackendLocal"
@@ -267,6 +268,7 @@
                     android:layout_marginTop="8dp"
                     android:hint="密码"
                     android:visibility="gone"
+                    app:endIconMode="password_toggle"
                     style="@style/Widget.Material3.TextInputLayout.OutlinedBox">
                     <com.google.android.material.textfield.TextInputEditText
                         android:id="@+id/resticBackendPassEdit"
@@ -308,10 +310,12 @@
 
                 <!-- Repo encryption password (always shown) -->
                 <com.google.android.material.textfield.TextInputLayout
+                    android:id="@+id/resticPasswordLayout"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:layout_marginTop="8dp"
                     android:hint="仓库加密密码 (请妥善保管，遗失即无法恢复)"
+                    app:endIconMode="password_toggle"
                     style="@style/Widget.Material3.TextInputLayout.OutlinedBox">
                     <com.google.android.material.textfield.TextInputEditText
                         android:id="@+id/resticPasswordEdit"
@@ -358,6 +362,14 @@
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
                         android:text="清理"
+                        android:visibility="gone"
+                        style="@style/Widget.Material3.Button.TextButton" />
+
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/resticUnlockButton"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="解锁"
                         android:visibility="gone"
                         style="@style/Widget.Material3.Button.TextButton" />
                 </LinearLayout>
