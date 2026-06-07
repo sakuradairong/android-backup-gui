@@ -344,6 +344,14 @@ object RestoreOperation {
         val ssaidValue = ssaidFile.readText().trim()
         if (ssaidValue.isBlank()) return
 
+        // SSAID is a hex token. Reject anything else so it can never break out of
+        // the sed expression below (shellEscape only protects single-quote context,
+        // not the double-quoted sed string).
+        if (!ssaidValue.matches(Regex("^[0-9a-fA-F]+$"))) {
+            Log.w(TAG, "restoreSsaid: ssaid value is not hex, skipping XML edit for $packageName")
+            return
+        }
+
         // Resolve the app's UID
         val uidResult = RootShell.exec("dumpsys package '${packageName.shellEscape()}' | grep 'userId=' | head -1")
         val uid = uidResult.output
@@ -371,7 +379,8 @@ object RestoreOperation {
             // Generate a UUID for the new entry
             val uuidResult = RootShell.exec("cat /proc/sys/kernel/random/uuid 2>/dev/null")
             val id = uuidResult.output.trim()
-            if (id.length != 36) { // UUID format check
+            // Strict UUID format check (also keeps the value safe inside the sed string)
+            if (!id.matches(Regex("^[0-9a-fA-F-]{36}$"))) {
                 Log.w(TAG, "restoreSsaid: could not generate UUID (got '$id'), falling back")
                 return@run false
             }

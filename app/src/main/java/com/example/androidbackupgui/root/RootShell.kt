@@ -64,6 +64,9 @@ object RootShell {
             // Shell already created (e.g. from Application superclass or prior session).
             // The default builder is already in effect — our custom config is ignored
             // but the shell is still functional.
+        } catch (e: Exception) {
+            // Some ROMs throw other exceptions during root init; don't crash startup.
+            Log.w(TAG, "configure: failed to set default builder", e)
         }
     }
 
