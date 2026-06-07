@@ -1,0 +1,99 @@
+name: Bug 报告
+description: 报告一个 Bug 帮助我们改进
+title: "[Bug] "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢您花时间报告这个问题！请尽可能详细地填写以下信息。
+
+  - type: textarea
+    id: description
+    attributes:
+      label: 问题描述
+      description: 清晰简洁地描述这个 Bug 是什么
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      description: 复现该问题的具体步骤
+      placeholder: |
+        1. 打开应用...
+        2. 点击...
+        3. 看到错误...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: 预期行为
+      description: 您期望发生什么
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: 实际行为
+      description: 实际发生了什么
+    validations:
+      required: true
+
+  - type: textarea
+    id: screenshot
+    attributes:
+      label: 截图/日志
+      description: 如有错误截图或 logcat 输出，请附在这里
+    validations:
+      required: false
+
+  - type: input
+    id: version
+    attributes:
+      label: 应用版本
+      description: 您正在使用的版本号（可在设置中查看）
+      placeholder: "v1.14"
+    validations:
+      required: true
+
+  - type: input
+    id: device
+    attributes:
+      label: 设备型号
+      placeholder: "Pixel 6 / Xiaomi 14"
+    validations:
+      required: true
+
+  - type: input
+    id: android
+    attributes:
+      label: Android 版本
+      placeholder: "Android 14"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: root
+    attributes:
+      label: Root 方案
+      options:
+        - Magisk
+        - KernelSU
+        - APatch
+        - 其他
+        - 无 Root
+    validations:
+      required: true
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: 其他信息
+      description: 任何可能有助于诊断问题的其他信息
+    validations:
+      required: false

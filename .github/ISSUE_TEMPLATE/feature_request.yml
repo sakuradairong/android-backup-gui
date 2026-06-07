@@ -1,0 +1,43 @@
+name: 功能请求
+description: 为这个项目提一个新功能建议
+title: "[Feature] "
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢您花时间提出改进建议！请描述您想要的功能。
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: 使用场景
+      description: 这个功能解决了什么问题？在什么场景下需要？
+      placeholder: "当我使用...功能时，发现...不够方便"
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: 期望方案
+      description: 您期望的行为或交互方式是什么样的
+      placeholder: "希望在某某页面添加一个...按钮，点击后..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: 替代方案
+      description: 您考虑过其他替代方案吗？
+    validations:
+      required: false
+
+  - type: textarea
+    id: context
+    attributes:
+      label: 附加信息
+      description: 如有截图、参考实现或其他上下文，请附在这里
+    validations:
+      required: false
