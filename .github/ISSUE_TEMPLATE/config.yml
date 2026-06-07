@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 讨论区
+    url: https://github.com/sakuradairong/android-backup-gui/discussions
+    about: 如需提问或讨论功能，请使用 Discussion
