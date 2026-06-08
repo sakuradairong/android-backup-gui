@@ -105,7 +105,7 @@ object RestoreOperation {
 
                         // 1. Install APK
                         emit(RestoreProgress(index + 1, packages.size, pkg, "install", "正在安装 APK…"))
-                        val installed = installApk(pkg, appBackupDir)
+                        val installed = installApk(pkg, appBackupDir, context.cacheDir)
                         LogUtil.i(TAG, "restoreApps: pkg=$pkg installApk result=$installed")
 
                         if (!installed) {
@@ -149,9 +149,7 @@ object RestoreOperation {
         LogUtil.i(TAG, "restoreApps: completed — success=$successCount fail=$failCount elapsed=${elapsed}ms")
         RestoreResult(successCount, failCount, elapsed)
     }
-
-    private suspend fun installApk(packageName: String, appDir: File): Boolean {
-        // Find APK files — listBackupFiles falls back to root shell ls for FUSE paths
+    private suspend fun installApk(packageName: String, appDir: File, cacheDir: File): Boolean {
         val apkNames = BackupOperation.listBackupFiles(appDir)
         LogUtil.i(TAG, "installApk: $packageName listBackupFiles returned ${apkNames?.size} files: $apkNames")
         if (apkNames == null) {
@@ -161,18 +159,28 @@ object RestoreOperation {
         val apkFiltered = apkNames.filter { it.endsWith(".apk") }.sorted()
         LogUtil.i(TAG, "installApk: $packageName apkFiltered=$apkFiltered")
         if (apkFiltered.isEmpty()) return false
-        val apkFiles = apkFiltered.map { File(appDir, it) }
+
+        // Copy APK files to cache dir (pm cannot read APKs from external storage on some ROMs)
+        val installDir = File(cacheDir, "apk_install_${packageName.replace('.','_')}")
+        installDir.mkdirs()
+        val localApks = mutableListOf<File>()
+        for (name in apkFiltered) {
+            val src = File(appDir, name)
+            val dst = File(installDir, name)
+            RootShell.exec("cp '${src.absolutePath.shellEscape()}' '${dst.absolutePath.shellEscape()}' && chmod 644 '${dst.absolutePath.shellEscape()}'")
+            localApks.add(dst)
+        }
 
         suspend fun doInstall(): Boolean {
-            val apkPaths = apkFiles.joinToString(" ") { it.absolutePath.shellEscape() }
-            if (apkFiles.size > 1) {
+            val apkPaths = localApks.joinToString(" ") { it.absolutePath.shellEscape() }
+            if (localApks.size > 1) {
                 val result = RootShell.exec("pm install-create -r -t 2>/dev/null")
                 val sessionId = result.output.lines()
                     .firstOrNull { it.contains("Success") }
                     ?.substringAfter("[")
                     ?.substringBefore("]")
                 if (sessionId != null) {
-                    for ((i, apk) in apkFiles.withIndex()) {
+                    for ((i, apk) in localApks.withIndex()) {
                         val sessionName = if (i == 0) "base.apk" else "split_${i}.apk"
                         RootShell.exec("pm install-write '${sessionId.shellEscape()}' '$sessionName' '${apk.absolutePath.shellEscape()}'")
                     }
