@@ -430,18 +430,12 @@ object BackupOperation {
         } catch (_: Exception) {
             // Fall through to root-shell fallback
         }
-        // Fallback: write to /data/local/tmp (world-writable) then root cp to target
+        // Fallback: write via root shell using base64 (bypasses FUSE entirely)
         try {
-            val tmpFile = File("/data/local/tmp/backup_write_${file.name}")
-            tmpFile.parentFile?.mkdirs()
-            tmpFile.writeText(text)
-            val cpResult = RootShell.exec(
-                "cp '${tmpFile.absolutePath}' '${file.absolutePath.shellEscape()}'"
-            )
-            tmpFile.delete()
-            if (!cpResult.isSuccess) return false
-            RootShell.exec("chmod 644 '${file.absolutePath.shellEscape()}'")
-            return true
+            mkdirsForBackup(file.parentFile ?: return false)
+            val b64 = android.util.Base64.encodeToString(text.toByteArray(), android.util.Base64.NO_WRAP)
+            val result = RootShell.exec("echo '${b64.shellEscape()}' | base64 -d > '${file.absolutePath.shellEscape()}'")
+            return result.isSuccess
         } catch (e: Exception) {
             Log.w(TAG, "writeFileForBackup: all methods failed for ${file.absolutePath}", e)
             return false
