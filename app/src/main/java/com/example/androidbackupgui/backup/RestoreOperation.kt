@@ -390,6 +390,13 @@ object RestoreOperation {
     }
 
     private suspend fun restoreSsaid(packageName: String, appDir: File, userId: String) {
+        // Reject package names with special characters — they cannot be valid
+        // Android package names and would be unsafe in sed expressions below.
+        if (!packageName.matches(Regex("^[a-zA-Z][a-zA-Z0-9._-]*(\\.[a-zA-Z][a-zA-Z0-9._-]*)+$"))) {
+            Log.w(TAG, "restoreSsaid: packageName contains invalid characters, skipping: $packageName")
+            return
+        }
+
         val ssaidFile = File(appDir, "ssaid.txt")
         val ssaidValue = BackupOperation.readTextFile(ssaidFile)?.trim() ?: return
 
