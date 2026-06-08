@@ -4,6 +4,7 @@ import com.example.androidbackupgui.root.shellEscape
 import android.content.Context
 import android.util.Log
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -216,7 +217,21 @@ object RestoreOperation {
             return true
         }
 
-        Log.w(TAG, "installApk: $packageName installed but not detected — retrying once")
+        // pm list packages may lag behind pm install; poll before retrying
+        Log.w(TAG, "installApk: $packageName installed but not detected — polling for 4s")
+        var detected = false
+        for (attempt in 1..4) {
+            delay(1000)
+            if (isInstalled()) {
+                detected = true
+                Log.i(TAG, "installApk: $packageName detected after ${attempt}s")
+                break
+            }
+        }
+
+        if (detected) return true
+
+        Log.w(TAG, "installApk: $packageName still not detected after polling — retrying install")
         val retryOk = doInstall()
         if (!retryOk) {
             Log.e(TAG, "installApk: $packageName — retry install failed")
