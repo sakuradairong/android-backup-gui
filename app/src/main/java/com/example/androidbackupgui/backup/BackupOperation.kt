@@ -460,7 +460,13 @@ object BackupOperation {
      */
     internal suspend fun listBackupFiles(dir: File): List<String>? {
         try {
-            return dir.listFiles()?.map { it.name }
+            val javaFiles = dir.listFiles()
+            if (javaFiles != null) {
+                val names = javaFiles.map { it.name }
+                if (names.isNotEmpty()) return names
+                // Java returned empty — FUSE may report EPERM as empty array
+                // Fall through to root shell ls for definitive answer
+            }
         } catch (_: Exception) { /* fall through */ }
         try {
             val result = RootShell.exec("ls -1 '${dir.absolutePath.shellEscape()}' 2>/dev/null")
