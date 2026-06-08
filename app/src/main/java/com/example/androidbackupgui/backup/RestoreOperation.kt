@@ -336,8 +336,17 @@ object RestoreOperation {
         }
         if (!result.isSuccess) return false
         return !result.output.lines().any { line ->
-            val path = line.substringBefore(" -> ")
-            path.trimStart('/').split("/").any { segment -> segment == ".." }
+            val parts = line.split(" -> ", limit = 2)
+            val path = parts[0].trimStart('/')
+            val linkTarget = parts.getOrNull(1)
+            // Reject path traversal segments
+            if (path.split("/").any { it == ".." }) return@any true
+            // Reject symlinks with absolute targets or targets containing ..
+            if (linkTarget != null) {
+                if (linkTarget.startsWith("/")) return@any true
+                if (linkTarget.split("/").any { it == ".." }) return@any true
+            }
+            false
         }
     }
 
