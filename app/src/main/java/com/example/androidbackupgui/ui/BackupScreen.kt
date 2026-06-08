@@ -226,45 +226,84 @@ fun BackupScreen() {
                                         ResticWrapper.cacheDir = context.cacheDir.absolutePath
                                         ResticWrapper.backendDomain = config.resticBackendDomain
 
-                                        statusText = "正在写入 restic 去重仓库…"
-                                        val resticResult = withContext(Dispatchers.IO) {
-                                            ResticWrapper.backup(
-                                                repoPath = config.resticRepo,
-                                                password = config.resticPassword,
-                                                paths = listOf(backupResult.outputDir),
-                                                tags = listOf("backup_${System.currentTimeMillis() / 1000}"),
-                                                hostname = "android-backup-gui",
-                                                backend = config.resticBackend,
-                                                backendUrl = config.resticBackendUrl,
-                                                backendUser = config.resticBackendUser,
-                                                backendPass = config.resticBackendPass,
-                                                backendShare = config.resticBackendShare,
-                                                onProgress = { progress ->
-                                                    if (progress.messageType == "status") {
-                                                        statusText = "去重仓库: %.0f%% (%d/%d 个文件)".format(
-                                                            progress.percentDone * 100,
-                                                            progress.filesDone,
-                                                            progress.totalFiles
-                                                        )
+                                        if (config.useStreaming == 1) {
+                                            // ── Streaming path ──
+                                            statusText = "正在流式备份到 restic 去重仓库…"
+                                            val resticResult = withContext(Dispatchers.IO) {
+                                                ResticWrapper.backupStreaming(
+                                                    apps = toBackup,
+                                                    noDataBackup = excludeDataFromBackup,
+                                                    legacyApps = null,
+                                                    repoPath = config.resticRepo,
+                                                    password = config.resticPassword,
+                                                    tags = listOf("backup_${System.currentTimeMillis() / 1000}"),
+                                                    hostname = "android-backup-gui",
+                                                    backend = config.resticBackend,
+                                                    backendUrl = config.resticBackendUrl,
+                                                    backendUser = config.resticBackendUser,
+                                                    backendPass = config.resticBackendPass,
+                                                    backendShare = config.resticBackendShare,
+                                                    onProgress = { msg -> statusText = msg }
+                                                )
+                                            }
+                                            when (resticResult) {
+                                                is AppResult.Success -> {
+                                                    val summary = resticResult.getOrNull()
+                                                    statusText = buildString {
+                                                        appendLine("流式备份完成！")
+                                                        appendLine("Restic ID: ${summary?.snapshotId?.take(8)}…")
+                                                        if (summary != null) {
+                                                            appendLine("新增: ${summary.dataAdded / 1024 / 1024} MB")
+                                                            appendLine("文件: ${summary.totalFilesProcessed}")
+                                                        }
                                                     }
                                                 }
-                                            )
-                                        }
-                                        when (resticResult) {
-                                            is AppResult.Success -> {
-                                                val summary = resticResult.getOrNull()
-                                                statusText = buildString {
-                                                    appendLine("备份完成！")
-                                                    appendLine("成功: ${backupResult.successCount} 失败: ${backupResult.failCount}")
-                                                    appendLine("耗时: ${backupResult.elapsedMs / 1000}秒")
-                                                    appendLine("Restic ID: ${summary?.snapshotId?.take(8)}…")
-                                                    if (summary != null) {
-                                                        appendLine("新增: ${summary.dataAdded / 1024 / 1024} MB")
-                                                    }
+                                                is AppResult.Failure -> {
+                                                    statusText = "流式备份失败: ${resticResult.errorOrNull()?.message}"
                                                 }
                                             }
-                                            is AppResult.Failure -> {
-                                                statusText = "restic 快照失败: ${resticResult.errorOrNull()?.message}"
+                                        } else {
+                                            // ── Standard path (staging dir) ──
+                                            statusText = "正在写入 restic 去重仓库…"
+                                            val resticResult = withContext(Dispatchers.IO) {
+                                                ResticWrapper.backup(
+                                                    repoPath = config.resticRepo,
+                                                    password = config.resticPassword,
+                                                    paths = listOf(backupResult.outputDir),
+                                                    tags = listOf("backup_${System.currentTimeMillis() / 1000}"),
+                                                    hostname = "android-backup-gui",
+                                                    backend = config.resticBackend,
+                                                    backendUrl = config.resticBackendUrl,
+                                                    backendUser = config.resticBackendUser,
+                                                    backendPass = config.resticBackendPass,
+                                                    backendShare = config.resticBackendShare,
+                                                    onProgress = { progress ->
+                                                        if (progress.messageType == "status") {
+                                                            statusText = "去重仓库: %.0f%% (%d/%d 个文件)".format(
+                                                                progress.percentDone * 100,
+                                                                progress.filesDone,
+                                                                progress.totalFiles
+                                                            )
+                                                        }
+                                                    }
+                                                )
+                                            }
+                                            when (resticResult) {
+                                                is AppResult.Success -> {
+                                                    val summary = resticResult.getOrNull()
+                                                    statusText = buildString {
+                                                        appendLine("备份完成！")
+                                                        appendLine("成功: ${backupResult.successCount} 失败: ${backupResult.failCount}")
+                                                        appendLine("耗时: ${backupResult.elapsedMs / 1000}秒")
+                                                        appendLine("Restic ID: ${summary?.snapshotId?.take(8)}…")
+                                                        if (summary != null) {
+                                                            appendLine("新增: ${summary.dataAdded / 1024 / 1024} MB")
+                                                        }
+                                                    }
+                                                }
+                                                is AppResult.Failure -> {
+                                                    statusText = "restic 快照失败: ${resticResult.errorOrNull()?.message}"
+                                                }
                                             }
                                         }
                                     }
