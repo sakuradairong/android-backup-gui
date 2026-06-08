@@ -72,7 +72,7 @@ object BackupOperation {
 
         // Create backup structure
         val backupRoot = File(outputDir, "Backup_${config.compressionMethod}_$userId")
-        if (!backupRoot.mkdirs() && !backupRoot.isDirectory) {
+        if (!mkdirsForBackup(backupRoot)) {
             LogUtil.e(TAG, "backupApps: cannot create output dir ${backupRoot.absolutePath}")
             return@withContext BackupResult(0, 0, 0, outputDir.absolutePath, 0)
         }
@@ -80,19 +80,15 @@ object BackupOperation {
 
         // Write app list — includes ALL packages in [apps] (selected + legacy from snapshot)
         val appListFile = File(backupRoot, "appList.txt")
-        try {
-            appListFile.writeText(apps.joinToString("\n") { it.packageName.value })
-        } catch (e: Exception) {
-            LogUtil.e(TAG, "backupApps: failed to write appList.txt — ${e.message}")
+        if (!writeFileForBackup(appListFile, apps.joinToString("\n") { it.packageName.value })) {
+            LogUtil.e(TAG, "backupApps: failed to write appList.txt")
             return@withContext BackupResult(0, 0, 0, outputDir.absolutePath, 0)
         }
 
         // Write metadata JSON — fresh metadata for selected apps, legacy for historical apps
         val metaFile = File(backupRoot, "app_details.json")
-        try {
-            metaFile.writeText(buildAppDetailsJson(apps, legacyApps))
-        } catch (e: Exception) {
-            LogUtil.e(TAG, "backupApps: failed to write app_details.json — ${e.message}")
+        if (!writeFileForBackup(metaFile, buildAppDetailsJson(apps, legacyApps))) {
+            LogUtil.e(TAG, "backupApps: failed to write app_details.json")
             return@withContext BackupResult(0, 0, 0, outputDir.absolutePath, 0)
         }
 
@@ -354,11 +350,11 @@ object BackupOperation {
             ?.substringBefore("\"")
             ?.takeIf { it.isNotBlank() }
         if (value != null) {
-            try {
-                File(appDir, "ssaid.txt").writeText(value)
+            val ssaidFile = File(appDir, "ssaid.txt")
+            if (!writeFileForBackup(ssaidFile, value)) {
+                Log.w(TAG, "backupSsaid: failed to write ssaid.txt for $packageName")
+            } else {
                 Log.d(TAG, "backupSsaid: backed up SSAID for $packageName = $value")
-            } catch (e: Exception) {
-                Log.w(TAG, "backupSsaid: failed to write ssaid.txt for $packageName", e)
             }
         }
     }
@@ -366,10 +362,9 @@ object BackupOperation {
     private suspend fun backupPermissions(packageName: String, appDir: File) {
         val result = RootShell.exec("dumpsys package '${packageName.shellEscape()}' | grep -E 'granted=(true|false)'")
         if (result.output.isNotBlank()) {
-            try {
-                File(appDir, "permissions.txt").writeText(result.output)
-            } catch (e: Exception) {
-                Log.w(TAG, "backupPermissions: failed to write permissions.txt for $packageName", e)
+            val permFile = File(appDir, "permissions.txt")
+            if (!writeFileForBackup(permFile, result.output)) {
+                Log.w(TAG, "backupPermissions: failed to write permissions.txt for $packageName")
             }
         }
     }
@@ -406,4 +401,50 @@ object BackupOperation {
         }
         return root.toString(2)
     }
-}
+
+    /**
+     * Create backup output directory, falling back to root shell [mkdir -p]
+     * when Java [File.mkdirs] fails (e.g. EPERM on FUSE external storage).
+     */
+    private suspend fun mkdirsForBackup(dir: File): Boolean {
+        if (dir.isDirectory) return true
+        if (dir.mkdirs()) return true
+        // Fallback: root shell bypasses FUSE/sdcardfs restrictions
+        val result = RootShell.exec("mkdir -p '${dir.absolutePath.shellEscape()}'")
+        return result.isSuccess && dir.isDirectory
+    }
+
+    /**
+     * Write text content to a backup file, falling back to root shell
+     * when [File.writeText] fails (e.g. EPERM on FUSE external storage).
+     *
+     * Fallback strategy: write to world-writable tmp → root [cp] to target,
+     * bypassing FUSE UID checks that block the app's Java process.
+     */
+    private suspend fun writeFileForBackup(file: File, text: String): Boolean {
+        // Try direct File API first (works for internal storage)
+        try {
+            mkdirsForBackup(file.parentFile ?: return false)
+            file.writeText(text)
+            return true
+        } catch (_: Exception) {
+            // Fall through to root-shell fallback
+        }
+        // Fallback: write to /data/local/tmp (world-writable) then root cp to target
+        try {
+            val tmpFile = File("/data/local/tmp/backup_write_${file.name}")
+            tmpFile.parentFile?.mkdirs()
+            tmpFile.writeText(text)
+            val cpResult = RootShell.exec(
+                "cp '${tmpFile.absolutePath}' '${file.absolutePath.shellEscape()}'"
+            )
+            tmpFile.delete()
+            if (!cpResult.isSuccess) return false
+            RootShell.exec("chmod 644 '${file.absolutePath.shellEscape()}'")
+            return true
+        } catch (e: Exception) {
+            Log.w(TAG, "writeFileForBackup: all methods failed for ${file.absolutePath}", e)
+            return false
+        }
+    }
+ }
