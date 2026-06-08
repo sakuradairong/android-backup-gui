@@ -59,16 +59,20 @@ object RestoreOperation {
 
         // Read app list from backup
         val appListFile = File(backupDir, "appList.txt")
-        val allPackages = BackupOperation.readTextFile(appListFile)?.let { content ->
+        val appListContent = BackupOperation.readTextFile(appListFile)
+        LogUtil.i(TAG, "restoreApps: appListContent=${appListContent?.substringBefore("\n")?.take(100)}")
+        val allPackages = appListContent?.let { content ->
             content.lines().map { it.trim() }.filter { it.isNotEmpty() && !it.startsWith("#") }
         } ?: run {
-            // Fallback: scan subdirectories
-            BackupOperation.listBackupFiles(backupDir)
-                ?.filter { name ->
-                    val apkFile = File(File(backupDir, name), "${name}.apk")
-                    BackupOperation.backupPathExists(apkFile)
-                }
-                ?: emptyList()
+            LogUtil.i(TAG, "restoreApps: readTextFile returned null, trying listBackupFiles")
+            val children = BackupOperation.listBackupFiles(backupDir)
+            LogUtil.i(TAG, "restoreApps: listBackupFiles returned ${children?.size} children")
+            children?.filter { name ->
+                val apkFile = File(File(backupDir, name), "${name}.apk")
+                val exists = BackupOperation.backupPathExists(apkFile)
+                LogUtil.i(TAG, "restoreApps: child $name apkExists=$exists")
+                exists
+            } ?: emptyList()
         }
 
         val packages = if (filterPkgs != null) {
@@ -76,7 +80,10 @@ object RestoreOperation {
         } else {
             allPackages
         }
-        LogUtil.i(TAG, "restoreApps: starting restore of ${packages.size} packages from ${backupDir.absolutePath}")
+        LogUtil.i(TAG, "restoreApps: starting restore of ${packages.size} packages (all=${allPackages.size}) from ${backupDir.absolutePath}")
+        if (packages.isEmpty()) {
+            LogUtil.w(TAG, "restoreApps: packages list is empty, nothing to restore")
+        }
 
         val successAtomic = AtomicInteger(0)
         val failAtomic = AtomicInteger(0)
@@ -88,14 +95,18 @@ object RestoreOperation {
                     if (!coroutineContext.isActive) return@launch
                     semaphore.withPermit {
                         val appBackupDir = File(backupDir, pkg)
-                        if (!BackupOperation.backupPathExists(appBackupDir)) {
+                        val dirExists = BackupOperation.backupPathExists(appBackupDir)
+                        LogUtil.i(TAG, "restoreApps: pkg=$pkg appBackupDir=${appBackupDir.absolutePath} exists=$dirExists")
+                        if (!dirExists) {
                             failAtomic.incrementAndGet()
+                            emit(RestoreProgress(index + 1, packages.size, pkg, "done", "备份目录不存在"))
                             return@withPermit
                         }
 
                         // 1. Install APK
                         emit(RestoreProgress(index + 1, packages.size, pkg, "install", "正在安装 APK…"))
                         val installed = installApk(pkg, appBackupDir)
+                        LogUtil.i(TAG, "restoreApps: pkg=$pkg installApk result=$installed")
 
                         if (!installed) {
                             failAtomic.incrementAndGet()
@@ -142,12 +153,15 @@ object RestoreOperation {
     private suspend fun installApk(packageName: String, appDir: File): Boolean {
         // Find APK files — listBackupFiles falls back to root shell ls for FUSE paths
         val apkNames = BackupOperation.listBackupFiles(appDir)
-            ?.filter { it.endsWith(".apk") }
-            ?.sorted()
-            ?: return false
-
-        if (apkNames.isEmpty()) return false
-        val apkFiles = apkNames.map { File(appDir, it) }
+        LogUtil.i(TAG, "installApk: $packageName listBackupFiles returned ${apkNames?.size} files: $apkNames")
+        if (apkNames == null) {
+            LogUtil.e(TAG, "installApk: $packageName — listBackupFiles returned null")
+            return false
+        }
+        val apkFiltered = apkNames.filter { it.endsWith(".apk") }.sorted()
+        LogUtil.i(TAG, "installApk: $packageName apkFiltered=$apkFiltered")
+        if (apkFiltered.isEmpty()) return false
+        val apkFiles = apkFiltered.map { File(appDir, it) }
 
         suspend fun doInstall(): Boolean {
             val apkPaths = apkFiles.joinToString(" ") { it.absolutePath.shellEscape() }
@@ -167,6 +181,7 @@ object RestoreOperation {
                 }
             }
             val result = RootShell.exec("pm install -r -t $apkPaths")
+            LogUtil.i(TAG, "installApk: $packageName pm install exitCode=${result.exitCode} output=${result.output.take(200)}")
             return result.isSuccess
         }
 
@@ -178,7 +193,7 @@ object RestoreOperation {
         // First install attempt
         val firstOk = doInstall()
         if (!firstOk) {
-            Log.e(TAG, "installApk: $packageName — first install attempt failed")
+            LogUtil.e(TAG, "installApk: $packageName — first install attempt failed")
             return false
         }
 
