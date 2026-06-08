@@ -59,15 +59,15 @@ object RestoreOperation {
 
         // Read app list from backup
         val appListFile = File(backupDir, "appList.txt")
-        val allPackages = if (appListFile.exists()) {
-            appListFile.readLines()
-                .map { it.trim() }
-                .filter { it.isNotEmpty() && !it.startsWith("#") }
-        } else {
+        val allPackages = BackupOperation.readTextFile(appListFile)?.let { content ->
+            content.lines().map { it.trim() }.filter { it.isNotEmpty() && !it.startsWith("#") }
+        } ?: run {
             // Fallback: scan subdirectories
-            backupDir.listFiles()
-                ?.filter { it.isDirectory && File(it, "${it.name}.apk").exists() }
-                ?.map { it.name }
+            BackupOperation.listBackupFiles(backupDir)
+                ?.filter { name ->
+                    val apkFile = File(File(backupDir, name), "${name}.apk")
+                    BackupOperation.backupPathExists(apkFile)
+                }
                 ?: emptyList()
         }
 
@@ -88,7 +88,7 @@ object RestoreOperation {
                     if (!coroutineContext.isActive) return@launch
                     semaphore.withPermit {
                         val appBackupDir = File(backupDir, pkg)
-                        if (!appBackupDir.exists()) {
+                        if (!BackupOperation.backupPathExists(appBackupDir)) {
                             failAtomic.incrementAndGet()
                             return@withPermit
                         }
@@ -140,26 +140,23 @@ object RestoreOperation {
     }
 
     private suspend fun installApk(packageName: String, appDir: File): Boolean {
-        // Find APK files
-        val apkFiles = appDir.listFiles()
-            ?.filter { it.name.endsWith(".apk") }
-            ?.sortedBy { it.name } // main APK first, splits after
+        // Find APK files — listBackupFiles falls back to root shell ls for FUSE paths
+        val apkNames = BackupOperation.listBackupFiles(appDir)
+            ?.filter { it.endsWith(".apk") }
+            ?.sorted()
             ?: return false
 
-        if (apkFiles.isEmpty()) return false
+        if (apkNames.isEmpty()) return false
+        val apkFiles = apkNames.map { File(appDir, it) }
 
         suspend fun doInstall(): Boolean {
-            // Build install command for multiple APKs (split APK support)
-            val apkPaths = apkFiles.joinToString(" ") { "'${it.absolutePath.shellEscape()}'" }
-
-            // Try pm install with multiple session for split APKs
+            val apkPaths = apkFiles.joinToString(" ") { it.absolutePath.shellEscape() }
             if (apkFiles.size > 1) {
                 val result = RootShell.exec("pm install-create -r -t 2>/dev/null")
                 val sessionId = result.output.lines()
                     .firstOrNull { it.contains("Success") }
                     ?.substringAfter("[")
                     ?.substringBefore("]")
-
                 if (sessionId != null) {
                     for ((i, apk) in apkFiles.withIndex()) {
                         val sessionName = if (i == 0) "base.apk" else "split_${i}.apk"
@@ -169,8 +166,6 @@ object RestoreOperation {
                     return commit.isSuccess
                 }
             }
-
-            // Single APK install
             val result = RootShell.exec("pm install -r -t $apkPaths")
             return result.isSuccess
         }
@@ -210,16 +205,14 @@ object RestoreOperation {
     }
 
     private suspend fun restoreData(packageName: String, userId: String, appDir: File, tarCmd: String, zstdCmd: String) {
-        val files = appDir.listFiles()
-        if (files.isNullOrEmpty()) {
-            Log.w(TAG, "restoreData: appDir empty or null: ${appDir.absolutePath}")
+        val fileNames = BackupOperation.listBackupFiles(appDir)
+            ?.filter { it.contains("_data.tar") }
+            ?: run { Log.w(TAG, "restoreData: appDir empty or null: ${appDir.absolutePath}"); return }
+        if (fileNames.isEmpty()) {
+            Log.w(TAG, "restoreData: no _data.tar in ${appDir.name}")
             return
         }
-        val dataFiles = files.filter { it.name.contains("_data.tar") }
-        if (dataFiles.isEmpty()) {
-            Log.w(TAG, "restoreData: no _data.tar in ${appDir.name}, found: ${files.map { it.name }}")
-            return
-        }
+        val dataFiles = fileNames.map { File(appDir, it) }
 
         // Build exclusion patterns for cache/temp directories
         val dataPaths = listOf("/data/data/$packageName", "/data/user_de/$userId/$packageName")
@@ -303,11 +296,11 @@ object RestoreOperation {
     }
 
     private suspend fun restoreObb(packageName: String, appDir: File, tarCmd: String, zstdCmd: String) {
-        val obbFiles = appDir.listFiles()
-            ?.filter { it.name.contains("_obb.tar") }
+        val obbNames = BackupOperation.listBackupFiles(appDir)
+            ?.filter { it.contains("_obb.tar") }
             ?: return
-
-        if (obbFiles.isEmpty()) return
+        if (obbNames.isEmpty()) return
+        val obbFiles = obbNames.map { File(appDir, it) }
 
         // Build exclusion patterns for OBB cache/temp directories
         val obbPath = "/storage/emulated/0/Android/obb/$packageName"
@@ -339,10 +332,7 @@ object RestoreOperation {
 
     private suspend fun restoreSsaid(packageName: String, appDir: File, userId: String) {
         val ssaidFile = File(appDir, "ssaid.txt")
-        if (!ssaidFile.exists()) return
-
-        val ssaidValue = ssaidFile.readText().trim()
-        if (ssaidValue.isBlank()) return
+        val ssaidValue = BackupOperation.readTextFile(ssaidFile)?.trim() ?: return
 
         // SSAID is a hex token. Reject anything else so it can never break out of
         // the sed expression below (shellEscape only protects single-quote context,
@@ -421,17 +411,12 @@ object RestoreOperation {
 
     private suspend fun restorePermissions(packageName: String, appDir: File) {
         val permFile = File(appDir, "permissions.txt")
-        if (!permFile.exists()) return
-
-        // Parse permissions from dumpsys output.
-        // Format: "android.permission.XXX: granted=true" or "android.permission.XXX: granted=false"
-        val parsedPerms = try {
-            permFile.readLines().mapNotNull { line ->
-                val name = line.substringBefore(":").trim().takeIf { it.isNotEmpty() && it.contains(".") } ?: return@mapNotNull null
-                val granted = line.contains("granted=true")
-                Pair(name, granted)
-            }
-        } catch (_: Exception) { emptyList() }
+        val content = BackupOperation.readTextFile(permFile) ?: return
+        val parsedPerms = content.lines().mapNotNull { line ->
+            val name = line.substringBefore(":").trim().takeIf { it.isNotEmpty() && it.contains(".") } ?: return@mapNotNull null
+            val granted = line.contains("granted=true")
+            Pair(name, granted)
+        }
 
         if (parsedPerms.isEmpty()) return
 

@@ -402,35 +402,21 @@ object BackupOperation {
         return root.toString(2)
     }
 
-    /**
-     * Create backup output directory, falling back to root shell [mkdir -p]
-     * when Java [File.mkdirs] fails (e.g. EPERM on FUSE external storage).
-     */
-    private suspend fun mkdirsForBackup(dir: File): Boolean {
+    /** Create backup output directory, falling back to root shell [mkdir -p]. */
+    internal suspend fun mkdirsForBackup(dir: File): Boolean {
         if (dir.isDirectory) return true
         if (dir.mkdirs()) return true
-        // Fallback: root shell bypasses FUSE/sdcardfs restrictions
         val result = RootShell.exec("mkdir -p '${dir.absolutePath.shellEscape()}'")
         return result.isSuccess && dir.isDirectory
     }
 
-    /**
-     * Write text content to a backup file, falling back to root shell
-     * when [File.writeText] fails (e.g. EPERM on FUSE external storage).
-     *
-     * Fallback strategy: write to world-writable tmp → root [cp] to target,
-     * bypassing FUSE UID checks that block the app's Java process.
-     */
-    private suspend fun writeFileForBackup(file: File, text: String): Boolean {
-        // Try direct File API first (works for internal storage)
+    /** Write text to a file, falling back to root shell (base64 + cat). */
+    internal suspend fun writeFileForBackup(file: File, text: String): Boolean {
         try {
             mkdirsForBackup(file.parentFile ?: return false)
             file.writeText(text)
             return true
-        } catch (_: Exception) {
-            // Fall through to root-shell fallback
-        }
-        // Fallback: write via root shell using base64 (bypasses FUSE entirely)
+        } catch (_: Exception) { /* fall through */ }
         try {
             mkdirsForBackup(file.parentFile ?: return false)
             val b64 = android.util.Base64.encodeToString(text.toByteArray(), android.util.Base64.NO_WRAP)
@@ -440,5 +426,46 @@ object BackupOperation {
             Log.w(TAG, "writeFileForBackup: all methods failed for ${file.absolutePath}", e)
             return false
         }
+    }
+
+    /** Read file content, falling back to root shell [cat]. Returns null on failure. */
+    internal suspend fun readTextFile(file: File): String? {
+        try {
+            if (file.exists()) return file.readText()
+        } catch (_: Exception) { /* fall through */ }
+        try {
+            val result = RootShell.exec("cat '${file.absolutePath.shellEscape()}' 2>/dev/null")
+            if (result.isSuccess && result.output.isNotBlank()) return result.output
+        } catch (_: Exception) { /* fall through */ }
+        return null
+    }
+
+    /** Check if a file/directory exists, falling back to root shell [test -e]. */
+    internal suspend fun backupPathExists(file: File): Boolean {
+        if (file.exists()) return true
+        val result = RootShell.exec("test -e '${file.absolutePath.shellEscape()}' && echo 1 || echo 0")
+        return result.output.trim() == "1"
+    }
+
+    /** Check if a path is a directory, falling back to root shell [test -d]. */
+    internal suspend fun backupIsDirectory(dir: File): Boolean {
+        if (dir.isDirectory()) return true
+        val result = RootShell.exec("test -d '${dir.absolutePath.shellEscape()}' && echo 1 || echo 0")
+        return result.output.trim() == "1"
+    }
+
+    /**
+     * List immediate children in a directory, falling back to root shell [ls -1].
+     * Returns relative names only (not full paths).
+     */
+    internal suspend fun listBackupFiles(dir: File): List<String>? {
+        try {
+            return dir.listFiles()?.map { it.name }
+        } catch (_: Exception) { /* fall through */ }
+        try {
+            val result = RootShell.exec("ls -1 '${dir.absolutePath.shellEscape()}' 2>/dev/null")
+            if (!result.isSuccess || result.output.isBlank()) return null
+            return result.output.lines().filter { it.isNotBlank() }
+        } catch (_: Exception) { return null }
     }
  }

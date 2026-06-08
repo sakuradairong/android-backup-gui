@@ -13,6 +13,9 @@ import com.example.androidbackupgui.backup.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import java.io.File
 
 @Composable
@@ -33,6 +36,26 @@ fun RestoreScreen() {
     var showSnapshotPicker by remember { mutableStateOf(false) }
     var availableSnapshots by remember { mutableStateOf<List<ResticWrapper.ResticSnapshot>>(emptyList()) }
     val configFile = remember { File(context.filesDir, "backup_settings.conf") }
+
+    // SAF directory picker for selecting external backup dir
+    val dirPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocumentTree()
+    ) { uri ->
+        if (uri != null) {
+            val resolvedPath = resolveSafTreeUri(uri)
+            if (resolvedPath != null) {
+                val dir = File(resolvedPath)
+                backupDir = dir
+                selectedSnapshot = null
+                scope.launch {
+                    loadFromDir(context, dir) { pkgs, infos, status ->
+                        packages = pkgs; appInfos = infos
+                        selectedPackages = pkgs.toSet(); statusText = status
+                    }
+                }
+            }
+        }
+    }
 
     // Load config
     LaunchedEffect(Unit) {
@@ -81,6 +104,15 @@ fun RestoreScreen() {
                     ) {
                         Text("本地备份")
                     }
+
+                    OutlinedButton(
+                        onClick = { dirPickerLauncher.launch(null) },
+                        enabled = !isRunning,
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text("选择目录")
+                    }
+
 
                     Button(
                         onClick = {
@@ -343,14 +375,10 @@ private suspend fun loadFromDir(
 ) {
     withContext(Dispatchers.IO) {
         val appListFile = File(dir, "appList.txt")
-        val pkgs = if (appListFile.exists()) {
-            appListFile.readLines()
-                .map { it.trim() }
-                .filter { it.isNotEmpty() && !it.startsWith("#") }
-        } else {
-            dir.listFiles()
-                ?.filter { it.isDirectory }
-                ?.map { it.name }
+        val pkgs = BackupOperation.readTextFile(appListFile)?.let { content ->
+            content.lines().map { it.trim() }.filter { it.isNotEmpty() && !it.startsWith("#") }
+        } ?: run {
+            BackupOperation.listBackupFiles(dir)
                 ?: emptyList()
         }
         // Read cached labels from app_details.json (includes uninstalled apps)
@@ -415,9 +443,8 @@ private suspend fun loadResticSnapshot(
 /** Read app_details.json from a local backup directory and return a package→label map. */
 private suspend fun readLocalAppDetails(dir: File): Map<String, String> = withContext(Dispatchers.IO) {
     val metaFile = File(dir, "app_details.json")
-    if (!metaFile.exists()) return@withContext emptyMap()
+    val json = BackupOperation.readTextFile(metaFile) ?: return@withContext emptyMap()
     try {
-        val json = metaFile.readText()
         ResticWrapper.parseAppDetailsJson(json).mapValues { it.value.label }
     } catch (_: Exception) { emptyMap() }
 }
@@ -441,4 +468,18 @@ private suspend fun loadResticAppDetails(
     return try {
         ResticWrapper.parseAppDetailsJson(json).mapValues { it.value.label }
     } catch (_: Exception) { emptyMap() }
+}
+
+/** Convert SAF tree URI to a filesystem path. */
+private fun resolveSafTreeUri(uri: Uri): String? {
+    val docId = uri.lastPathSegment?.let { java.net.URLDecoder.decode(it, "UTF-8") } ?: return null
+    val colonIdx = docId.indexOf(':')
+    if (colonIdx < 0) return null
+    val storageId = docId.substring(0, colonIdx)
+    val relPath = docId.substring(colonIdx + 1).trim('/')
+    return if (storageId.equals("primary", ignoreCase = true)) {
+        "/storage/emulated/0/$relPath"
+    } else {
+        "/storage/$storageId/$relPath"
+    }
 }
