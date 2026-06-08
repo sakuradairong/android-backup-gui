@@ -118,6 +118,18 @@ class ResticCommandRunner {
             pb.redirectErrorStream(false)
             process = pb.start()
 
+            // Drain stderr on a separate daemon thread to avoid a pipe deadlock:
+            // if stderr's buffer fills while we're still reading stdout, the child
+            // process blocks on writing stderr and we block on reading stdout.
+            var stderrBytes = byteArrayOf()
+            val stderrThread = Thread {
+                try {
+                    stderrBytes = process.errorStream.use { it.readAllBytesCompat() }
+                } catch (_: Exception) {
+                    // stream closed early; leave stderrBytes empty
+                }
+            }.apply { isDaemon = true; start() }
+
             val stdoutText = StringBuilder()
             val reader = process.inputStream.bufferedReader()
 
@@ -135,7 +147,7 @@ class ResticCommandRunner {
             } finally {
                 try { reader.close() } catch (_: Exception) {}
             }
-            val stderrBytes = try { process.errorStream.use { it.readAllBytesCompat() } } catch (_: Exception) { byteArrayOf() }
+            try { stderrThread.join(1_000) } catch (_: InterruptedException) {}
             val stderrText = stderrBytes.decodeToString().trim()
             val exitCode = try {
                 process.waitForCompat()
