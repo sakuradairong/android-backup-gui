@@ -36,6 +36,7 @@ object ResticStreamBackup {
         apps: List<AppInfo>,
         noDataBackup: Set<String>,
         legacyApps: Map<String, ResticWrapper.SnapshotAppInfo>?,
+        userId: String,
         restic: ResticWrapper,
         repoPath: String,
         password: String,
@@ -66,8 +67,14 @@ object ResticStreamBackup {
             // ── 2. Write metadata ─────────────────────
             val metaDir = File(cacheDir, "stream_meta")
             metaDir.mkdirs()
-            File(metaDir, "appList.txt").writeText(apps.joinToString("\n") { it.packageName.value })
-            File(metaDir, "app_details.json").writeText(BackupOperation.buildAppDetailsJson(apps, legacyApps))
+            BackupOperation.writeFileForBackup(
+                File(metaDir, "appList.txt"),
+                apps.joinToString("\n") { it.packageName.value }
+            )
+            BackupOperation.writeFileForBackup(
+                File(metaDir, "app_details.json"),
+                BackupOperation.buildAppDetailsJson(apps, legacyApps)
+            )
             Log.i(TAG, "Metadata written to ${metaDir.absolutePath}")
 
             // ── 3. Collect APK paths ──────────────────
@@ -130,6 +137,17 @@ object ResticStreamBackup {
                         }.apply { isDaemon = true; name = "restic-stdin-pipe" }
                         stdinThread.start()
 
+                        // Drain stderr on a separate daemon thread to avoid pipe deadlock
+                        var stderrBytes = byteArrayOf()
+                        val stderrThread = Thread {
+                            try {
+                                stderrBytes = process.errorStream.use { it.readAllBytesCompat() }
+                            } catch (_: Exception) {
+                                // stream closed early
+                            }
+                        }.apply { isDaemon = true; name = "restic-stderr-drain" }
+                        stderrThread.start()
+
                         // Read stdout line by line
                         val stdoutLines = mutableListOf<String>()
                         val reader = process.inputStream.bufferedReader()
@@ -157,19 +175,9 @@ object ResticStreamBackup {
                             try { reader.close() } catch (_: Exception) {}
                         }
 
-                        // Drain stderr
-                        val stderrBytes = try {
-                            process.errorStream.use { stream ->
-                                val buf = java.io.ByteArrayOutputStream()
-                                val data = ByteArray(4096)
-                                var n = stream.read(data)
-                                while (n != -1) { buf.write(data, 0, n); n = stream.read(data) }
-                                buf.toByteArray()
-                            }
-                        } catch (_: Exception) { byteArrayOf() }
-
                         val exitCode = process.waitFor()
                         try { stdinThread.join(2_000) } catch (_: InterruptedException) {}
+                        try { stderrThread.join(1_000) } catch (_: InterruptedException) {}
 
                         val stderrText = stderrBytes.decodeToString().trim()
                         Log.i(TAG, "Consumer: restic exit=$exitCode stdout_len=${stdoutLines.size}")
@@ -225,7 +233,7 @@ object ResticStreamBackup {
 
                             // Check data dirs exist
                             val dataDir = "/data/data/$pkgName"
-                            val userDeDir = "/data/user_de/0/$pkgName"
+                            val userDeDir = "/data/user_de/$userId/$pkgName"
                             val dirs = mutableListOf<String>()
 
                             val dataCheck = RootShell.exec("test -d '${dataDir.shellEscape()}' && echo 1 || echo 0")

@@ -171,7 +171,7 @@ class ResticCommandRunner {
  * Compat implementation of InputStream.readAllBytes() for API < 33.
  * Reads the entire stream into a byte array.
  */
-private fun InputStream.readAllBytesCompat(): ByteArray {
+internal fun InputStream.readAllBytesCompat(): ByteArray {
     val buffer = ByteArrayOutputStream()
     val data = ByteArray(4096)
     while (true) {

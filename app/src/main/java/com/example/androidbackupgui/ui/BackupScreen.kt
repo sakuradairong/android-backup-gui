@@ -234,6 +234,7 @@ fun BackupScreen() {
                                                     apps = toBackup,
                                                     noDataBackup = excludeDataFromBackup,
                                                     legacyApps = null,
+                                                    userId = config.backupUserId.toString(),
                                                     repoPath = config.resticRepo,
                                                     password = config.resticPassword,
                                                     tags = listOf("backup_${System.currentTimeMillis() / 1000}"),
