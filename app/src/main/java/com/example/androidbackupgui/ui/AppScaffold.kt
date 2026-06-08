@@ -3,6 +3,7 @@ package com.example.androidbackupgui.ui
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Cloud
+import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Restore
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.*
@@ -13,6 +14,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 private val navItems = listOf(
     NavItem(Screen.BACKUP, Icons.Filled.Cloud, "备份"),
     NavItem(Screen.RESTORE, Icons.Filled.Restore, "恢复"),
+    NavItem(Screen.LOG, Icons.Filled.Description, "日志"),
     NavItem(Screen.CONFIG, Icons.Filled.Settings, "配置"),
 )
 
@@ -59,6 +61,7 @@ fun AppScaffold() {
             when (currentScreen) {
                 Screen.BACKUP -> BackupScreen()
                 Screen.RESTORE -> RestoreScreen()
+                Screen.LOG -> LogScreen()
                 Screen.CONFIG -> ConfigScreen(snackbarHostState = snackbarHostState)
             }
         }
