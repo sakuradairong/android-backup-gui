@@ -1,0 +1,12 @@
+{
+  "servers": {
+    "kotlin-lsp": {
+      "command": "kotlin-language-server",
+      "args": [],
+      "fileTypes": [".kt", ".kts"],
+      "rootMarkers": ["build.gradle", "settings.gradle"],
+      "warmupTimeoutMs": 60000
+    }
+  },
+  "idleTimeoutMs": 600000
+}

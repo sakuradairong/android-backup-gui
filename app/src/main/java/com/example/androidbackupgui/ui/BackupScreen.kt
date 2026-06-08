@@ -3,6 +3,7 @@ package com.example.androidbackupgui.ui
 import android.content.Intent
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import android.util.Log
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.SortByAlpha
@@ -269,8 +270,18 @@ fun BackupScreen() {
                                     }
                                 }
                             } catch (e: Exception) {
-                                statusText = "备份异常: ${e.message}"
-                            } finally {
+                                val errMsg = e.message ?: "未知错误"
+                                Log.e("BackupScreen", "备份异常", e)
+                                val hint = when {
+                                    errMsg.contains("EPERM", ignoreCase = true) || errMsg.contains("Operation not permitted", ignoreCase = true) ->
+                                        "写入备份目录被拒绝，请检查输出路径权限或改用内置存储"
+                                    errMsg.contains("EACCES", ignoreCase = true) || errMsg.contains("Permission denied", ignoreCase = true) ->
+                                        "权限不足，请检查存储权限"
+                                    else -> null
+                                }
+                                statusText = if (hint != null) "备份异常: ${e.message} ($hint)" else "备份异常: ${e.message}"
+                            }
+                            finally {
                                 isRunning = false
                                 try {
                                     val stopIntent = Intent(context, BackupService::class.java).apply {

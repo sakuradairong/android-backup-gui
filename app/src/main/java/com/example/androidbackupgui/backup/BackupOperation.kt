@@ -72,16 +72,29 @@ object BackupOperation {
 
         // Create backup structure
         val backupRoot = File(outputDir, "Backup_${config.compressionMethod}_$userId")
-        backupRoot.mkdirs()
+        if (!backupRoot.mkdirs() && !backupRoot.isDirectory) {
+            LogUtil.e(TAG, "backupApps: cannot create output dir ${backupRoot.absolutePath}")
+            return@withContext BackupResult(0, 0, 0, outputDir.absolutePath, 0)
+        }
         LogUtil.i(TAG, "backupApps: starting backup of ${apps.size} apps to ${backupRoot.absolutePath}")
 
         // Write app list — includes ALL packages in [apps] (selected + legacy from snapshot)
         val appListFile = File(backupRoot, "appList.txt")
-        appListFile.writeText(apps.joinToString("\n") { it.packageName.value })
+        try {
+            appListFile.writeText(apps.joinToString("\n") { it.packageName.value })
+        } catch (e: Exception) {
+            LogUtil.e(TAG, "backupApps: failed to write appList.txt — ${e.message}")
+            return@withContext BackupResult(0, 0, 0, outputDir.absolutePath, 0)
+        }
 
         // Write metadata JSON — fresh metadata for selected apps, legacy for historical apps
         val metaFile = File(backupRoot, "app_details.json")
-        metaFile.writeText(buildAppDetailsJson(apps, legacyApps))
+        try {
+            metaFile.writeText(buildAppDetailsJson(apps, legacyApps))
+        } catch (e: Exception) {
+            LogUtil.e(TAG, "backupApps: failed to write app_details.json — ${e.message}")
+            return@withContext BackupResult(0, 0, 0, outputDir.absolutePath, 0)
+        }
 
         val backupTargets = if (includePkgs.isEmpty()) apps else apps.filter { it.packageName.value in includePkgs }
         val totalCount = backupTargets.size
@@ -341,15 +354,23 @@ object BackupOperation {
             ?.substringBefore("\"")
             ?.takeIf { it.isNotBlank() }
         if (value != null) {
-            File(appDir, "ssaid.txt").writeText(value)
-            Log.d(TAG, "backupSsaid: backed up SSAID for $packageName = $value")
+            try {
+                File(appDir, "ssaid.txt").writeText(value)
+                Log.d(TAG, "backupSsaid: backed up SSAID for $packageName = $value")
+            } catch (e: Exception) {
+                Log.w(TAG, "backupSsaid: failed to write ssaid.txt for $packageName", e)
+            }
         }
     }
 
     private suspend fun backupPermissions(packageName: String, appDir: File) {
         val result = RootShell.exec("dumpsys package '${packageName.shellEscape()}' | grep -E 'granted=(true|false)'")
         if (result.output.isNotBlank()) {
-            File(appDir, "permissions.txt").writeText(result.output)
+            try {
+                File(appDir, "permissions.txt").writeText(result.output)
+            } catch (e: Exception) {
+                Log.w(TAG, "backupPermissions: failed to write permissions.txt for $packageName", e)
+            }
         }
     }
 
