@@ -129,7 +129,10 @@ object RestoreOperation {
 
                         // 4. Restore OBB
                         emit(RestoreProgress(index + 1, packages.size, pkg, "obb", "正在恢复 OBB…"))
-                        restoreObb(pkg, appBackupDir, tarCmd, zstdCmd)
+                        val obbOk = restoreObb(pkg, appBackupDir, tarCmd, zstdCmd)
+                        if (!obbOk) {
+                            Log.w(TAG, "restoreApps: OBB restore failed for $pkg, continuing")
+                        }
 
                         // 5. Restore SSAID
                         emit(RestoreProgress(index + 1, packages.size, pkg, "ssaid", "正在恢复 SSAID…"))
@@ -354,11 +357,11 @@ object RestoreOperation {
         }
     }
 
-    private suspend fun restoreObb(packageName: String, appDir: File, tarCmd: String, zstdCmd: String) {
+    private suspend fun restoreObb(packageName: String, appDir: File, tarCmd: String, zstdCmd: String): Boolean {
         val obbNames = BackupOperation.listBackupFiles(appDir)
             ?.filter { it.contains("_obb.tar") }
-            ?: return
-        if (obbNames.isEmpty()) return
+            ?: return true
+        if (obbNames.isEmpty()) return true
         val obbFiles = obbNames.map { File(appDir, it) }
 
         // Build exclusion patterns for OBB cache/temp directories
@@ -366,10 +369,11 @@ object RestoreOperation {
         val excludeFolders = listOf(".ota", "cache", "lib", "code_cache", "no_backup", "Backup_*")
         val excludeArgs = excludeFolders.joinToString(" ") { "--exclude='${obbPath.shellEscape()}/$it' --exclude='${obbPath.shellEscape()}/$it/*'" }
 
+        var anyExtracted = false
         for (archive in obbFiles) {
             if (!isArchiveSafe(archive, zstdCmd)) continue
             val archivePath = archive.absolutePath.shellEscape()
-            when {
+            val result = when {
                 archive.name.endsWith(".zst") -> {
                     RootShell.exec("set -o pipefail; $zstdCmd -d -c '$archivePath' | $tarCmd -xf - $excludeArgs -C / 2>/dev/null")
                 }
@@ -379,6 +383,13 @@ object RestoreOperation {
                 archive.name.endsWith(".tar") -> {
                     RootShell.exec("$tarCmd -xf $excludeArgs '$archivePath' -C / 2>/dev/null")
                 }
+                else -> { Log.w(TAG, "restoreObb: unknown archive type ${archive.name}"); continue }
+            }
+            if (result.isSuccess) {
+                Log.i(TAG, "restoreObb: extracted ${archive.name}")
+                anyExtracted = true
+            } else {
+                Log.e(TAG, "restoreObb: FAILED ${archive.name}: exit=${result.exitCode} err=${result.error}")
             }
         }
 
@@ -387,6 +398,8 @@ object RestoreOperation {
         val gid = gidResult.output.trim().toIntOrNull() ?: 1023 // fallback to media_rw gid
         RootShell.exec("chown -R $gid:$gid '${obbPath.shellEscape()}/' 2>/dev/null")
         Log.i(TAG, "restoreObb: set ownership to $gid:$gid on $obbPath")
+
+        return anyExtracted
     }
 
     private suspend fun restoreSsaid(packageName: String, appDir: File, userId: String) {
