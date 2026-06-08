@@ -119,7 +119,12 @@ object RestoreOperation {
 
                         // 3. Restore data
                         emit(RestoreProgress(index + 1, packages.size, pkg, "data", "正在恢复数据…"))
-                        restoreData(pkg, userId, appBackupDir, tarCmd, zstdCmd)
+                        val dataOk = restoreData(pkg, userId, appBackupDir, tarCmd, zstdCmd)
+                        if (!dataOk) {
+                            failAtomic.incrementAndGet()
+                            emit(RestoreProgress(index + 1, packages.size, pkg, "done", "数据恢复失败"))
+                            return@withPermit
+                        }
 
                         // 4. Restore OBB
                         emit(RestoreProgress(index + 1, packages.size, pkg, "obb", "正在恢复 OBB…"))
@@ -227,17 +232,18 @@ object RestoreOperation {
         return false
     }
 
-    private suspend fun restoreData(packageName: String, userId: String, appDir: File, tarCmd: String, zstdCmd: String) {
+    private suspend fun restoreData(packageName: String, userId: String, appDir: File, tarCmd: String, zstdCmd: String): Boolean {
         val fileNames = BackupOperation.listBackupFiles(appDir)
             ?.filter { it.contains("_data.tar") }
-            ?: run { Log.w(TAG, "restoreData: appDir empty or null: ${appDir.absolutePath}"); return }
+            ?: run { Log.w(TAG, "restoreData: appDir empty or null: ${appDir.absolutePath}"); return false }
         if (fileNames.isEmpty()) {
             Log.w(TAG, "restoreData: no _data.tar in ${appDir.name}")
-            return
+            return true
         }
         val dataFiles = fileNames.map { File(appDir, it) }
 
         // Build exclusion patterns for cache/temp directories
+        var anyExtracted = false
         val dataPaths = listOf("/data/data/$packageName", "/data/user_de/$userId/$packageName")
         val excludeFolders = listOf(".ota", "cache", "lib", "code_cache", "no_backup")
         val excludeArgs = dataPaths.flatMap { dataPath ->
@@ -268,9 +274,9 @@ object RestoreOperation {
             val result = RootShell.exec(baseCmd)
             if (result.isSuccess) {
                 Log.i(TAG, "restoreData: extracted ${archive.name}")
+                anyExtracted = true
             } else {
                 Log.e(TAG, "restoreData: FAILED ${archive.name}: exit=${result.exitCode} err=${result.error}")
-                // Continue to try SELinux fix even if extraction had issues
             }
         }
 
@@ -292,6 +298,8 @@ object RestoreOperation {
                 Log.w(TAG, "restoreData: could not determine SELinux context for $dataPath")
             }
         }
+
+        return anyExtracted
     }
 
     /**
