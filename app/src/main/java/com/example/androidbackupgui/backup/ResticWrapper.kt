@@ -157,27 +157,6 @@ object ResticWrapper {
         onProgress
     )
 
-    // ── Streaming backup (stdin) ─────────────────────
-
-    suspend fun backupStdin(
-        repoPath: String,
-        password: String,
-        stdinFile: File,
-        extraPaths: List<String>,
-        tags: List<String> = emptyList(),
-        hostname: String? = null,
-        backend: String = "local",
-        backendUrl: String = "",
-        backendUser: String = "",
-        backendPass: String = "",
-        backendShare: String = "",
-        onProgress: suspend (ResticProgress) -> Unit = {}
-    ): AppResult<BackupSummary> = backupOp.backupStdin(
-        repoPath, password, stdinFile, extraPaths, tags, hostname,
-        backend, backendUrl, backendUser, backendPass, backendShare,
-        onProgress
-    )
-
     // ── Restore ────────────────────────────────────────
 
     suspend fun restore(
