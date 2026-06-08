@@ -109,20 +109,18 @@ object BackupOperation {
                         appDir.mkdirs()
 
                         emit(BackupProgress(index + 1, totalCount, app.packageName.value, "apk", "正在备份 APK…"))
-
-                        // 1. Backup APK
+                        // 1. Backup APK — if app is not installed or cp fails, continue with data backup
                         val paths = AppScanner.getApkPaths(app.packageName.value)
-                        val apkOk = if (paths.isNotEmpty()) {
-                            paths.withIndex().all { (i, apkPath) ->
+                        if (paths.isNotEmpty()) {
+                            val cpOk = paths.withIndex().all { (i, apkPath) ->
                                 val destName = if (paths.size > 1) "${app.packageName}_split_$i.apk" else "${app.packageName}.apk"
                                 RootShell.exec("cp '${apkPath.shellEscape()}' '${appDir.absolutePath.shellEscape()}/${destName.shellEscape()}'").isSuccess
                             }
-                        } else false
-
-                        if (!apkOk) {
-                            failAtomic.incrementAndGet()
-                            emit(BackupProgress(index + 1, totalCount, app.packageName.value, "done", "APK 备份失败"))
-                            return@withPermit
+                            if (!cpOk) {
+                                LogUtil.w(TAG, "backupApps: APK cp failed for ${app.packageName}, continuing with data")
+                            }
+                        } else {
+                            LogUtil.i(TAG, "backupApps: no APK paths for ${app.packageName} (not installed?), continuing")
                         }
 
                         // 1.5 Keystore check — warn if app has keystore entries (keys can be lost)
