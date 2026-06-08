@@ -11,7 +11,6 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.FileDownload
 import androidx.compose.material.icons.filled.Refresh
@@ -23,9 +22,10 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import com.example.androidbackupgui.backup.LogUtil
-import java.io.BufferedReader
 import java.io.File
-import java.io.InputStreamReader
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -34,6 +34,7 @@ fun LogScreen() {
     var logFiles by remember { mutableStateOf(listOf<File>()) }
     var selectedFile by remember { mutableStateOf<File?>(null) }
     var logContent by remember { mutableStateOf<List<String>>(emptyList()) }
+    val scope = rememberCoroutineScope()
 
     // Refresh log list
     fun refresh() {
@@ -73,7 +74,6 @@ fun LogScreen() {
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(vertical = 24.dp)
             )
-            return@Column
         }
 
         // ── Log file list ──
@@ -87,7 +87,11 @@ fun LogScreen() {
                 Card(
                     onClick = {
                         selectedFile = file
-                        logContent = file.readLines()
+                        scope.launch {
+                            logContent = withContext(Dispatchers.IO) {
+                                file.readLines()
+                            }
+                        }
                     },
                     colors = CardDefaults.cardColors(
                         containerColor = if (isSelected)
