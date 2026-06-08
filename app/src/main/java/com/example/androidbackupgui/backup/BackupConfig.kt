@@ -73,7 +73,11 @@ data class BackupConfig(
     val resticBackendUser: String = "",
     val resticBackendPass: String = "",
     val resticBackendShare: String = "",      // SMB share name
-    val resticBackendDomain: String = ""      // SMB domain (optional, for NTLM)
+    val resticBackendDomain: String = "",      // SMB domain (optional, for NTLM)
+
+    // Streaming backup: pipe tar data through FIFO directly into restic --stdin
+    // 0=disabled (default, stable), 1=enabled (experimental, avoids temp files)
+    val useStreaming: Int = 0
 ) {
     companion object {
         /**
@@ -180,6 +184,7 @@ data class BackupConfig(
                 resticBackendPass = str("restic_backend_pass"),
                 resticBackendShare = str("restic_backend_share"),
                 resticBackendDomain = str("restic_backend_domain"),
+                useStreaming = int("streaming_backup"),
             )
         }
 
@@ -230,6 +235,7 @@ data class BackupConfig(
                 appendLine("restic_backend_pass=\"${escapeValue(config.resticBackendPass)}\"")
                 appendLine("restic_backend_share=\"${escapeValue(config.resticBackendShare)}\"")
                 appendLine("restic_backend_domain=\"${escapeValue(config.resticBackendDomain)}\"")
+                appendLine("streaming_backup=${config.useStreaming}")
             })
             file.setReadable(true, true)   // owner only
             file.setWritable(true, true)   // owner only

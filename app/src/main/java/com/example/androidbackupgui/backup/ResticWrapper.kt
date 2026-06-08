@@ -157,6 +157,42 @@ object ResticWrapper {
         onProgress
     )
 
+    /**
+     * Streaming backup: pipes tar data through a FIFO directly into restic --stdin.
+     * Avoids writing a staging tarball to disk. Requires [cacheDir] to be set first.
+     */
+    suspend fun backupStreaming(
+        apps: List<AppInfo>,
+        noDataBackup: Set<String>,
+        legacyApps: Map<String, SnapshotAppInfo>?,
+        repoPath: String,
+        password: String,
+        tags: List<String>,
+        hostname: String?,
+        backend: String,
+        backendUrl: String,
+        backendUser: String,
+        backendPass: String,
+        backendShare: String,
+        onProgress: suspend (String) -> Unit = {}
+    ): AppResult<BackupSummary> = ResticStreamBackup.backup(
+        cacheDir = File(cacheDir),
+        apps = apps,
+        noDataBackup = noDataBackup,
+        legacyApps = legacyApps,
+        restic = this,
+        repoPath = repoPath,
+        password = password,
+        tags = tags,
+        hostname = hostname,
+        backend = backend,
+        backendUrl = backendUrl,
+        backendUser = backendUser,
+        backendPass = backendPass,
+        backendShare = backendShare,
+        onProgress = onProgress
+    )
+
     // ── Restore ────────────────────────────────────────
 
     suspend fun restore(
