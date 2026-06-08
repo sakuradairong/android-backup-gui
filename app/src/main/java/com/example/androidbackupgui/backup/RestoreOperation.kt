@@ -173,8 +173,12 @@ object RestoreOperation {
         for (name in apkFiltered) {
             val src = File(appDir, name)
             val dst = File(installDir, name)
-            RootShell.exec("cp '${src.absolutePath.shellEscape()}' '${dst.absolutePath.shellEscape()}' && chmod 644 '${dst.absolutePath.shellEscape()}'")
-            localApks.add(dst)
+            val copyResult = RootShell.exec("cp '${src.absolutePath.shellEscape()}' '${dst.absolutePath.shellEscape()}' && chmod 644 '${dst.absolutePath.shellEscape()}'")
+            if (copyResult.isSuccess && BackupOperation.backupPathExists(dst) && BackupOperation.backupFileSize(dst) > 0L) {
+                localApks.add(dst)
+            } else {
+                Log.w(TAG, "installApk: failed to copy APK ${name}, skipping")
+            }
         }
 
         suspend fun doInstall(): Boolean {
