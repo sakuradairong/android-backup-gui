@@ -34,8 +34,8 @@ object ResticWrapper {
 
     private const val TAG = "ResticWrapper"
 
-    private val runner = ResticCommandRunner()
-    private val envResolver = ResticEnvResolver()
+    internal val runner = ResticCommandRunner()
+    internal val envResolver = ResticEnvResolver()
     private val bridgeRunner = RestBridgeRunner()
 
     // ── Sub-module instances ───────────────────────────
