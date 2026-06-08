@@ -222,6 +222,11 @@ object BackupOperation {
         val archiveExt = if (isZstd) ".zst" else ".gz"
         val archiveRaw = File(appDir, "${packageName}_data.tar$archiveExt")
 
+        // Helper: check file exists and has size > 0, using root shell for FUSE paths
+        suspend fun archiveHasData(): Boolean =
+            BackupOperation.backupPathExists(archiveRaw) &&
+            (archiveRaw.length() > 0 || BackupOperation.backupFileSize(archiveRaw) > 0L)
+
         Log.d(TAG, "backupUserData: $packageName checking dirs (tar=$tarCmd zstd=$zstdCmd)")
 
         val rawPkg = packageName
@@ -236,12 +241,12 @@ object BackupOperation {
         if (dirs.isNotEmpty()) {
             Log.d(TAG, "backupUserData: $packageName test -d found dirs=$dirs")
             result = runTar(dirs, outputFile, isZstd, tarCmd, zstdCmd, excludes = dataExcludes)
-            archiveCreated = archiveCreated || (archiveRaw.exists() && archiveRaw.length() > 0)
+            archiveCreated = archiveHasData()
             Log.d(TAG, "backupUserData: $packageName step1 exit=${result?.exitCode} err='${result?.error?.take(100)}'")
         } else {
             Log.d(TAG, "backupUserData: $packageName test -d all failed, trying tar directly")
             result = runTar(dataPaths, outputFile, isZstd, tarCmd, zstdCmd, excludes = dataExcludes)
-            archiveCreated = archiveCreated || (archiveRaw.exists() && archiveRaw.length() > 0)
+            archiveCreated = archiveHasData()
             Log.d(TAG, "backupUserData: $packageName step2 exit=${result?.exitCode} err='${result?.error?.take(100)}'")
         }
 
@@ -255,12 +260,12 @@ object BackupOperation {
                 "cd /proc/1/root && $tarCmd --exclude='.ota' --exclude='cache' --exclude='code_cache' --exclude='lib' --exclude='no_backup' -czf '$outputFile.gz' ${globalRelPaths.joinToString(" ") { "'${it.shellEscape()}'" }} 2>/dev/null"
             }
             result = RootShell.exec(globalCmd)
-            archiveCreated = archiveCreated || (archiveRaw.exists() && archiveRaw.length() > 0)
+            archiveCreated = archiveHasData()
             Log.d(TAG, "backupUserData: $packageName step3 exit=${result?.exitCode} err='${result?.error?.take(100)}'")
         }
 
         if (!archiveCreated) {
-            Log.w(TAG, "backupUserData: $packageName all methods failed — no data dirs (or inaccessible)")
+            LogUtil.w(TAG, "backupUserData: $packageName all methods failed — no data dirs (or inaccessible)")
             return false
         }
 
@@ -275,7 +280,7 @@ object BackupOperation {
             return false
         }
 
-        // Validate tar archive structure (Android-DataBackup Tar.test() pattern)
+        // Validate tar archive structure
         val tarValidateOk = if (isZstd) {
             RootShell.exec("$zstdCmd -d -c '$outputFile.zst' 2>/dev/null | tar -tf - > /dev/null 2>&1").isSuccess
         } else {
@@ -438,17 +443,26 @@ object BackupOperation {
         return null
     }
 
-    /** Check if a file/directory exists, falling back to root shell [test -e]. */
-    internal suspend fun backupPathExists(file: File): Boolean {
-        if (file.exists()) return true
-        val result = RootShell.exec("test -e '${file.absolutePath.shellEscape()}' && echo 1 || echo 0")
-        return result.output.trim() == "1"
-    }
 
     /** Check if a path is a directory, falling back to root shell [test -d]. */
     internal suspend fun backupIsDirectory(dir: File): Boolean {
         if (dir.isDirectory()) return true
         val result = RootShell.exec("test -d '${dir.absolutePath.shellEscape()}' && echo 1 || echo 0")
+        return result.output.trim() == "1"
+    }
+
+    /** Get file size via root shell [stat] when Java File.length() returns 0 on FUSE. */
+    internal suspend fun backupFileSize(file: File): Long {
+        val javaSize = file.length()
+        if (javaSize > 0L) return javaSize
+        val result = RootShell.exec("stat -c%s '${file.absolutePath.shellEscape()}' 2>/dev/null")
+        return result.output.trim().toLongOrNull() ?: 0L
+    }
+
+    /** Check if a file/directory exists, falling back to root shell [test -e]. */
+    internal suspend fun backupPathExists(file: File): Boolean {
+        if (file.exists()) return true
+        val result = RootShell.exec("test -e '${file.absolutePath.shellEscape()}' && echo 1 || echo 0")
         return result.output.trim() == "1"
     }
 
@@ -462,8 +476,6 @@ object BackupOperation {
             if (javaFiles != null) {
                 val names = javaFiles.map { it.name }
                 if (names.isNotEmpty()) return names
-                // Java returned empty — FUSE may report EPERM as empty array
-                // Fall through to root shell ls for definitive answer
             }
         } catch (_: Exception) { /* fall through */ }
         try {
