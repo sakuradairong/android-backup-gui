@@ -363,11 +363,6 @@ fun RestoreScreen() {
         )
     }
 }
-
-// ── Sub-composables ──
-
-// ── Helper functions ──
-
 private suspend fun loadFromDir(
     context: android.content.Context,
     dir: File,
@@ -381,9 +376,16 @@ private suspend fun loadFromDir(
             BackupOperation.listBackupFiles(dir)
                 ?: emptyList()
         }
+        // Filter to only apps that have actual backup data (at least one APK)
+        val validPkgs = pkgs.filter { pkg ->
+            val appDir = File(dir, pkg)
+            val files = BackupOperation.listBackupFiles(appDir)
+            files?.any { it.endsWith(".apk") } == true
+        }
+        val skipped = pkgs.size - validPkgs.size
         // Read cached labels from app_details.json (includes uninstalled apps)
         val cachedLabels = readLocalAppDetails(dir)
-        val preLabeled = pkgs.map { pkg ->
+        val preLabeled = validPkgs.map { pkg ->
             AppInfo(packageName = PackageName(pkg), label = cachedLabels[pkg] ?: "")
         }
         // Resolve labels for currently installed apps, keep cached labels for uninstalled
@@ -394,7 +396,8 @@ private suspend fun loadFromDir(
             if (cachedLabel != null && app.label == app.packageName.value) app.copy(label = cachedLabel)
             else app
         }
-        onResult(pkgs, infos, "共 ${pkgs.size} 个备份应用")
+        val suffix = if (skipped > 0) "（${skipped}个应用备份数据缺失已自动跳过）" else ""
+        onResult(validPkgs, infos, "共 ${validPkgs.size} 个备份应用$suffix")
     }
 }
 
