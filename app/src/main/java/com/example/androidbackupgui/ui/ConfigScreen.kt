@@ -115,6 +115,18 @@ fun ConfigScreen(
         if (uri != null) viewModel.exportConfig(uri)
     }
 
+    // SAF directory picker for output path
+    val dirPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocumentTree()
+    ) { uri ->
+        if (uri != null) {
+            val resolvedPath = resolveSafTreeUri(uri)
+            if (resolvedPath != null) {
+                outputPath = resolvedPath
+            }
+        }
+    }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -146,13 +158,22 @@ fun ConfigScreen(
                     Text("忽略运行中的应用", modifier = Modifier.weight(1f))
                     Switch(checked = ignoreRunning, onCheckedChange = { ignoreRunning = it })
                 }
-                OutlinedTextField(
-                    value = outputPath,
-                    onValueChange = { outputPath = it },
-                    label = { Text("输出目录") },
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true
-                )
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                    OutlinedTextField(
+                        value = outputPath,
+                        onValueChange = { outputPath = it },
+                        label = { Text("输出目录") },
+                        modifier = Modifier.weight(1f),
+                        singleLine = true
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Button(
+                        onClick = { dirPickerLauncher.launch(null) },
+                        modifier = Modifier.height(56.dp)
+                    ) {
+                        Text("选择")
+                    }
+                }
                 OutlinedTextField(
                     value = compressionMethod,
                     onValueChange = { compressionMethod = it },
@@ -462,3 +483,28 @@ private fun buildResticForm(
     backendUser = backendUser, backendPass = backendPass,
     backendShare = backendShare, backendDomain = backendDomain
 )
+
+/**
+ * 将 SAF OpenDocumentTree 的 content:// URI 转换为可用的文件系统路径。
+ * SAF URI 示例: content://com.android.externalstorage.documents/tree/primary%3ADownload%2FBackup
+ * 返回: /storage/emulated/0/Download/Backup
+ */
+private fun resolveSafTreeUri(uri: android.net.Uri): String? {
+    // SAF tree URI 格式:
+    //   content://com.android.externalstorage.documents/tree/primary%3ADownload%2FBackup
+    // lastPathSegment = primary%3ADownload%2FBackup 或 XXXX-XXXX%3Apath
+    val docId = uri.lastPathSegment?.let { java.net.URLDecoder.decode(it, "UTF-8") } ?: return null
+
+    // docId 格式: primary:path/to/dir 或 XXXX-XXXX:path/to/dir
+    val colonIdx = docId.indexOf(':')
+    if (colonIdx < 0) return null
+
+    val storageId = docId.substring(0, colonIdx)
+    val relPath = docId.substring(colonIdx + 1).trim('/')
+
+    return if (storageId.equals("primary", ignoreCase = true)) {
+        "/storage/emulated/0/$relPath"
+    } else {
+        "/storage/$storageId/$relPath"
+    }
+}
