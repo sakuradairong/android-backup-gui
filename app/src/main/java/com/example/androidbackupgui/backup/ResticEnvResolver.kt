@@ -4,16 +4,15 @@ package com.example.androidbackupgui.backup
  * Stateless helper for constructing restic environment variables and repo URLs.
  */
 class ResticEnvResolver {
-
-
     /** Build environment for non-local backends using the REST bridge URL. */
     fun buildBridgeEnv(
         password: String,
         bridgeUrl: String,
         cacheDir: String,
-        authToken: String = ""
+        authToken: String = "",
     ): Map<String, String> {
-        val env = HashMap(System.getenv() ?: emptyMap())
+        // 从空白环境开始，不继承系统环境变量（防止敏感信息泄露到子进程）
+        val env = HashMap<String, String>()
         env["RESTIC_REPOSITORY"] = bridgeUrl
         env["RESTIC_PASSWORD"] = password
         if (authToken.isNotEmpty()) {
@@ -33,9 +32,10 @@ class ResticEnvResolver {
     fun buildLocalEnv(
         repoPath: String,
         password: String,
-        cacheDir: String
+        cacheDir: String,
     ): Map<String, String> {
-        val env = HashMap(System.getenv() ?: emptyMap())
+        // 从空白环境开始，不继承系统环境变量
+        val env = HashMap<String, String>()
         env["RESTIC_REPOSITORY"] = repoPath
         env["RESTIC_PASSWORD"] = password
         if (cacheDir.isNotEmpty()) {
@@ -48,13 +48,16 @@ class ResticEnvResolver {
     }
 
     /** Build a display-friendly repository URL for UI. */
-    fun buildRepoUrl(backend: String, repoPath: String, backendUrl: String): String {
-        return when (backend) {
+    fun buildRepoUrl(
+        backend: String,
+        repoPath: String,
+        backendUrl: String,
+    ): String =
+        when (backend) {
             "local" -> repoPath
             "rest-server" -> "rest:${backendUrl.trimEnd('/')}/$repoPath"
             "webdav" -> "${backendUrl.trimEnd('/')}/$repoPath"
             "smb" -> "smb:${backendUrl.trimEnd('/')}/$repoPath"
             else -> repoPath
         }
-    }
 }

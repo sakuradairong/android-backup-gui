@@ -1,11 +1,11 @@
 package com.example.androidbackupgui.backup
 
 import android.util.Log
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
 import com.example.androidbackupgui.backup.AppError
 import com.example.androidbackupgui.backup.AppResult
 import com.example.androidbackupgui.backup.err
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.io.File
 
 /**
@@ -21,12 +21,14 @@ import java.io.File
 class ResticRepoInit(
     private val runner: ResticCommandRunner,
     private val envResolver: ResticEnvResolver,
-    private val bridgeRunner: RestBridgeRunner
+    private val bridgeRunner: RestBridgeRunner,
+    private val executor: BackendExecutor = BackendExecutor(),
 ) {
     private val TAG = "ResticWrapper"
 
     /** Cache directory for restic env and bridge temp files. Set by ResticWrapper. */
     var cacheDir: String = ""
+
     /** NTLM domain for SMB authentication. Set by ResticWrapper. */
     var backendDomain: String = ""
 
@@ -42,18 +44,20 @@ class ResticRepoInit(
         backendShare: String = "",
     ): AppResult<Unit> =
         withContext(Dispatchers.IO) {
-            if (backend == "local") {
-                val env = envResolver.buildLocalEnv(repoPath, password, cacheDir)
-                runInit(env)
-            } else {
-                bridgeRunner.withBridge(
-                    backend, backendUrl, backendUser, backendPass, backendShare,
-                    backendDomain, repoPath, File(cacheDir)
-                ) { bridgeUrl, authToken ->
-                    val env = envResolver.buildBridgeEnv(password, bridgeUrl, cacheDir, authToken)
-                    runInit(env)
-                }
-            }
+            executor.withBackend(
+                repoPath = repoPath,
+                password = password,
+                cacheDir = cacheDir,
+                backend = backend,
+                backendUrl = backendUrl,
+                backendUser = backendUser,
+                backendPass = backendPass,
+                backendShare = backendShare,
+                backendDomain = backendDomain,
+                runner = runner,
+                envResolver = envResolver,
+                bridgeRunner = bridgeRunner,
+            ) { env -> runInit(env) }
         }
 
     /** Shared init logic: run restic init, verify on exitCode 1. */
@@ -88,7 +92,7 @@ class ResticRepoInit(
             // Config exists but verification failed — diagnose the cause
             val detail = diagnoseInitFailure(verify.stderr)
             return err(
-                AppError.Restic("仓库已存在但无法验证: $detail", verify.exitCode, verify.stderr)
+                AppError.Restic("仓库已存在但无法验证: $detail", verify.exitCode, verify.stderr),
             )
         }
         return err(AppError.Restic("restic init 失败", result.exitCode, result.stderr))
@@ -98,15 +102,15 @@ class ResticRepoInit(
     private fun isConfigExistsError(stderr: String): Boolean {
         val lower = stderr.lowercase()
         return lower.contains("already exists") ||
-               lower.contains("config file already exists")
+            lower.contains("config file already exists")
     }
 
     /** Check if stderr indicates a stale repository lock. */
     private fun isLockError(stderr: String): Boolean {
         val lower = stderr.lowercase()
         return lower.contains("lock") ||
-               lower.contains("unable to create") ||
-               lower.contains("already locked")
+            lower.contains("unable to create") ||
+            lower.contains("already locked")
     }
 
     /** Parse restic stderr to produce a user-facing diagnosis string. */
@@ -114,25 +118,38 @@ class ResticRepoInit(
         val lower = stderr.lowercase()
         return when {
             lower.contains("wrong password") ||
-            lower.contains("password is incorrect") ||
-            lower.contains("unable to decrypt") ||
-            lower.contains("wrong key") ||
-            lower.contains("invalid password") ||
-            lower.contains("decryption") -> "密码不正确，请确认仓库密码"
-            lower.contains("key") && (lower.contains("not found") || lower.contains("missing")) ->
+                lower.contains("password is incorrect") ||
+                lower.contains("unable to decrypt") ||
+                lower.contains("wrong key") ||
+                lower.contains("invalid password") ||
+                lower.contains("decryption") -> {
+                "密码不正确，请确认仓库密码"
+            }
+
+            lower.contains("key") && (lower.contains("not found") || lower.contains("missing")) -> {
                 "密钥文件缺失，仓库可能已损坏"
-            lower.contains("permission") || lower.contains("access denied") ->
+            }
+
+            lower.contains("permission") || lower.contains("access denied") -> {
                 "权限不足，请检查目录权限"
-            lower.contains("not a directory") || lower.contains("no such file") ->
+            }
+
+            lower.contains("not a directory") || lower.contains("no such file") -> {
                 "仓库路径无效或不可访问"
-            else -> "仓库可能已损坏或密码不正确（${stderr.take(200).trim()}）"
+            }
+
+            else -> {
+                "仓库可能已损坏或密码不正确（${stderr.take(200).trim()}）"
+            }
         }
     }
 
     // ── Public URL helper ──────────────────────────────
 
     /** Build a display-friendly repository URL for UI. */
-    fun buildRepoUrl(backend: String, repoPath: String, backendUrl: String): String {
-        return envResolver.buildRepoUrl(backend, repoPath, backendUrl)
-    }
+    fun buildRepoUrl(
+        backend: String,
+        repoPath: String,
+        backendUrl: String,
+    ): String = envResolver.buildRepoUrl(backend, repoPath, backendUrl)
 }

@@ -1,27 +1,26 @@
 package com.example.androidbackupgui.backup
 
 import android.util.Log
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.isActive
-import kotlinx.coroutines.withContext
-import kotlinx.coroutines.CancellationException
-import kotlin.coroutines.coroutineContext
 import com.example.androidbackupgui.backup.AppError
 import com.example.androidbackupgui.backup.AppResult
 import com.example.androidbackupgui.backup.err
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.withContext
 import java.io.File
-
+import kotlin.coroutines.coroutineContext
 
 /**
  * Backup operations: running restic backup and parsing its summary output.
  *
- * Delegates execution to [ResticCommandRunner], [ResticEnvResolver], and
- * [RestBridgeRunner] which are shared across sub-modules.
+ * 使用 [BackendExecutor] 统一处理 local/remote 后端。
  */
 class ResticBackup(
     private val runner: ResticCommandRunner,
     private val envResolver: ResticEnvResolver,
-    private val bridgeRunner: RestBridgeRunner
+    private val bridgeRunner: RestBridgeRunner,
+    private val executor: BackendExecutor = BackendExecutor(),
 ) {
     private val TAG = "ResticBackup"
     var cacheDir: String = ""
@@ -40,48 +39,53 @@ class ResticBackup(
         backendUser: String = "",
         backendPass: String = "",
         backendShare: String = "",
-        onProgress: suspend (ResticWrapper.ResticProgress) -> Unit = {}
-    ): AppResult<ResticWrapper.BackupSummary> = withContext(Dispatchers.IO) {
-        val emit: suspend (ResticWrapper.ResticProgress) -> Unit = { p -> withContext(Dispatchers.Main) { onProgress(p) } }
+        onProgress: suspend (ResticWrapper.ResticProgress) -> Unit = {},
+    ): AppResult<ResticWrapper.BackupSummary> =
+        withContext(Dispatchers.IO) {
+            val emit: suspend (ResticWrapper.ResticProgress) -> Unit = { p -> withContext(Dispatchers.Main) { onProgress(p) } }
 
-        if (backend == "local") {
             val args = mutableListOf("backup", "--json")
             for (path in paths) args.add(path)
-            for (tag in tags) { args.add("--tag"); args.add(tag) }
-            if (hostname != null) { args.add("--host"); args.add(hostname) }
-
-            val env = envResolver.buildLocalEnv(repoPath, password, cacheDir)
-            val result = runner.runResticStreaming(env, args) { line ->
-                if (!coroutineContext.isActive) return@runResticStreaming
-                try {
-                    val progress = resticJson.decodeFromString<ResticWrapper.ResticProgress>(line)
-                    if (progress.messageType == "status") emit(progress)
-                } catch (e: Exception) { if (e is CancellationException) throw e }
+            for (tag in tags) {
+                args.add("--tag")
+                args.add(tag)
+            }
+            if (hostname != null) {
+                args.add("--host")
+                args.add(hostname)
             }
 
-            if (result.exitCode != 0) return@withContext err(AppError.Restic("restic backup 失败", result.exitCode, result.stderr))
-            parseBackupSummary(result.stdout)
-        } else {
-            bridgeRunner.withBridge(backend, backendUrl, backendUser, backendPass, backendShare, backendDomain, repoPath, File(cacheDir)) { bridgeUrl, authToken ->
-                val args = mutableListOf("backup", "--json")
-                for (path in paths) args.add(path)
-                for (tag in tags) { args.add("--tag"); args.add(tag) }
-                if (hostname != null) { args.add("--host"); args.add(hostname) }
-
-                val env = envResolver.buildBridgeEnv(password, bridgeUrl, cacheDir, authToken)
-                val result = runner.runResticStreaming(env, args) { line ->
-                    if (!coroutineContext.isActive) return@runResticStreaming
-                    try {
-                        val progress = resticJson.decodeFromString<ResticWrapper.ResticProgress>(line)
-                        if (progress.messageType == "status") emit(progress)
-                } catch (e: Exception) { if (e is CancellationException) throw e }
+            val result =
+                executor.withBackend(
+                    repoPath = repoPath,
+                    password = password,
+                    cacheDir = cacheDir,
+                    backend = backend,
+                    backendUrl = backendUrl,
+                    backendUser = backendUser,
+                    backendPass = backendPass,
+                    backendShare = backendShare,
+                    backendDomain = backendDomain,
+                    runner = runner,
+                    envResolver = envResolver,
+                    bridgeRunner = bridgeRunner,
+                ) { env ->
+                    runner.runResticStreaming(env, args) { line ->
+                        if (!coroutineContext.isActive) return@runResticStreaming
+                        try {
+                            val progress = resticJson.decodeFromString<ResticWrapper.ResticProgress>(line)
+                            if (progress.messageType == "status") emit(progress)
+                        } catch (e: Exception) {
+                            if (e is CancellationException) throw e
+                        }
+                    }
                 }
 
-                if (result.exitCode != 0) return@withBridge err(AppError.Restic("restic backup 失败", result.exitCode, result.stderr))
-                parseBackupSummary(result.stdout)
+            if (result.exitCode != 0) {
+                return@withContext err(AppError.Restic("restic backup 失败", result.exitCode, result.stderr))
             }
+            parseBackupSummary(result.stdout)
         }
-    }
 
     // ── Internal helpers ───────────────────────────────
 
@@ -94,7 +98,9 @@ class ResticBackup(
             try {
                 val summary = resticJson.decodeFromString<ResticWrapper.BackupSummary>(line)
                 if (summary.messageType == "summary" && summary.snapshotId.isNotEmpty()) return AppResult.Success(summary)
-            } catch (_: Exception) { /* keep looking */ }
+            } catch (_: Exception) {
+                // keep looking
+            }
         }
         return err(AppError.Parse("restic 备份输出未找到摘要信息", "stdout=" + stdout.length))
     }

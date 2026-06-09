@@ -1,17 +1,17 @@
 package com.example.androidbackupgui.backup
 
 import android.util.Log
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.isActive
-import java.io.File
-import kotlinx.coroutines.withContext
-import org.json.JSONObject
-import kotlin.coroutines.coroutineContext
-import kotlinx.serialization.Serializable
-import kotlinx.serialization.SerialName
 import com.example.androidbackupgui.backup.AppError
 import com.example.androidbackupgui.backup.AppResult
 import com.example.androidbackupgui.backup.err
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.withContext
+import kotlinx.serialization.SerialName
+import kotlinx.serialization.Serializable
+import org.json.JSONObject
+import java.io.File
+import kotlin.coroutines.coroutineContext
 
 /**
  * Wraps the restic CLI binary for backup/restore operations.
@@ -30,28 +30,42 @@ import com.example.androidbackupgui.backup.err
  * ([ResticRepoInit], [ResticBackup], [ResticRestore], [ResticSnapshotOps],
  * [ResticMaintenance]).
  */
-object ResticWrapper {
 
-    private const val TAG = "ResticWrapper"
+/**
+ * 默认 [ResticWrapper] 实例。用于不需要自定义依赖注入的场景。
+ */
+val defaultResticWrapper: ResticWrapper = ResticWrapper()
 
-    internal val runner = ResticCommandRunner()
-    internal val envResolver = ResticEnvResolver()
-    private val bridgeRunner = RestBridgeRunner()
+/**
+ * Wraps the restic CLI binary for backup/restore operations.
+ *
+ * 现在是一个 class 而非 object，可以通过构造函数注入依赖。
+ * 使用 [defaultResticWrapper] 获取默认单例。
+ */
+class ResticWrapper(
+    internal val runner: ResticCommandRunner = ResticCommandRunner(),
+    internal val envResolver: ResticEnvResolver = ResticEnvResolver(),
+    internal val bridgeRunner: RestBridgeRunner = RestBridgeRunner(),
+    internal val executor: BackendExecutor = BackendExecutor(),
+) {
+    private val TAG = "ResticWrapper"
 
     // ── Sub-module instances ───────────────────────────
 
-    private val repoInit = ResticRepoInit(runner, envResolver, bridgeRunner)
-    private val backupOp = ResticBackup(runner, envResolver, bridgeRunner)
-    private val restoreOp = ResticRestore(runner, envResolver, bridgeRunner)
-    private val snapshotOps = ResticSnapshotOps(runner, envResolver, bridgeRunner)
-    private val maintenance = ResticMaintenance(runner, envResolver, bridgeRunner)
+    private val repoInit = ResticRepoInit(runner, envResolver, bridgeRunner, executor)
+    private val backupOp = ResticBackup(runner, envResolver, bridgeRunner, executor)
+    private val restoreOp = ResticRestore(runner, envResolver, bridgeRunner, executor)
+    private val snapshotOps = ResticSnapshotOps(runner, envResolver, bridgeRunner, executor)
+    private val maintenance = ResticMaintenance(runner, envResolver, bridgeRunner, executor)
 
     // ── Property delegation ───────────────────────────
 
     /** Path to the restic binary. Default assumes it's on PATH (e.g. Termux). */
     var binaryPath: String
         get() = runner.binaryPath
-        set(v) { runner.binaryPath = v }
+        set(v) {
+            runner.binaryPath = v
+        }
 
     /** Cache directory for restic (XDG_CACHE_HOME) and bridge tmp blobs. */
     var cacheDir: String = ""
@@ -63,7 +77,6 @@ object ResticWrapper {
             snapshotOps.cacheDir = v
             maintenance.cacheDir = v
         }
-
 
     /** Domain for SMB NTLM authentication. Propagated to sub-modules. */
     var backendDomain: String = ""
@@ -79,13 +92,13 @@ object ResticWrapper {
 
     @Serializable
     data class ResticProgress(
-        @SerialName("message_type") val messageType: String,       // "status" during backup
+        @SerialName("message_type") val messageType: String, // "status" during backup
         @SerialName("percent_done") val percentDone: Double = 0.0,
         @SerialName("total_files") val totalFiles: Int = 0,
         @SerialName("files_done") val filesDone: Int = 0,
         @SerialName("total_bytes") val totalBytes: Long = 0,
         @SerialName("bytes_done") val bytesDone: Long = 0,
-        @SerialName("current_files") val currentFiles: List<String> = emptyList()
+        @SerialName("current_files") val currentFiles: List<String> = emptyList(),
     )
 
     @Serializable
@@ -95,14 +108,14 @@ object ResticWrapper {
         val time: String,
         val paths: List<String>,
         val tags: List<String>,
-        val hostname: String = ""
+        val hostname: String = "",
     )
 
     /** App metadata read from a restic snapshot for change detection. */
     data class SnapshotAppInfo(
         val label: String,
         val isSystem: Boolean,
-        val apkSizes: List<Long> = emptyList()
+        val apkSizes: List<Long> = emptyList(),
     )
 
     // ── Repository lifecycle ─────────────────────────
@@ -115,9 +128,16 @@ object ResticWrapper {
         backendUser: String = "",
         backendPass: String = "",
         backendShare: String = "",
-    ): AppResult<Unit> = repoInit.init(
-        repoPath, password, backend, backendUrl, backendUser, backendPass, backendShare
-    )
+    ): AppResult<Unit> =
+        repoInit.init(
+            repoPath,
+            password,
+            backend,
+            backendUrl,
+            backendUser,
+            backendPass,
+            backendShare,
+        )
 
     // ── Backup ─────────────────────────────────────────
 
@@ -136,7 +156,7 @@ object ResticWrapper {
         @SerialName("data_added") val dataAdded: Long = 0,
         @SerialName("total_files_processed") val totalFilesProcessed: Int = 0,
         @SerialName("total_bytes_processed") val totalBytesProcessed: Long = 0,
-        @SerialName("total_duration") val totalDuration: Double = 0.0
+        @SerialName("total_duration") val totalDuration: Double = 0.0,
     )
 
     suspend fun backup(
@@ -150,12 +170,21 @@ object ResticWrapper {
         backendUser: String = "",
         backendPass: String = "",
         backendShare: String = "",
-        onProgress: suspend (ResticProgress) -> Unit = {}
-    ): AppResult<BackupSummary> = backupOp.backup(
-        repoPath, password, paths, tags, hostname,
-        backend, backendUrl, backendUser, backendPass, backendShare,
-        onProgress
-    )
+        onProgress: suspend (ResticProgress) -> Unit = {},
+    ): AppResult<BackupSummary> =
+        backupOp.backup(
+            repoPath,
+            password,
+            paths,
+            tags,
+            hostname,
+            backend,
+            backendUrl,
+            backendUser,
+            backendPass,
+            backendShare,
+            onProgress,
+        )
 
     /**
      * Streaming backup: pipes tar data through a FIFO directly into restic --stdin.
@@ -175,25 +204,28 @@ object ResticWrapper {
         backendUser: String,
         backendPass: String,
         backendShare: String,
-        onProgress: suspend (String) -> Unit = {}
-    ): AppResult<BackupSummary> = ResticStreamBackup.backup(
-        cacheDir = File(cacheDir),
-        apps = apps,
-        noDataBackup = noDataBackup,
-        legacyApps = legacyApps,
-        userId = userId,
-        restic = this,
-        repoPath = repoPath,
-        password = password,
-        tags = tags,
-        hostname = hostname,
-        backend = backend,
-        backendUrl = backendUrl,
-        backendUser = backendUser,
-        backendPass = backendPass,
-        backendShare = backendShare,
-        onProgress = onProgress
-    )
+        onProgress: suspend (String) -> Unit = {},
+        ownPackageName: String = "",
+    ): AppResult<BackupSummary> =
+        ResticStreamBackup.backup(
+            cacheDir = File(cacheDir),
+            ownPackageName = ownPackageName,
+            apps = apps,
+            noDataBackup = noDataBackup,
+            legacyApps = legacyApps,
+            userId = userId,
+            restic = this,
+            repoPath = repoPath,
+            password = password,
+            tags = tags,
+            hostname = hostname,
+            backend = backend,
+            backendUrl = backendUrl,
+            backendUser = backendUser,
+            backendPass = backendPass,
+            backendShare = backendShare,
+            onProgress = onProgress,
+        )
 
     // ── Restore ────────────────────────────────────────
 
@@ -208,12 +240,21 @@ object ResticWrapper {
         backendUser: String = "",
         backendPass: String = "",
         backendShare: String = "",
-        onProgress: suspend (String) -> Unit = {}
-    ): AppResult<Unit> = restoreOp.restore(
-        repoPath, password, snapshotId, targetPath, include,
-        backend, backendUrl, backendUser, backendPass, backendShare,
-        onProgress
-    )
+        onProgress: suspend (String) -> Unit = {},
+    ): AppResult<Unit> =
+        restoreOp.restore(
+            repoPath,
+            password,
+            snapshotId,
+            targetPath,
+            include,
+            backend,
+            backendUrl,
+            backendUser,
+            backendPass,
+            backendShare,
+            onProgress,
+        )
 
     // ── File dump ──────────────────────────────────────
 
@@ -227,10 +268,18 @@ object ResticWrapper {
         backendUser: String = "",
         backendPass: String = "",
         backendShare: String = "",
-    ): AppResult<String> = restoreOp.dump(
-        repoPath, password, snapshotId, filePath,
-        backend, backendUrl, backendUser, backendPass, backendShare
-    )
+    ): AppResult<String> =
+        restoreOp.dump(
+            repoPath,
+            password,
+            snapshotId,
+            filePath,
+            backend,
+            backendUrl,
+            backendUser,
+            backendPass,
+            backendShare,
+        )
 
     // ── Snapshot management ────────────────────────────
 
@@ -243,10 +292,17 @@ object ResticWrapper {
         backendUser: String = "",
         backendPass: String = "",
         backendShare: String = "",
-    ): AppResult<List<ResticSnapshot>> = snapshotOps.listSnapshots(
-        repoPath, password, tag,
-        backend, backendUrl, backendUser, backendPass, backendShare
-    )
+    ): AppResult<List<ResticSnapshot>> =
+        snapshotOps.listSnapshots(
+            repoPath,
+            password,
+            tag,
+            backend,
+            backendUrl,
+            backendUser,
+            backendPass,
+            backendShare,
+        )
 
     suspend fun forget(
         repoPath: String,
@@ -260,10 +316,20 @@ object ResticWrapper {
         backendUser: String = "",
         backendPass: String = "",
         backendShare: String = "",
-    ): AppResult<String> = snapshotOps.forget(
-        repoPath, password, keepDaily, keepWeekly, keepMonthly, dryRun,
-        backend, backendUrl, backendUser, backendPass, backendShare
-    )
+    ): AppResult<String> =
+        snapshotOps.forget(
+            repoPath,
+            password,
+            keepDaily,
+            keepWeekly,
+            keepMonthly,
+            dryRun,
+            backend,
+            backendUrl,
+            backendUser,
+            backendPass,
+            backendShare,
+        )
 
     /**
      * Read [app_details.json] from the latest restic snapshot and return a map
@@ -278,36 +344,62 @@ object ResticWrapper {
         backendUser: String = "",
         backendPass: String = "",
         backendShare: String = "",
-    ): Map<String, SnapshotAppInfo>? = withContext(Dispatchers.IO) {
-        val snapsResult = snapshotOps.listSnapshots(
-            repoPath, password, tag = null,
-            backend, backendUrl, backendUser, backendPass, backendShare
-        )
-        val snaps = when (snapsResult) {
-            is AppResult.Failure -> {
-                Log.w(TAG, "getLatestSnapshotAppDetails: listSnapshots failed: ${snapsResult.error.message}")
-                null
-            }
-            is AppResult.Success -> snapsResult.data
-        } ?: return@withContext null
+    ): Map<String, SnapshotAppInfo>? =
+        withContext(Dispatchers.IO) {
+            val snapsResult =
+                snapshotOps.listSnapshots(
+                    repoPath,
+                    password,
+                    tag = null,
+                    backend,
+                    backendUrl,
+                    backendUser,
+                    backendPass,
+                    backendShare,
+                )
+            val snaps =
+                when (snapsResult) {
+                    is AppResult.Failure -> {
+                        Log.w(TAG, "getLatestSnapshotAppDetails: listSnapshots failed: ${snapsResult.error.message}")
+                        null
+                    }
 
-        if (snaps.isEmpty()) return@withContext null
+                    is AppResult.Success -> {
+                        snapsResult.data
+                    }
+                } ?: return@withContext null
 
-        val latestId = snaps.first().shortId
-        val basePath = snaps.first().paths.firstOrNull()?.trimEnd('/') ?: return@withContext null
+            if (snaps.isEmpty()) return@withContext null
 
-        val dumpResult = restoreOp.dump(
-            repoPath, password, latestId, "$basePath/app_details.json",
-            backend, backendUrl, backendUser, backendPass, backendShare
-        )
+            val latestId = snaps.first().shortId
+            val basePath =
+                snaps
+                    .first()
+                    .paths
+                    .firstOrNull()
+                    ?.trimEnd('/') ?: return@withContext null
 
-        val jsonStr = when (dumpResult) {
-            is AppResult.Failure -> return@withContext null
-            is AppResult.Success -> dumpResult.data
+            val dumpResult =
+                restoreOp.dump(
+                    repoPath,
+                    password,
+                    latestId,
+                    "$basePath/app_details.json",
+                    backend,
+                    backendUrl,
+                    backendUser,
+                    backendPass,
+                    backendShare,
+                )
+
+            val jsonStr =
+                when (dumpResult) {
+                    is AppResult.Failure -> return@withContext null
+                    is AppResult.Success -> dumpResult.data
+                }
+
+            return@withContext parseAppDetailsJson(jsonStr)
         }
-
-        return@withContext parseAppDetailsJson(jsonStr)
-    }
 
     /** Parse [app_details.json] content into a package-name → [SnapshotAppInfo] map. */
     internal fun parseAppDetailsJson(jsonStr: String): Map<String, SnapshotAppInfo> {
@@ -323,11 +415,12 @@ object ResticWrapper {
                         sizes.add(sizesArr.optLong(i, 0L))
                     }
                 }
-                map[key] = SnapshotAppInfo(
-                    label = entry.optString("label", key),
-                    isSystem = entry.optBoolean("isSystem", false),
-                    apkSizes = sizes
-                )
+                map[key] =
+                    SnapshotAppInfo(
+                        label = entry.optString("label", key),
+                        isSystem = entry.optBoolean("isSystem", false),
+                        apkSizes = sizes,
+                    )
             }
         } catch (_: Exception) {
             Log.w(TAG, "parseAppDetailsJson: failed to parse JSON")
@@ -345,10 +438,16 @@ object ResticWrapper {
         backendUser: String = "",
         backendPass: String = "",
         backendShare: String = "",
-    ): AppResult<String> = maintenance.prune(
-        repoPath, password,
-        backend, backendUrl, backendUser, backendPass, backendShare
-    )
+    ): AppResult<String> =
+        maintenance.prune(
+            repoPath,
+            password,
+            backend,
+            backendUrl,
+            backendUser,
+            backendPass,
+            backendShare,
+        )
 
     suspend fun check(
         repoPath: String,
@@ -358,10 +457,16 @@ object ResticWrapper {
         backendUser: String = "",
         backendPass: String = "",
         backendShare: String = "",
-    ): AppResult<String> = maintenance.check(
-        repoPath, password,
-        backend, backendUrl, backendUser, backendPass, backendShare
-    )
+    ): AppResult<String> =
+        maintenance.check(
+            repoPath,
+            password,
+            backend,
+            backendUrl,
+            backendUser,
+            backendPass,
+            backendShare,
+        )
 
     suspend fun stats(
         repoPath: String,
@@ -371,10 +476,16 @@ object ResticWrapper {
         backendUser: String = "",
         backendPass: String = "",
         backendShare: String = "",
-    ): AppResult<String> = maintenance.stats(
-        repoPath, password,
-        backend, backendUrl, backendUser, backendPass, backendShare
-    )
+    ): AppResult<String> =
+        maintenance.stats(
+            repoPath,
+            password,
+            backend,
+            backendUrl,
+            backendUser,
+            backendPass,
+            backendShare,
+        )
 
     suspend fun unlock(
         repoPath: String,
@@ -386,14 +497,21 @@ object ResticWrapper {
         backendShare: String = "",
     ): AppResult<String> =
         maintenance.unlock(
-            repoPath, password,
-            backend, backendUrl, backendUser, backendPass, backendShare,
+            repoPath,
+            password,
+            backend,
+            backendUrl,
+            backendUser,
+            backendPass,
+            backendShare,
         )
 
     // ── Public URL helper ──────────────────────────────
 
     /** Build a display-friendly repository URL for UI. */
-    fun buildRepoUrl(backend: String, repoPath: String, backendUrl: String): String {
-        return repoInit.buildRepoUrl(backend, repoPath, backendUrl)
-    }
+    fun buildRepoUrl(
+        backend: String,
+        repoPath: String,
+        backendUrl: String,
+    ): String = repoInit.buildRepoUrl(backend, repoPath, backendUrl)
 }

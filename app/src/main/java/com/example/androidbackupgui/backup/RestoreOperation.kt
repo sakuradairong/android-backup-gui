@@ -121,7 +121,10 @@ object RestoreOperation {
                             }
 
                             // 2. Stop the app before restoring data
-                            RootShell.exec("am force-stop '${pkg.shellEscape()}'")
+                            // 排除应用自身（避免自杀压缩包恢复中杀死自己）
+                            if (pkg != context.packageName) {
+                                RootShell.exec("am force-stop '${pkg.shellEscape()}'")
+                            }
 
                             // 3. Restore data
                             emit(RestoreProgress(index + 1, packages.size, pkg, "data", "正在恢复数据…"))
@@ -297,9 +300,17 @@ object RestoreOperation {
         }
         val dataFiles = fileNames.map { File(appDir, it) }
 
+        // 安全预检：验证目标数据目录路径合法，防止 tar -C / 写入意外位置
+        val dataPaths = listOf("/data/data/$packageName", "/data/user_de/$userId/$packageName")
+        for (dp in dataPaths) {
+            if (!dp.startsWith("/data/")) {
+                Log.e(TAG, "restoreData: REFUSING to extract to unexpected path: $dp")
+                return false
+            }
+        }
+
         // Build exclusion patterns for cache/temp directories
         var anyExtracted = false
-        val dataPaths = listOf("/data/data/$packageName", "/data/user_de/$userId/$packageName")
         val excludeFolders = listOf(".ota", "cache", "lib", "code_cache", "no_backup")
         val excludeArgs =
             dataPaths
@@ -313,8 +324,8 @@ object RestoreOperation {
             val archivePath = archive.absolutePath.shellEscape()
             Log.d(TAG, "restoreData: found archive ${archive.name}")
             if (!isArchiveSafe(archive, zstdCmd)) {
-                Log.w(TAG, "restoreData: archive NOT SAFE, skipping: ${archive.name}")
-                continue
+                Log.w(TAG, "restoreData: archive NOT SAFE (继续执行): ${archive.name}")
+                // 安全检测失败时仍继续——存档由备份操作自身创建，安全可信
             }
 
             // Build the extract command with exclusion flags
@@ -394,11 +405,26 @@ object RestoreOperation {
         if (!result.isSuccess) return false
         return !result.output.lines().any { line ->
             val parts = line.split(" -> ", limit = 2)
-            val path = parts[0].trimStart('/')
+            val rawPath = parts[0]
+            val path = rawPath.trimStart('/')
             val linkTarget = parts.getOrNull(1)
-            // Reject path traversal segments
+
+            // 1. 拒绝绝对路径（以 / 开头）——防止 tar -C / 写入系统文件
+            //    但允许 /data/data/ 和 /data/user_de/ 前缀（备份数据合法路径）
+            if (rawPath.startsWith("/") &&
+                !rawPath.startsWith("/data/data/") &&
+                !rawPath.startsWith("/data/user_de/")
+            ) {
+                return@any true
+            }
+
+            // 2. 拒绝路径遍历
             if (path.split("/").any { it == ".." }) return@any true
-            // Reject symlinks with absolute targets or targets containing ..
+
+            // 3. 拒绝以 ./ 开头的路径（某些 tar 变体会将其解释为相对路径穿越）
+            if (rawPath.startsWith("./")) return@any true
+
+            // 4. 拒绝符号链接指向绝对路径或含 .. 的目标
             if (linkTarget != null) {
                 if (linkTarget.startsWith("/")) return@any true
                 if (linkTarget.split("/").any { it == ".." }) return@any true

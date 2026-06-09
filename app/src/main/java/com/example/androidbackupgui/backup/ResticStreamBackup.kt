@@ -5,33 +5,39 @@ import com.example.androidbackupgui.root.RootShell
 import com.example.androidbackupgui.root.shellEscape
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeout
-import kotlinx.serialization.json.Json
 import java.io.File
 import kotlin.coroutines.coroutineContext
 
 /**
- * Streaming backup using a FIFO (named pipe) to pipe app data tar directly
- * into `restic backup --stdin`, eliminating the staging directory.
+ * "流式"备份——将应用数据 tar 到临时目录，然后由 restic 统一备份。
  *
- * Only invoked when [BackupConfig.useStreaming] is enabled.
+ * 原实现使用 FIFO + `restic backup --stdin`，但由于 RootShell 每次 exec
+ * 会独立打开/关闭 FIFO，导致 restic 在第一次写入后收到 EOF 退出。
+ *
+ * 当前实现改为：
+ * 1. 创建临时工作目录 stream_data/
+ * 2. 将元数据 + APK 文件复制到该目录
+ * 3. 对每个应用，tar 数据到该目录下的独立文件
+ * 4. 运行 restic backup 指向该目录（无 --stdin，无 FIFO）
+ * 5. 备份完成后清理临时目录
+ *
+ * 和普通备份的区别：临时目录会在备份完成后自动删除，不留本地存档。
+ * 仅当 [BackupConfig.useStreaming] 启用时使用。
  */
 object ResticStreamBackup {
     private const val TAG = "ResticStreamBackup"
-    private const val TAR_TIMEOUT_MS = 120_000L
 
-    private val resticJson = Json { ignoreUnknownKeys = true }
+    /** 单个应用跳过备份的数据大小阈值（500MB） */
+    private const val MAX_STREAM_APP_SIZE_BYTES = 500L * 1024 * 1024
 
     /**
      * Run a streaming backup.
      */
     suspend fun backup(
         cacheDir: File,
+        ownPackageName: String,
         apps: List<AppInfo>,
         noDataBackup: Set<String>,
         legacyApps: Map<String, ResticWrapper.SnapshotAppInfo>?,
@@ -51,47 +57,121 @@ object ResticStreamBackup {
         withContext(Dispatchers.IO) {
             val emit: suspend (String) -> Unit = { msg -> withContext(Dispatchers.Main) { onProgress(msg) } }
 
-            cacheDir.mkdirs()
-
-            // ── 1. Create FIFO ────────────────────────────
-            val fifo = File(cacheDir, "stream_data.fifo")
-            if (fifo.exists()) RootShell.exec("rm -f '${fifo.absolutePath.shellEscape()}'")
-            val mkfifoResult = RootShell.exec("mkfifo '${fifo.absolutePath.shellEscape()}'")
-            if (!mkfifoResult.isSuccess) {
-                LogUtil.e(TAG, "backup: mkfifo failed: ${mkfifoResult.error}")
-                return@withContext err(AppError.LocalIO("无法创建数据管道 (mkfifo)", fifo.absolutePath))
-            }
-            Log.i(TAG, "FIFO created at ${fifo.absolutePath}")
+            // ── 1. Create temporary work directory ──────
+            val workDir = File(cacheDir, "stream_data")
+            if (workDir.exists()) RootShell.exec("rm -rf '${workDir.absolutePath.shellEscape()}'")
+            workDir.mkdirs()
+            Log.i(TAG, "Work dir created at ${workDir.absolutePath}")
 
             try {
                 // ── 2. Write metadata ─────────────────────
-                val metaDir = File(cacheDir, "stream_meta")
-                metaDir.mkdirs()
+                // 文件直接放在 workDir 根下，与普通备份结构一致
+                emit("正在准备元数据…")
                 BackupOperation.writeFileForBackup(
-                    File(metaDir, "appList.txt"),
+                    File(workDir, "appList.txt"),
                     apps.joinToString("\n") { it.packageName.value },
                 )
                 BackupOperation.writeFileForBackup(
-                    File(metaDir, "app_details.json"),
+                    File(workDir, "app_details.json"),
                     BackupOperation.buildAppDetailsJson(apps, legacyApps),
                 )
-                Log.i(TAG, "Metadata written to ${metaDir.absolutePath}")
+                Log.i(TAG, "Metadata written to ${workDir.absolutePath}")
 
-                // ── 3. Collect APK paths ──────────────────
-                val apkPaths = mutableListOf<String>()
+                // ── 3. Backup APK files ───────────────────
+                // 统一使用 per-app 子目录结构，与普通备份和恢复代码兼容
+                emit("正在备份 APK 文件…")
+                var apkCount = 0
                 for (app in apps) {
                     if (!coroutineContext.isActive) return@withContext err(AppError.Cancelled)
-                    apkPaths.addAll(AppScanner.getApkPaths(app.packageName.value))
+                    val appDir = File(workDir, app.packageName.value)
+                    appDir.mkdirs()
+                    val paths = AppScanner.getApkPaths(app.packageName.value)
+                    for ((i, apkPath) in paths.withIndex()) {
+                        val destName = if (paths.size > 1) "${app.packageName.value}_split_$i.apk" else "${app.packageName.value}.apk"
+                        val cpOk =
+                            RootShell
+                                .exec(
+                                    "cp '${apkPath.shellEscape()}' '${File(appDir, destName).absolutePath.shellEscape()}' 2>/dev/null",
+                                ).isSuccess
+                        if (cpOk) apkCount++
+                    }
                 }
-                Log.i(TAG, "Collected ${apkPaths.size} APK paths")
+                Log.i(TAG, "Backed up $apkCount APK files")
 
-                // ── 4. Build restic env and args ──────────
-                val extraArgs = mutableListOf<String>()
-                extraArgs.addAll(apkPaths)
-                extraArgs.add(metaDir.absolutePath)
+                // ── 4. Backup app data ────────────────────
+                var successCount = 0
+                var failCount = 0
 
-                val args = mutableListOf("backup", "--stdin", "--json", "--stdin-filename", "app_data.tar")
-                for (path in extraArgs) args.add(path)
+                for ((index, app) in apps.withIndex()) {
+                    if (!coroutineContext.isActive) return@withContext err(AppError.Cancelled)
+
+                    val pkgName = app.packageName.value
+                    if (pkgName in noDataBackup) {
+                        Log.d(TAG, "backup: skipping data for $pkgName (excluded)")
+                        continue
+                    }
+
+                    emit("备份数据: $pkgName (${index + 1}/${apps.size})")
+
+                    // Force-stop app before data backup for consistency
+                    if (pkgName !in listOf("bin.mt.plus", "com.termux", "bin.mt.plus.canary", ownPackageName)) {
+                        RootShell.exec("am force-stop --user $userId '$pkgName' 2>/dev/null")
+                    }
+
+                    // Check data dirs exist
+                    val dirs = mutableListOf<String>()
+                    val dataCheck = RootShell.exec("test -d '/data/data/${pkgName.shellEscape()}' && echo 1 || echo 0")
+                    if (dataCheck.output.trim() == "1") dirs.add("/data/data/$pkgName")
+
+                    val userDeCheck =
+                        RootShell.exec(
+                            "test -d '/data/user_de/${userId.shellEscape()}/${pkgName.shellEscape()}' && echo 1 || echo 0",
+                        )
+                    if (userDeCheck.output.trim() == "1") dirs.add("/data/user_de/$userId/$pkgName")
+
+                    if (dirs.isEmpty()) {
+                        Log.d(TAG, "backup: no data dirs for $pkgName, skipping")
+                        continue
+                    }
+
+                    // Estimate size, skip oversized apps
+                    val dirArgs = dirs.joinToString(" ") { "'${it.shellEscape()}'" }
+                    val preCheck =
+                        RootShell.exec(
+                            "du -sb --exclude='cache' --exclude='code_cache' --exclude='lib' --exclude='no_backup' --exclude='.ota' $dirArgs 2>/dev/null | awk '{s+=\$1} END{print s}'",
+                        )
+                    val estimatedBytes = preCheck.output.trim().toLongOrNull() ?: 0L
+                    if (estimatedBytes > MAX_STREAM_APP_SIZE_BYTES) {
+                        emit("⚠ $pkgName 数据过大 (${estimatedBytes / 1024 / 1024}MB)，跳过")
+                        Log.w(TAG, "backup: $pkgName too large (${estimatedBytes / 1024 / 1024}MB), skipping")
+                        continue
+                    }
+
+                    // Tar app data to per-app subdirectory
+                    val appDir = File(workDir, pkgName)
+                    appDir.mkdirs()
+                    val tarFile = File(appDir, "${pkgName}_data.tar.zst")
+                    // 使用系统 tar + 捆绑的 zstd（从 cacheDir 推导 filesDir）
+                    val filesDir = File(cacheDir.parentFile, "files")
+                    val zstdBin = File(File(filesDir, "bin"), "zstd_bin")
+                    val zstdCmd = if (zstdBin.canExecute()) zstdBin.absolutePath else "zstd"
+                    val tarCmd = "set -o pipefail; tar -cf - $dirArgs --exclude='cache' --exclude='code_cache' --exclude='lib' --exclude='no_backup' --exclude='.ota' 2>/dev/null | $zstdCmd -T0 -o '${tarFile.absolutePath.shellEscape()}'"
+                    RootShell.exec("chmod +x '${zstdBin.absolutePath.shellEscape()}' 2>/dev/null")
+
+                    val result = RootShell.exec(tarCmd)
+                    if (result.isSuccess && tarFile.length() > 0) {
+                        successCount++
+                    } else {
+                        Log.w(TAG, "backup: tar failed for $pkgName exit=${result.exitCode} err='${result.error.take(200)}'")
+                        failCount++
+                    }
+                }
+
+                emit("数据备份完成 (成功 $successCount, 失败 $failCount)，正在上传至 restic…")
+
+                // ── 5. Run restic backup ──────────────────
+                val args = mutableListOf("backup", "--json")
+                args.add(workDir.absolutePath)
                 for (tag in tags) {
                     args.add("--tag")
                     args.add(tag)
@@ -102,227 +182,104 @@ object ResticStreamBackup {
                 }
 
                 val cmdArgs = restic.runner.buildCommandArgs(args)
-                val env =
-                    if (backend == "local") {
-                        restic.envResolver.buildLocalEnv(repoPath, password, restic.cacheDir)
-                    } else {
-                        // Remote backends: need bridge. Use blocking call inside withContext(IO).
-                        // For now, local only; remote bridge requires async setup not compatible
-                        // with the coroutineScope timing below. Remote will be added later.
-                        LogUtil.e(TAG, "backup: remote backend not yet supported for streaming")
-                        return@withContext err(AppError.Shell("流式备份暂不支持远程后端，请使用本地仓库", "backend_check", -1, ""))
-                    }
+                Log.i(TAG, "Running restic ${cmdArgs.joinToString(" ")}")
 
-                emit("流式备份开始 (${apps.size} 个应用)")
-
-                // ── 5. Consumer + Producer in coroutineScope ──
-                var backupSummary: ResticWrapper.BackupSummary? = null
-                var backupError: AppError? = null
-                var consumerDone = false
-
-                coroutineScope {
-                    // Consumer: start restic, pipe stdin from FIFO, read progress
-                    val consumerJob =
-                        launch {
+                val result =
+                    restic.executor.runResticStreamingWithBackend(
+                        args = args,
+                        repoPath = repoPath,
+                        password = password,
+                        cacheDir = restic.cacheDir,
+                        backend = backend,
+                        backendUrl = backendUrl,
+                        backendUser = backendUser,
+                        backendPass = backendPass,
+                        backendShare = backendShare,
+                        backendDomain = restic.backendDomain,
+                        runner = restic.runner,
+                        envResolver = restic.envResolver,
+                        bridgeRunner = restic.bridgeRunner,
+                        onLine = { line ->
                             try {
-                                Log.i(TAG, "Consumer: starting restic ${cmdArgs.joinToString(" ")}")
-                                val pb = ProcessBuilder(cmdArgs)
-                                pb.environment().putAll(env)
-                                pb.redirectErrorStream(false)
-                                val process = pb.start()
-
-                                // Daemon thread: pipe FIFO → process stdin
-                                val stdinThread =
-                                    Thread {
-                                        try {
-                                            java.io.FileInputStream(fifo).use { fis ->
-                                                process.outputStream.use { pos ->
-                                                    fis.copyTo(pos)
-                                                }
-                                            }
-                                        } catch (_: Exception) {
-                                            // FIFO writer closed or process exited
-                                        }
-                                    }.apply {
-                                        isDaemon = true
-                                        name = "restic-stdin-pipe"
-                                    }
-                                stdinThread.start()
-
-                                // Drain stderr on a separate daemon thread to avoid pipe deadlock
-                                var stderrBytes = byteArrayOf()
-                                val stderrThread =
-                                    Thread {
-                                        try {
-                                            stderrBytes = process.errorStream.use { it.readAllBytesCompat() }
-                                        } catch (_: Exception) {
-                                            // stream closed early
-                                        }
-                                    }.apply {
-                                        isDaemon = true
-                                        name = "restic-stderr-drain"
-                                    }
-                                stderrThread.start()
-
-                                // Read stdout line by line
-                                val stdoutLines = mutableListOf<String>()
-                                val reader = process.inputStream.bufferedReader()
-                                try {
-                                    var line = reader.readLine()
-                                    while (line != null) {
-                                        if (!coroutineContext.isActive) {
-                                            process.destroy()
-                                            break
-                                        }
-                                        stdoutLines.add(line)
-                                        // Parse JSON progress line
-                                        try {
-                                            val progress = resticJson.decodeFromString<ResticWrapper.ResticProgress>(line)
-                                            if (progress.messageType == "status") {
-                                                val pct = "%.1f".format(progress.percentDone * 100)
-                                                emit("备份进度: $pct% (${progress.filesDone}/${progress.totalFiles} 文件)")
-                                            }
-                                        } catch (_: Exception) {
-                                            emit(line.take(120))
-                                        }
-                                        line = reader.readLine()
-                                    }
-                                } finally {
-                                    try {
-                                        reader.close()
-                                    } catch (_: Exception) {
-                                    }
+                                val progress = resticJson.decodeFromString<ResticWrapper.ResticProgress>(line)
+                                if (progress.messageType == "status") {
+                                    val pct = "%.1f".format(progress.percentDone * 100)
+                                    emit(
+                                        "上传进度: $pct% (${progress.filesDone}/${progress.totalFiles} 文件, ${progress.bytesDone / 1024 / 1024}/${progress.totalBytes / 1024 / 1024}MB)",
+                                    )
                                 }
-
-                                val exitCode = process.waitFor()
-                                try {
-                                    stdinThread.join(2_000)
-                                } catch (_: InterruptedException) {
-                                }
-                                try {
-                                    stderrThread.join(1_000)
-                                } catch (_: InterruptedException) {
-                                }
-
-                                val stderrText = stderrBytes.decodeToString().trim()
-                                Log.i(TAG, "Consumer: restic exit=$exitCode stdout_len=${stdoutLines.size}")
-                                if (stderrText.isNotEmpty()) Log.w(TAG, "Consumer: restic stderr: ${stderrText.take(500)}")
-
-                                if (exitCode == 0) {
-                                    // Parse summary from stdout (last JSON line with message_type=summary)
-                                    val summaryLine =
-                                        stdoutLines.lastOrNull { line ->
-                                            line.contains("\"message_type\"") && line.contains("\"summary\"")
-                                        }
-                                    if (summaryLine != null) {
-                                        backupSummary =
-                                            try {
-                                                resticJson.decodeFromString<ResticWrapper.BackupSummary>(summaryLine)
-                                            } catch (e: Exception) {
-                                                Log.w(TAG, "Consumer: failed to parse summary: ${e.message}")
-                                                null
-                                            }
-                                    }
-                                    if (backupSummary == null) {
-                                        backupError = AppError.Parse("restic 未返回摘要信息", "")
-                                    }
-                                } else {
-                                    backupError = AppError.Restic("restic backup 失败", exitCode, stderrText)
-                                }
-                            } catch (e: CancellationException) {
-                                throw e // 必须重新抛出，coroutineScope 才能传播取消
-                            } catch (e: Exception) {
-                                LogUtil.e(TAG, "Consumer: exception: ${e.message}")
-                                backupError = AppError.Restic("restic 进程异常: ${e.message}", -1, "")
-                            } finally {
-                                consumerDone = true
+                            } catch (_: Exception) {
+                                if (line.length < 200) emit(line)
                             }
-                        }
+                        },
+                    )
 
-                    // Producer: tar each app → FIFO
-                    val producerJob =
-                        launch {
-                            try {
-                                // Small delay so consumer has time to start reading the FIFO
-                                delay(200)
-
-                                var appIndex = 0
-                                for (app in apps) {
-                                    if (!coroutineContext.isActive || consumerDone) break
-
-                                    val pkgName = app.packageName.value
-                                    if (pkgName in noDataBackup) {
-                                        Log.d(TAG, "Producer: skipping data for $pkgName (excluded)")
-                                        appIndex++
-                                        continue
-                                    }
-
-                                    emit("备份数据: $pkgName (${appIndex + 1}/${apps.size})")
-
-                                    // Force-stop app before data backup for consistency
-                                    if (pkgName !in listOf("bin.mt.plus", "com.termux", "bin.mt.plus.canary")) {
-                                        RootShell.exec("am force-stop --user $userId '$pkgName' 2>/dev/null")
-                                    }
-
-                                    // Check data dirs exist
-                                    val dataDir = "/data/data/$pkgName"
-                                    val userDeDir = "/data/user_de/$userId/$pkgName"
-                                    val dirs = mutableListOf<String>()
-
-                                    val dataCheck = RootShell.exec("test -d '${dataDir.shellEscape()}' && echo 1 || echo 0")
-                                    if (dataCheck.output.trim() == "1") dirs.add(dataDir)
-
-                                    val userDeCheck = RootShell.exec("test -d '${userDeDir.shellEscape()}' && echo 1 || echo 0")
-                                    if (userDeCheck.output.trim() == "1") dirs.add(userDeDir)
-
-                                    if (dirs.isEmpty()) {
-                                        Log.d(TAG, "Producer: no data dirs for $pkgName, skipping")
-                                        appIndex++
-                                        continue
-                                    }
-
-                                    // Tar to FIFO with timeout
-                                    val dirArgs = dirs.joinToString(" ") { "'${it.shellEscape()}'" }
-                                    val cmd = "tar -cf - $dirArgs --exclude='cache' --exclude='code_cache' --exclude='lib' --exclude='no_backup' --exclude='.ota' 2>/dev/null >> '${fifo.absolutePath.shellEscape()}'"
-
-                                    try {
-                                        withTimeout(TAR_TIMEOUT_MS) {
-                                            val result = RootShell.exec(cmd)
-                                            if (!result.isSuccess) {
-                                                Log.w(TAG, "Producer: tar failed for $pkgName: ${result.error}")
-                                            }
-                                        }
-                                    } catch (e: kotlinx.coroutines.TimeoutCancellationException) {
-                                        Log.w(TAG, "Producer: tar timeout for $pkgName after ${TAR_TIMEOUT_MS}ms")
-                                        // Consumer may have exited; check and break
-                                        if (consumerDone) break
-                                    }
-
-                                    appIndex++
-                                }
-
-                                Log.i(TAG, "Producer: completed, $appIndex apps streamed")
-                            } catch (e: CancellationException) {
-                                throw e // 必须重新抛出，coroutineScope 才能传播取消
-                            } catch (e: Exception) {
-                                LogUtil.e(TAG, "Producer: exception: ${e.message}")
-                            }
-                        }
-
-                    // Wait for both to complete (producer finishes first, then consumer)
-                    producerJob.join()
-                    consumerJob.join()
+                if (result.exitCode != 0) {
+                    Log.e(TAG, "restic backup failed: exit=${result.exitCode} stderr=${result.stderr.take(500)}")
+                    return@withContext err(AppError.Restic("restic 备份失败", result.exitCode, result.stderr))
                 }
 
-                // ── 6. Result ──────────────────────────────
-                backupSummary?.let { summary ->
-                    Log.i(TAG, "backup: completed, snapshot=${summary.snapshotId}")
-                    AppResult.Success(summary)
-                } ?: err(backupError ?: AppError.Restic("流式备份未产生结果", -1, ""))
+                // ── 6. Parse summary ─────────────────────
+                val summaryLine =
+                    result.stdout.lines().lastOrNull { line ->
+                        line.contains("\"message_type\"") && line.contains("\"summary\"")
+                    }
+                val summary =
+                    if (summaryLine != null) {
+                        try {
+                            resticJson.decodeFromString<ResticWrapper.BackupSummary>(summaryLine)
+                        } catch (e: Exception) {
+                            Log.w(TAG, "Failed to parse summary: ${e.message}")
+                            null
+                        }
+                    } else {
+                        null
+                    }
+
+                if (summary == null) {
+                    return@withContext err(AppError.Parse("restic 未返回摘要信息", ""))
+                }
+
+                // ── 7. Verify snapshot ───────────────────
+                val snapshotId = summary.snapshotId
+                emit("正在验证快照 ${snapshotId.take(8)}…")
+                try {
+                    restic.executor.withBackend(
+                        repoPath = repoPath,
+                        password = password,
+                        cacheDir = restic.cacheDir,
+                        backend = backend,
+                        backendUrl = backendUrl,
+                        backendUser = backendUser,
+                        backendPass = backendPass,
+                        backendShare = backendShare,
+                        backendDomain = restic.backendDomain,
+                        runner = restic.runner,
+                        envResolver = restic.envResolver,
+                        bridgeRunner = restic.bridgeRunner,
+                    ) { env ->
+                        val verifyResult = restic.runner.runRestic(env, "snapshots", "--json")
+                        if (verifyResult.exitCode == 0 && verifyResult.stdout.contains(snapshotId)) {
+                            Log.i(TAG, "backup: snapshot $snapshotId verified")
+                        } else {
+                            Log.w(TAG, "backup: snapshot $snapshotId NOT found in snapshots list!")
+                        }
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "backup: snapshot verification failed: ${e.message}")
+                }
+
+                AppResult.Success(summary)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                LogUtil.e(TAG, "backup failed: ${e.message}")
+                err(AppError.Restic("流式备份异常: ${e.message}", -1, ""))
             } finally {
-                // ── 7. Cleanup ─────────────────────────────
-                RootShell.exec("rm -f '${fifo.absolutePath.shellEscape()}'")
-                Log.d(TAG, "FIFO cleaned up")
+                // ── 8. Cleanup ───────────────────────────
+                emit("正在清理临时文件…")
+                RootShell.exec("rm -rf '${workDir.absolutePath.shellEscape()}'")
+                Log.i(TAG, "Work dir cleaned up")
             }
         }
 }

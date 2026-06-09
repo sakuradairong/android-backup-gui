@@ -209,8 +209,9 @@ object BackupOperation {
                                 var obbSize: Long? = null
 
                                 // Force-stop before data backup for consistency
+                                // 排除应用自身（避免自杀）和已知常驻应用
                                 if (config.backupMode == 1 && !skipData) {
-                                    if (pkgName !in listOf("bin.mt.plus", "com.termux", "bin.mt.plus.canary")) {
+                                    if (pkgName !in listOf("bin.mt.plus", "com.termux", "bin.mt.plus.canary", context.packageName)) {
                                         RootShell.exec("am force-stop --user $userId '$pkgName' 2>/dev/null")
                                     }
                                 }
@@ -326,10 +327,16 @@ object BackupOperation {
         }
 
     /**
-     * Backup user data (/data/data + /data/user_de).
-     * @return Pair(userSize, userDeSize) or null for the failing one.
+     * 备份单个应用的用户数据（/data/data + /data/user_de）。
+     *
+     * 使用 tar + zstd/gzip 创建应用数据存档，支持 3 种回退策略：
+     * 1. 通过 nsenter 直接 tar
+     * 2. 直接 tar 路径（跳过 test -d）
+     * 3. 通过 /proc/1/root 全局挂载命名空间
+     *
+     * @return Pair(userSize, userDeSize)，任一失败时为 null
      */
-    private suspend fun backupUserData(
+    internal suspend fun backupUserData(
         context: android.content.Context,
         packageName: String,
         appDir: File,
@@ -434,8 +441,10 @@ object BackupOperation {
         return archiveRaw.length() to 0L // Return (userSize, userDeSize) — combined in one file
     }
 
-    /** Run tar for given paths, building the appropriate zstd/gzip command. */
-    private suspend fun runTar(
+    /**
+     * 运行 tar 命令，自动选择 zstd 或 gzip 压缩。
+     */
+    internal suspend fun runTar(
         dirs: List<String>,
         outputFile: String,
         isZstd: Boolean,
@@ -461,10 +470,10 @@ object BackupOperation {
     }
 
     /**
-     * Backup OBB data.
-     * @return obbSize or null on failure.
+     * 备份单个应用的 OBB 数据文件夹。
+     * @return obbSize 或 null（失败时）
      */
-    private suspend fun backupObb(
+    internal suspend fun backupObb(
         packageName: String,
         appDir: File,
         compression: String,
@@ -513,11 +522,10 @@ object BackupOperation {
     }
 
     /**
-     * Backup external app data directory (/data/media/<userId>/Android/data/<pkg>).
-     * This corresponds to /storage/emulated/0/Android/data/<pkg> in the user's profile.
-     * @return dataSize or null if directory doesn't exist.
+     * 备份单个应用的外部数据目录（/data/media/<userId>/Android/data/<pkg>）。
+     * @return dataSize 或 null（目录不存在或失败）
      */
-    private suspend fun backupExternalData(
+    internal suspend fun backupExternalData(
         packageName: String,
         appDir: File,
         userId: String,
@@ -577,7 +585,11 @@ object BackupOperation {
         return BackupOperation.backupFileSize(archiveFile)
     }
 
-    private suspend fun backupSsaid(
+    /**
+     * 备份单个应用的 SSAID（设置安全标识符）。
+     * 从 settings_ssaid.xml 中提取。
+     */
+    internal suspend fun backupSsaid(
         packageName: String,
         appDir: File,
         userId: String,
@@ -605,7 +617,10 @@ object BackupOperation {
         }
     }
 
-    private suspend fun backupPermissions(
+    /**
+     * 备份单个应用的运行时权限状态。
+     */
+    internal suspend fun backupPermissions(
         packageName: String,
         appDir: File,
     ) {

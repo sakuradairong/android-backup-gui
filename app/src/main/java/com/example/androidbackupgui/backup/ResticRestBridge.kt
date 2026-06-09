@@ -11,6 +11,7 @@ import kotlinx.serialization.json.Json
 import java.io.ByteArrayInputStream
 import java.io.File
 import java.util.UUID
+
 /**
  * NanoHTTPD-based REST bridge implementing the restic REST backend API.
  *
@@ -28,9 +29,8 @@ class ResticRestBridge(
     private val remoteBase: String,
     private val repoPath: String,
     private val cacheDir: File,
-    private val authToken: String = ""
+    private val authToken: String = "",
 ) : NanoHTTPD("127.0.0.1", 0) {
-
     private val TAG = "ResticRestBridge"
 
     init {
@@ -46,15 +46,19 @@ class ResticRestBridge(
 
         // Auth check (defense-in-depth — bridge is already bound to 127.0.0.1)
         if (authToken.isNotEmpty()) {
-            val expected = "Basic " + Base64.encodeToString(
-                "$authToken:$authToken".toByteArray(Charsets.UTF_8),
-                Base64.NO_WRAP
-            )
+            val expected =
+                "Basic " +
+                    Base64.encodeToString(
+                        "$authToken:$authToken".toByteArray(Charsets.UTF_8),
+                        Base64.NO_WRAP,
+                    )
             val auth = headers["authorization"]
             if (auth != expected) {
                 Log.w(TAG, "auth failed (got=${auth?.take(20)}..., expected=Basic $authToken)")
                 return newFixedLengthResponse(
-                    Response.Status.UNAUTHORIZED, "text/plain", "Unauthorized"
+                    Response.Status.UNAUTHORIZED,
+                    "text/plain",
+                    "Unauthorized",
                 )
             }
         }
@@ -68,7 +72,7 @@ class ResticRestBridge(
             newFixedLengthResponse(
                 Response.Status.INTERNAL_ERROR,
                 "text/plain",
-                e.message ?: "Internal error"
+                e.message ?: "Internal error",
             )
         }
     }
@@ -78,28 +82,38 @@ class ResticRestBridge(
         uri: String,
         headers: Map<String, String>,
         params: Map<String, String>,
-        session: IHTTPSession
+        session: IHTTPSession,
     ): Response {
         val path = uri.trimEnd('/')
         // Strip the repoPath prefix (/backup/...) from the URI so that type/name
         // parsing sees only the restic REST API segment.
         val stripPrefix = if (repoPath.isNotEmpty()) "/${repoPath.trim('/')}" else ""
-        val strippedPath = if (stripPrefix.isNotEmpty() && path.startsWith(stripPrefix)) {
-            path.removePrefix(stripPrefix).ifEmpty { "/" }
-        } else {
-            path
-        }
+        val strippedPath =
+            if (stripPrefix.isNotEmpty() && path.startsWith(stripPrefix)) {
+                path.removePrefix(stripPrefix).ifEmpty { "/" }
+            } else {
+                path
+            }
 
         // POST {path}?create=true -> mkdirs
         if (method == NanoHTTPD.Method.POST && params["create"] == "true") {
             return runBlocking {
                 when (transport.mkdirs(remoteBase)) {
-                    is AppResult.Success -> newFixedLengthResponse(
-                        Response.Status.OK, "text/plain", ""
-                    )
-                    is AppResult.Failure -> newFixedLengthResponse(
-                        Response.Status.INTERNAL_ERROR, "text/plain", "mkdirs failed"
-                    )
+                    is AppResult.Success -> {
+                        newFixedLengthResponse(
+                            Response.Status.OK,
+                            "text/plain",
+                            "",
+                        )
+                    }
+
+                    is AppResult.Failure -> {
+                        newFixedLengthResponse(
+                            Response.Status.INTERNAL_ERROR,
+                            "text/plain",
+                            "mkdirs failed",
+                        )
+                    }
                 }
             }
         }
@@ -138,11 +152,15 @@ class ResticRestBridge(
     }
 
     // -- Config endpoints -------------------------------------------
+
     /**
      * Stream body from session input to a temp file to avoid OOM on large blobs.
      * Returns the temp file (caller must delete).
      */
-    private fun streamBodyToFile(session: IHTTPSession, tmpDir: File): Result<File> {
+    private fun streamBodyToFile(
+        session: IHTTPSession,
+        tmpDir: File,
+    ): Result<File> {
         val started = System.currentTimeMillis()
         return try {
             val tmpFile = File(tmpDir, "restic_blob_${UUID.randomUUID()}")
@@ -162,7 +180,10 @@ class ResticRestBridge(
                         remaining -= n
                     }
                     if (remaining > 0) {
-                        Log.w(TAG, "streamBodyToFile: body truncated, expected $contentLength bytes but got EOF after ${contentLength - remaining}")
+                        Log.w(
+                            TAG,
+                            "streamBodyToFile: body truncated, expected $contentLength bytes but got EOF after ${contentLength - remaining}",
+                        )
                     }
                     Unit
                 } else {
@@ -184,87 +205,147 @@ class ResticRestBridge(
     private fun handleConfig(
         method: NanoHTTPD.Method,
         headers: Map<String, String>,
-        session: IHTTPSession
-    ): Response = runBlocking {
-        val remotePath = "$remoteBase/config"
-        when (method) {
-            NanoHTTPD.Method.HEAD -> {
-                when (val exists = transport.exists(remotePath)) {
-                    is AppResult.Success -> {
-                        if (exists.data) {
-                            val sizeResult = transport.fileSize(remotePath)
-                            val fileSize = if (sizeResult is AppResult.Success) sizeResult.data else 0L
-                            newFixedLengthResponse(
-                                Response.Status.OK, "application/octet-stream",
-                                ByteArrayInputStream(ByteArray(0)), fileSize
-                            )
-                        } else {
-                            newFixedLengthResponse(Response.Status.NOT_FOUND, "text/plain", "")
-                        }
-                    }
-                    is AppResult.Failure -> newFixedLengthResponse(
-                        Response.Status.NOT_FOUND, "text/plain", ""
-                    )
-                }
-            }
-            NanoHTTPD.Method.GET -> {
-                val tempFile = File(cacheDir, "restic_blob_${UUID.randomUUID()}")
-                try {
-                    when (transport.download(remotePath, tempFile.absolutePath)) {
+        session: IHTTPSession,
+    ): Response =
+        runBlocking {
+            val remotePath = "$remoteBase/config"
+            when (method) {
+                NanoHTTPD.Method.HEAD -> {
+                    var configExists = false
+                    var configSize = 0L
+                    // 先试 exists，失败时回退到 download 确认（某些 SMB 实现 exists 可能假阴性）
+                    when (val exists = transport.exists(remotePath)) {
                         is AppResult.Success -> {
-                            val data = tempFile.readBytes()
-                            newFixedLengthResponse(Response.Status.OK, "application/octet-stream", data.inputStream(), data.size.toLong())
+                            if (exists.data) {
+                                configExists = true
+                                val sizeResult = transport.fileSize(remotePath)
+                                if (sizeResult is AppResult.Success) configSize = sizeResult.data
+                            }
                         }
-                        is AppResult.Failure -> newFixedLengthResponse(
-                            Response.Status.NOT_FOUND, "text/plain", ""
+
+                        is AppResult.Failure -> { /* fall through to download check */ }
+                    }
+                    if (!configExists) {
+                        // Fallback: try downloading the config file to confirm existence
+                        val tmp = File(cacheDir, "restic_blob_${UUID.randomUUID()}")
+                        try {
+                            when (transport.download(remotePath, tmp.absolutePath)) {
+                                is AppResult.Success -> {
+                                    configExists = true
+                                    configSize = tmp.length()
+                                }
+
+                                is AppResult.Failure -> { /* truly not found */ }
+                            }
+                        } finally {
+                            tmp.delete()
+                        }
+                    }
+                    if (configExists) {
+                        newFixedLengthResponse(
+                            Response.Status.OK,
+                            "application/octet-stream",
+                            ByteArrayInputStream(ByteArray(0)),
+                            configSize,
+                        )
+                    } else {
+                        newFixedLengthResponse(Response.Status.NOT_FOUND, "text/plain", "")
+                    }
+                }
+
+                NanoHTTPD.Method.GET -> {
+                    val tempFile = File(cacheDir, "restic_blob_${UUID.randomUUID()}")
+                    try {
+                        when (transport.download(remotePath, tempFile.absolutePath)) {
+                            is AppResult.Success -> {
+                                val data = tempFile.readBytes()
+                                newFixedLengthResponse(
+                                    Response.Status.OK,
+                                    "application/octet-stream",
+                                    data.inputStream(),
+                                    data.size.toLong(),
+                                )
+                            }
+
+                            is AppResult.Failure -> {
+                                newFixedLengthResponse(
+                                    Response.Status.NOT_FOUND,
+                                    "text/plain",
+                                    "",
+                                )
+                            }
+                        }
+                    } finally {
+                        tempFile.delete()
+                    }
+                }
+
+                NanoHTTPD.Method.POST -> {
+                    val tmpResult = streamBodyToFile(session, cacheDir)
+                    if (tmpResult.isFailure) {
+                        return@runBlocking newFixedLengthResponse(
+                            Response.Status.INTERNAL_ERROR,
+                            "text/plain",
+                            "body read failed: ${tmpResult.exceptionOrNull()?.message ?: "unknown"}",
                         )
                     }
-                } finally {
-                    tempFile.delete()
-                }
-            }
-            NanoHTTPD.Method.POST -> {
-                val tmpResult = streamBodyToFile(session, cacheDir)
-                if (tmpResult.isFailure) return@runBlocking newFixedLengthResponse(
-                    Response.Status.INTERNAL_ERROR, "text/plain",
-                    "body read failed: ${tmpResult.exceptionOrNull()?.message ?: "unknown"}"
-                )
-                val tmpFile = tmpResult.getOrThrow()
-                try {
-                    when (transport.upload(tmpFile.absolutePath, remotePath)) {
-                        is AppResult.Success -> newFixedLengthResponse(
-                            Response.Status.OK, "text/plain", ""
-                        )
-                        is AppResult.Failure -> newFixedLengthResponse(
-                            Response.Status.INTERNAL_ERROR, "text/plain", "upload failed"
-                        )
+                    val tmpFile = tmpResult.getOrThrow()
+                    try {
+                        when (transport.upload(tmpFile.absolutePath, remotePath)) {
+                            is AppResult.Success -> {
+                                newFixedLengthResponse(
+                                    Response.Status.OK,
+                                    "text/plain",
+                                    "",
+                                )
+                            }
+
+                            is AppResult.Failure -> {
+                                newFixedLengthResponse(
+                                    Response.Status.INTERNAL_ERROR,
+                                    "text/plain",
+                                    "upload failed",
+                                )
+                            }
+                        }
+                    } finally {
+                        tmpFile.delete()
                     }
-                } finally {
-                    tmpFile.delete()
+                }
+
+                else -> {
+                    newFixedLengthResponse(Response.Status.METHOD_NOT_ALLOWED, "text/plain", "")
                 }
             }
-            else -> newFixedLengthResponse(Response.Status.METHOD_NOT_ALLOWED, "text/plain", "")
         }
-    }
 
     // -- Blob listing -----------------------------------------------
 
-    private fun handleListBlobs(type: String): Response = runBlocking {
-        val remoteDir = "$remoteBase/$type"
-        when (val result = transport.listFiles(remoteDir)) {
-            is AppResult.Success -> {
-                val items = result.data
-                val json = buildV2Json(items)
-                newFixedLengthResponse(Response.Status.OK, "application/vnd.x.restic.rest.v2", json)
+    private fun handleListBlobs(type: String): Response =
+        runBlocking {
+            val remoteDir = "$remoteBase/$type"
+            when (val result = transport.listFiles(remoteDir)) {
+                is AppResult.Success -> {
+                    val items = result.data
+                    val json = buildV2Json(items)
+                    newFixedLengthResponse(Response.Status.OK, "application/vnd.x.restic.rest.v2", json)
+                }
+
+                is AppResult.Failure -> {
+                    newFixedLengthResponse(
+                        Response.Status.NOT_FOUND,
+                        "text/plain",
+                        "",
+                    )
+                }
             }
-            is AppResult.Failure -> newFixedLengthResponse(
-                Response.Status.NOT_FOUND, "text/plain", ""
-            )
         }
-    }
 
     @Serializable
-    data class BlobEntry(val name: String, val size: Long)
+    data class BlobEntry(
+        val name: String,
+        val size: Long,
+    )
 
     private fun buildV2Json(items: List<RemoteTransport.RemoteFileInfo>): String {
         val blobs = items.filter { !it.isDirectory }.map { BlobEntry(it.name, it.size) }
@@ -273,130 +354,181 @@ class ResticRestBridge(
 
     // -- Blob HEAD (exists + size) ----------------------------------
 
-    private fun handleHeadBlob(type: String, name: String): Response = runBlocking {
-        val remotePath = "$remoteBase/$type/$name"
-        when (val result = transport.exists(remotePath)) {
-            is AppResult.Success -> {
-                if (result.data) {
-                    newFixedLengthResponse(Response.Status.OK, "application/octet-stream", "")
-                } else {
-                    newFixedLengthResponse(Response.Status.NOT_FOUND, "text/plain", "")
+    private fun handleHeadBlob(
+        type: String,
+        name: String,
+    ): Response =
+        runBlocking {
+            val remotePath = "$remoteBase/$type/$name"
+            when (val result = transport.exists(remotePath)) {
+                is AppResult.Success -> {
+                    if (result.data) {
+                        newFixedLengthResponse(Response.Status.OK, "application/octet-stream", "")
+                    } else {
+                        newFixedLengthResponse(Response.Status.NOT_FOUND, "text/plain", "")
+                    }
+                }
+
+                is AppResult.Failure -> {
+                    newFixedLengthResponse(
+                        Response.Status.NOT_FOUND,
+                        "text/plain",
+                        "",
+                    )
                 }
             }
-            is AppResult.Failure -> newFixedLengthResponse(
-                Response.Status.NOT_FOUND, "text/plain", ""
-            )
         }
-    }
 
     // -- Blob GET (download with optional Range) --------------------
 
     private fun handleGetBlob(
         type: String,
         name: String,
-        headers: Map<String, String>
-    ): Response = runBlocking {
-        val remotePath = "$remoteBase/$type/$name"
-        // Use RandomAccessFile to avoid loading entire blob into memory
-        val tempFile = File(cacheDir, "restic_blob_${UUID.randomUUID()}")
-        try {
-            when (transport.download(remotePath, tempFile.absolutePath)) {
-                is AppResult.Success -> {
-                    val rangeHeader = headers["range"]?.lowercase()
+        headers: Map<String, String>,
+    ): Response =
+        runBlocking {
+            val remotePath = "$remoteBase/$type/$name"
+            // Use RandomAccessFile to avoid loading entire blob into memory
+            val tempFile = File(cacheDir, "restic_blob_${UUID.randomUUID()}")
+            try {
+                when (transport.download(remotePath, tempFile.absolutePath)) {
+                    is AppResult.Success -> {
+                        val rangeHeader = headers["range"]?.lowercase()
 
-                    if (rangeHeader != null && rangeHeader.startsWith("bytes=")) {
-                        // Range request — only works with known file size
-                        val fileLen = tempFile.length()
-                        val range = rangeHeader.removePrefix("bytes=").trim()
-                        val dashIdx = range.indexOf('-')
-                        val start = range.substring(0, if (dashIdx >= 0) dashIdx else range.length)
-                            .toLongOrNull() ?: 0L
-                        val end = if (dashIdx >= 0 && dashIdx + 1 < range.length) {
-                            range.substring(dashIdx + 1).toLongOrNull() ?: (fileLen - 1)
-                        } else {
-                            fileLen - 1
+                        if (rangeHeader != null && rangeHeader.startsWith("bytes=")) {
+                            // Range request — only works with known file size
+                            val fileLen = tempFile.length()
+                            val range = rangeHeader.removePrefix("bytes=").trim()
+                            val dashIdx = range.indexOf('-')
+                            val start =
+                                range
+                                    .substring(0, if (dashIdx >= 0) dashIdx else range.length)
+                                    .toLongOrNull() ?: 0L
+                            val end =
+                                if (dashIdx >= 0 && dashIdx + 1 < range.length) {
+                                    range.substring(dashIdx + 1).toLongOrNull() ?: (fileLen - 1)
+                                } else {
+                                    fileLen - 1
+                                }
+
+                            val actualEnd = minOf(end, fileLen - 1).coerceAtLeast(0)
+                            val actualStart = minOf(start, actualEnd).coerceAtLeast(0)
+                            val chunkSize = (actualEnd - actualStart + 1).toInt()
+                            val chunk = ByteArray(chunkSize)
+                            try {
+                                val raf = java.io.RandomAccessFile(tempFile, "r")
+                                raf.use {
+                                    it.seek(actualStart)
+                                    it.readFully(chunk)
+                                }
+                            } catch (_: Exception) {
+                                return@runBlocking newFixedLengthResponse(
+                                    Response.Status.INTERNAL_ERROR,
+                                    "text/plain",
+                                    "range read failed",
+                                )
+                            }
+
+                            val response =
+                                newChunkedResponse(
+                                    Response.Status.PARTIAL_CONTENT,
+                                    "application/octet-stream",
+                                    chunk.inputStream(),
+                                )
+                            response.addHeader("Content-Range", "bytes $actualStart-$actualEnd/$fileLen")
+                            response.addHeader("Content-Length", chunkSize.toString())
+                            return@runBlocking response
                         }
-
-                        val actualEnd = minOf(end, fileLen - 1).coerceAtLeast(0)
-                        val actualStart = minOf(start, actualEnd).coerceAtLeast(0)
-                        val chunkSize = (actualEnd - actualStart + 1).toInt()
-                        val chunk = ByteArray(chunkSize)
-                        try {
-                            val raf = java.io.RandomAccessFile(tempFile, "r")
-                            raf.use { it.seek(actualStart); it.readFully(chunk) }
-                        } catch (_: Exception) {
-                            return@runBlocking newFixedLengthResponse(
-                                Response.Status.INTERNAL_ERROR, "text/plain", "range read failed"
+                        // Full file — read into memory (blobs are typically small)
+                        val data = tempFile.readBytes()
+                        val response =
+                            newChunkedResponse(
+                                Response.Status.OK,
+                                "application/octet-stream",
+                                data.inputStream(),
                             )
-                        }
-
-                        val response = newChunkedResponse(
-                            Response.Status.PARTIAL_CONTENT,
-                            "application/octet-stream",
-                            chunk.inputStream()
-                        )
-                        response.addHeader("Content-Range", "bytes $actualStart-$actualEnd/$fileLen")
-                        response.addHeader("Content-Length", chunkSize.toString())
-                        return@runBlocking response
+                        response.addHeader("Content-Length", data.size.toString())
+                        response
                     }
-                    // Full file — read into memory (blobs are typically small)
-                    val data = tempFile.readBytes()
-                    val response = newChunkedResponse(
-                        Response.Status.OK,
-                        "application/octet-stream",
-                        data.inputStream()
-                    )
-                    response.addHeader("Content-Length", data.size.toString())
-                    response
+
+                    is AppResult.Failure -> {
+                        newFixedLengthResponse(
+                            Response.Status.NOT_FOUND,
+                            "text/plain",
+                            "",
+                        )
+                    }
                 }
-                is AppResult.Failure -> newFixedLengthResponse(
-                    Response.Status.NOT_FOUND, "text/plain", ""
-                )
+            } finally {
+                tempFile.delete()
             }
-        } finally {
-            tempFile.delete()
         }
-    }
 
     // -- Blob POST (upload) -----------------------------------------
 
     private fun handlePostBlob(
         type: String,
         name: String,
-        session: IHTTPSession
-    ): Response = runBlocking {
-        val remotePath = "$remoteBase/$type/$name"
-        val tmpResult = streamBodyToFile(session, cacheDir)
-        if (tmpResult.isFailure) return@runBlocking newFixedLengthResponse(
-            Response.Status.INTERNAL_ERROR, "text/plain",
-            "body read failed: ${tmpResult.exceptionOrNull()?.message ?: "unknown"}"
-        )
-        val tmpFile = tmpResult.getOrThrow()
-        try {
-            when (transport.upload(tmpFile.absolutePath, remotePath)) {
-                is AppResult.Success -> newFixedLengthResponse(
-                    Response.Status.OK, "text/plain", ""
-                )
-                is AppResult.Failure -> newFixedLengthResponse(
-                    Response.Status.INTERNAL_ERROR, "text/plain", "upload failed"
+        session: IHTTPSession,
+    ): Response =
+        runBlocking {
+            val remotePath = "$remoteBase/$type/$name"
+            val tmpResult = streamBodyToFile(session, cacheDir)
+            if (tmpResult.isFailure) {
+                return@runBlocking newFixedLengthResponse(
+                    Response.Status.INTERNAL_ERROR,
+                    "text/plain",
+                    "body read failed: ${tmpResult.exceptionOrNull()?.message ?: "unknown"}",
                 )
             }
-        } finally {
-            tmpFile.delete()
+            val tmpFile = tmpResult.getOrThrow()
+            try {
+                when (transport.upload(tmpFile.absolutePath, remotePath)) {
+                    is AppResult.Success -> {
+                        newFixedLengthResponse(
+                            Response.Status.OK,
+                            "text/plain",
+                            "",
+                        )
+                    }
+
+                    is AppResult.Failure -> {
+                        newFixedLengthResponse(
+                            Response.Status.INTERNAL_ERROR,
+                            "text/plain",
+                            "upload failed",
+                        )
+                    }
+                }
+            } finally {
+                tmpFile.delete()
+            }
         }
-    }
 
     // -- Blob DELETE ------------------------------------------------
 
-    private fun handleDeleteBlob(type: String, name: String): Response = runBlocking {
-        val remotePath = "$remoteBase/$type/$name"
-        when (transport.delete(remotePath)) {
-            is AppResult.Success -> newFixedLengthResponse(
-                Response.Status.OK, "text/plain", ""
-            )
-            is AppResult.Failure -> newFixedLengthResponse(
-                Response.Status.INTERNAL_ERROR, "text/plain", "delete failed"
-            )
+    private fun handleDeleteBlob(
+        type: String,
+        name: String,
+    ): Response =
+        runBlocking {
+            val remotePath = "$remoteBase/$type/$name"
+            when (transport.delete(remotePath)) {
+                is AppResult.Success -> {
+                    newFixedLengthResponse(
+                        Response.Status.OK,
+                        "text/plain",
+                        "",
+                    )
+                }
+
+                is AppResult.Failure -> {
+                    newFixedLengthResponse(
+                        Response.Status.INTERNAL_ERROR,
+                        "text/plain",
+                        "delete failed",
+                    )
+                }
+            }
         }
-    }
 }
