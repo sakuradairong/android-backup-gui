@@ -200,6 +200,9 @@ class ConfigViewModel(
      * Save config to file on IO and update status message.
      * The caller passes the current form values as a [BackupConfig] copy.
      * 密码单独通过 [PasswordManager] 安全存储，不入配置文件。
+     *
+     * 当 [resticPassword] / [backendPass] 为 null 时，自动从 [formConfig] 提取密码
+     * 并保存到 [PasswordManager]，确保 ConfigScreen 的调用也能正确持久化密码。
      */
     fun save(
         formConfig: BackupConfig,
@@ -208,11 +211,17 @@ class ConfigViewModel(
     ) {
         viewModelScope.launch {
             // 保存密码到加密存储
-            if (resticPassword != null && resticPassword.isNotEmpty()) {
-                PasswordManager.setResticPassword(resticPassword)
+            val effectiveResticPassword =
+                resticPassword
+                    ?: formConfig.resticPassword.takeUnless { it.isNullOrEmpty() || it == "stored-in-keystore" }
+            val effectiveBackendPass =
+                backendPass
+                    ?: formConfig.resticBackendPass.takeUnless { it.isNullOrEmpty() || it == "stored-in-keystore" }
+            if (effectiveResticPassword != null && effectiveResticPassword.isNotEmpty()) {
+                PasswordManager.setResticPassword(effectiveResticPassword)
             }
-            if (backendPass != null && backendPass.isNotEmpty()) {
-                PasswordManager.setBackendPass(backendPass)
+            if (effectiveBackendPass != null && effectiveBackendPass.isNotEmpty()) {
+                PasswordManager.setBackendPass(effectiveBackendPass)
             }
             withContext(Dispatchers.IO) {
                 BackupConfig.toFile(formConfig, configFile)
@@ -304,10 +313,20 @@ class ConfigViewModel(
                         // 需要从 PasswordManager 恢复真实密码，避免被覆盖
                         val realResticPw = PasswordManager.getResticPassword()
                         val realBackendPw = PasswordManager.getBackendPass()
+                        // 如果 PasswordManager 和配置文件中都没有真实密码（例如跨设备导入），
+                        // 置空密码字段，提示用户重新输入
+                        val restoredResticPw =
+                            realResticPw
+                                ?: parsed.resticPassword.takeUnless { it == "stored-in-keystore" }
+                                ?: ""
+                        val restoredBackendPw =
+                            realBackendPw
+                                ?: parsed.resticBackendPass.takeUnless { it == "stored-in-keystore" }
+                                ?: ""
                         val restoredConfig =
                             parsed.copy(
-                                resticPassword = realResticPw ?: parsed.resticPassword,
-                                resticBackendPass = realBackendPw ?: parsed.resticBackendPass,
+                                resticPassword = restoredResticPw,
+                                resticBackendPass = restoredBackendPw,
                             )
                         _uiState.update { it.copy(config = restoredConfig) }
                         Log.i(TAG, "importConfig: loaded config from SAF")

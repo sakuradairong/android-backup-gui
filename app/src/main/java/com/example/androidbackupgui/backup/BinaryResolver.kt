@@ -12,24 +12,29 @@ import java.io.File
 object BinaryResolver {
     private const val TAG = "BinaryResolver"
 
-    private var tarPath: String? = null
-    private var zstdPath: String? = null
+    @Volatile
+    private var _tarPath: String? = null
 
-    fun tarPath(context: Context): String? = cacheOrResolve(context, "libtar_bin.so", "tar_bin", ::tarPath) { tarPath = it }
-    fun zstdPath(context: Context): String? = cacheOrResolve(context, "libzstd_bin.so", "zstd_bin", ::zstdPath) { zstdPath = it }
+    @Volatile
+    private var _zstdPath: String? = null
 
-    private fun cacheOrResolve(
-        context: Context, libName: String, destName: String,
-        cache: () -> String?, setCache: (String?) -> Unit
-    ): String? {
-        val cached = cache()
-        if (cached != null) return cached
-        val resolved = resolve(context, libName, destName)
-        setCache(resolved)
-        return resolved
+    /** Resolve and cache the path to the bundled tar binary. */
+    fun tarPath(context: Context): String? {
+        _tarPath?.let { return it }
+        return resolve(context, "libtar_bin.so", "tar_bin").also { _tarPath = it }
     }
 
-    private fun resolve(context: Context, libName: String, destName: String): String? {
+    /** Resolve and cache the path to the bundled zstd binary. */
+    fun zstdPath(context: Context): String? {
+        _zstdPath?.let { return it }
+        return resolve(context, "libzstd_bin.so", "zstd_bin").also { _zstdPath = it }
+    }
+
+    private fun resolve(
+        context: Context,
+        libName: String,
+        destName: String,
+    ): String? {
         val nativeLibDir = context.applicationInfo.nativeLibraryDir
         val source = File(nativeLibDir, libName)
         if (!source.isFile) {

@@ -70,11 +70,12 @@ fun ConfigScreen(
         backupUserId = config.backupUserId
         resticEnabled = config.resticEnabled == 1
         resticRepo = config.resticRepo
-        resticPassword = config.resticPassword
+        // 避免密码占位符显示在 UI 中
+        resticPassword = config.resticPassword.takeIf { it != "stored-in-keystore" } ?: ""
         resticBackend = config.resticBackend
         resticBackendUrl = config.resticBackendUrl
         resticBackendUser = config.resticBackendUser
-        resticBackendPass = config.resticBackendPass
+        resticBackendPass = config.resticBackendPass.takeIf { it != "stored-in-keystore" } ?: ""
         resticBackendShare = config.resticBackendShare
         resticBackendDomain = config.resticBackendDomain
         streamingEnabled = config.useStreaming == 1
