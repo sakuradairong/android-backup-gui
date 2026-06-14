@@ -2,6 +2,10 @@ package com.example.androidbackupgui.backup.scan
 
 import android.content.Context
 import android.content.pm.PackageManager
+import com.example.androidbackupgui.backup.AppInfo
+import com.example.androidbackupgui.backup.BackupConfig
+import com.example.androidbackupgui.backup.PackageName
+import com.example.androidbackupgui.backup.UserId
 import com.example.androidbackupgui.root.RootShell
 import com.example.androidbackupgui.root.shellEscape
 import kotlinx.coroutines.Dispatchers
@@ -9,19 +13,8 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 
 @Serializable
-data class AppInfo(
-    val packageName: PackageName,
-    val label: String = "",
-    val isSystem: Boolean = false,
-    val apkPaths: List<String> = emptyList(),
-    val hasObb: Boolean = false,
-    val isRunning: Boolean = false,
-    val backupSize: Long = 0,  // estimated from last backup
-    // Enhanced fields (multi-user, keystore, icon)
-    val userId: UserId = UserId(0),
-    val hasKeystore: Boolean = false,
-    val iconPath: String? = null,
-)
+// AppInfo data class moved to backup/AppInfo.kt so it's accessible from
+// the root package (used by BackupScreen, BackupViewModel, ResticStreamBackup, etc.)
 
 object AppScanner {
 

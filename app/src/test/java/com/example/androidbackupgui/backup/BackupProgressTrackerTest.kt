@@ -26,7 +26,7 @@ class BackupProgressTrackerTest : FunSpec({
     test("第一个应用完成后 ETA 大于 0") {
         val tracker = BackupProgressTracker(totalApps = 10)
         tracker.startApp("com.app1")
-        Thread.sleep(50) // 模拟备份耗时
+        Thread.sleep(1500) // 模拟备份耗时，确保 ETA 计算可观测
         tracker.completeApp()
 
         val progress = tracker.getProgress()

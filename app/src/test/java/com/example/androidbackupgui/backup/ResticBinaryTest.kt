@@ -1,5 +1,7 @@
 package com.example.androidbackupgui.backup
 
+import com.example.androidbackupgui.backup.security.ResticBinary
+
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.shouldBe
 

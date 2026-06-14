@@ -1,5 +1,7 @@
 package com.example.androidbackupgui.backup.security
 
+import com.example.androidbackupgui.backup.BackupConfig
+
 /**
  * 统一密码提供者 - 消除重复的密码获取逻辑。
  *
@@ -24,15 +26,25 @@ object CredentialProvider {
      */
     fun resolve(config: BackupConfig): Credentials {
         val resticPassword = PasswordManager.getResticPassword()
-            ?: config.resticPassword.takeIf { it.isNotEmpty() }
+            ?: config.resticPassword.takeIf {
+                // Reject the "stored-in-keystore" placeholder so it never reaches
+                // the restic CLI as the literal repository password. The real
+                // password is held by PasswordManager; this config field is
+                // only a migration artifact.
+                it.isNotEmpty() && it != "stored-in-keystore"
+            }
             ?: ""
 
         val backendPassword = PasswordManager.getBackendPassword()
-            ?: config.resticBackendPass.takeIf { it.isNotEmpty() }
+            ?: config.resticBackendPass.takeIf {
+                it.isNotEmpty() && it != "stored-in-keystore"
+            }
             ?: ""
 
         val backendPass = PasswordManager.getBackendPass()
-            ?: config.resticBackendPass.takeIf { it.isNotEmpty() }
+            ?: config.resticBackendPass.takeIf {
+                it.isNotEmpty() && it != "stored-in-keystore"
+            }
             ?: ""
 
         // 尝试迁移旧版密码到 PasswordManager

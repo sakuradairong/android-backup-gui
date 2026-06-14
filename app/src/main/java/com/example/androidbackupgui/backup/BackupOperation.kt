@@ -1,6 +1,7 @@
 package com.example.androidbackupgui.backup
 
 import android.util.Log
+import com.example.androidbackupgui.backup.AppInfo
 import com.example.androidbackupgui.backup.restic.ResticWrapper.SnapshotAppInfo
 import com.example.androidbackupgui.backup.core.LogUtil
 import com.example.androidbackupgui.backup.restic.ResticWrapper
@@ -257,6 +258,7 @@ object BackupOperation {
         progressTracker: BackupProgressTracker,
         emit: suspend (BackupProgress) -> Unit,
     ) {
+        val pkgName = app.packageName.value
         val appDir = File(backupRoot, pkgName)
         appDir.mkdirs()
 

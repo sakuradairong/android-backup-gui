@@ -17,9 +17,15 @@ class SsaidCache(userId: String) {
     private val ssaidMap: Map<String, String>
 
     init {
-        val result = RootShell.exec(
-            "cat '/data/system/users/${userId.shellEscape()}/settings_ssaid.xml' 2>/dev/null"
-        )
+        // RootShell.exec is suspend; init { } blocks cannot call suspend functions.
+        // Use runBlocking to bridge — this class is only constructed during the
+        // backup's preheat phase, on a background dispatcher, so blocking here
+        // for the duration of one shell exec is acceptable.
+        val result = kotlinx.coroutines.runBlocking {
+            RootShell.exec(
+                "cat '/data/system/users/${userId.shellEscape()}/settings_ssaid.xml' 2>/dev/null"
+            )
+        }
 
         ssaidMap = if (result.isSuccess && result.output.isNotBlank()) {
             parseSsaidXml(result.output)

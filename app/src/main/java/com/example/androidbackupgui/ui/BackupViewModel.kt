@@ -7,7 +7,13 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.androidbackupgui.backup.*
+import com.example.androidbackupgui.backup.core.AppError
 import com.example.androidbackupgui.backup.core.AppResult
+import com.example.androidbackupgui.backup.core.ErrorSuggestionFactory
+import com.example.androidbackupgui.backup.restic.defaultResticWrapper
+import com.example.androidbackupgui.backup.scan.AppScanner
+import com.example.androidbackupgui.backup.security.CredentialProvider
+import com.example.androidbackupgui.backup.security.ResticBinary
 import com.example.androidbackupgui.backup.BackupService.Companion.ACTION_START_BACKUP
 import com.example.androidbackupgui.backup.BackupService.Companion.ACTION_STOP_BACKUP
 import com.example.androidbackupgui.backup.BackupService.Companion.EXTRA_STATUS_TEXT
@@ -257,7 +263,7 @@ class BackupViewModel(
                         else ->
                             AppError.LocalIO("备份异常: ${e.message}", s.config.outputPath, cause = e)
                     }
-                    val errorInfo = com.example.androidbackupgui.backup.ErrorSuggestionFactory.createSuggestion(error, "备份操作")
+                    val errorInfo = com.example.androidbackupgui.backup.core.ErrorSuggestionFactory.createSuggestion(error, "备份操作")
                     val errorMessage = buildString {
                         append(errorInfo.message)
                         if (errorInfo.suggestion.isNotEmpty()) {

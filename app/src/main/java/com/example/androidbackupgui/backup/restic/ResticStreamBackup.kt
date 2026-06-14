@@ -1,6 +1,13 @@
 package com.example.androidbackupgui.backup.restic
 
 import android.util.Log
+import com.example.androidbackupgui.backup.AppInfo
+import com.example.androidbackupgui.backup.BackupOperation
+import com.example.androidbackupgui.backup.core.AppError
+import com.example.androidbackupgui.backup.core.AppResult
+import com.example.androidbackupgui.backup.core.LogUtil
+import com.example.androidbackupgui.backup.core.err
+import com.example.androidbackupgui.backup.scan.AppScanner
 import com.example.androidbackupgui.root.RootShell
 import com.example.androidbackupgui.root.shellEscape
 import kotlinx.coroutines.CancellationException

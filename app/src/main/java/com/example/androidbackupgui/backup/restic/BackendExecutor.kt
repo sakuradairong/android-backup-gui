@@ -1,6 +1,7 @@
 package com.example.androidbackupgui.backup.restic
 
 import java.io.File
+import com.example.androidbackupgui.backup.core.AppResult
 
 /**
  * 后端执行器——消除 [ResticBackup]、[ResticRestore]、[ResticSnapshotOps]、

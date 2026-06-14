@@ -1,5 +1,7 @@
 package com.example.androidbackupgui.backup.restic
 
+import com.example.androidbackupgui.backup.core.AppResult
+import com.example.androidbackupgui.backup.core.err
 import kotlinx.serialization.Serializable
 
 

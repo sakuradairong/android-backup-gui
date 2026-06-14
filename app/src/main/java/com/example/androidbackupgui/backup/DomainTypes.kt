@@ -1,4 +1,4 @@
-package com.example.androidbackupgui.backup.core
+package com.example.androidbackupgui.backup
 
 import kotlinx.serialization.Serializable
 

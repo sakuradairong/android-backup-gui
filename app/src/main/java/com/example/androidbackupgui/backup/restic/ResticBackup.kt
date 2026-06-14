@@ -3,7 +3,7 @@ package com.example.androidbackupgui.backup.restic
 import android.util.Log
 import com.example.androidbackupgui.backup.core.AppError
 import com.example.androidbackupgui.backup.core.AppResult
-import com.example.androidbackupgui.backup.err
+import com.example.androidbackupgui.backup.core.err
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.isActive
