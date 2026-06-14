@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <!--
+      WebDAV 后端支持 HTTP（非加密）传输，用户自行选择。
+      cleartextTrafficPermitted="true" 全局允许 HTTP/FTP 等明文流量。
+      如未来需要更精细控制（例如仅允许特定域名走 HTTP），可在此扩展。
+    -->
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

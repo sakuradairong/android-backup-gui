@@ -12,7 +12,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.example.androidbackupgui.backup.*
-import com.example.androidbackupgui.backup.defaultResticWrapper
+import com.example.androidbackupgui.backup.restic.defaultResticWrapper
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext

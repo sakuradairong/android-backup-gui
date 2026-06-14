@@ -3,13 +3,11 @@ package com.example.androidbackupgui.ui
 import android.app.Application
 import android.content.Context
 import android.content.Intent
-import android.util.Log
-import androidx.compose.runtime.mutableStateOf
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.androidbackupgui.backup.*
-import com.example.androidbackupgui.backup.AppResult
+import com.example.androidbackupgui.backup.core.AppResult
 import com.example.androidbackupgui.backup.BackupService.Companion.ACTION_START_BACKUP
 import com.example.androidbackupgui.backup.BackupService.Companion.ACTION_STOP_BACKUP
 import com.example.androidbackupgui.backup.BackupService.Companion.EXTRA_STATUS_TEXT
@@ -38,6 +36,11 @@ data class BackupUiState(
     val statusText: String = "请先扫描应用",
     val isRunning: Boolean = false,
     val isScanning: Boolean = false,
+    // 进度相关字段
+    val progressPercent: Float = 0f,
+    val etaSeconds: Long = 0,
+    val currentStage: String = "",
+    val currentApp: String = "",
 )
 
 /** 备份操作的一次性事件。 */
@@ -194,6 +197,7 @@ class BackupViewModel(
 
                     // 2. 执行备份
                     val outputDir = File(s.config.outputPath.ifEmpty { context.filesDir.absolutePath })
+                    val backupProgressTracker = com.example.androidbackupgui.backup.BackupProgressTracker(toBackup.size)
                     val backupResult =
                         withContext(Dispatchers.IO) {
                             BackupOperation.backupApps(
@@ -204,9 +208,19 @@ class BackupViewModel(
                                 userId = s.config.backupUserId.toString(),
                                 noDataBackup = s.excludeDataFromBackup,
                                 onProgress = { progress ->
+                                    backupProgressTracker.startApp(progress.packageName)
+                                    backupProgressTracker.updateStage(progress.stage, progress.message)
+                                    if (progress.stage == "done") {
+                                        backupProgressTracker.completeApp()
+                                    }
+                                    val progressInfo = backupProgressTracker.getProgress()
                                     _state.update {
                                         it.copy(
-                                            statusText = "[${progress.current}/${progress.total}] ${progress.packageName}: ${progress.message}",
+                                            statusText = progressInfo.message,
+                                            progressPercent = progressInfo.percent,
+                                            etaSeconds = progressInfo.etaSeconds,
+                                            currentStage = progressInfo.stage,
+                                            currentApp = progressInfo.packageName,
                                         )
                                     }
                                 },
@@ -215,6 +229,10 @@ class BackupViewModel(
                     _state.update {
                         it.copy(
                             statusText = "备份完成！成功: ${backupResult.successCount} 失败: ${backupResult.failCount} 耗时: ${backupResult.elapsedMs / 1000}s",
+                            progressPercent = 100f,
+                            etaSeconds = 0,
+                            currentStage = "完成",
+                            currentApp = "",
                         )
                     }
 
@@ -228,13 +246,25 @@ class BackupViewModel(
                         executeResticBackup(context, toBackup, s, backupResult)
                     }
                 } catch (e: Exception) {
-                    val hint =
-                        when {
-                            e.message?.contains("EPERM", ignoreCase = true) == true -> "写入备份目录被拒绝，请检查输出路径权限"
-                            e.message?.contains("EACCES", ignoreCase = true) == true -> "权限不足，请检查存储权限"
-                            else -> null
+                    // 使用 ErrorSuggestionFactory 生成友好的错误提示
+                    val error = when {
+                        e.message?.contains("EPERM", ignoreCase = true) == true ->
+                            AppError.LocalIO("写入备份目录被拒绝", s.config.outputPath)
+                        e.message?.contains("EACCES", ignoreCase = true) == true ->
+                            AppError.LocalIO("权限不足", s.config.outputPath)
+                        e.message?.contains("timeout", ignoreCase = true) == true ->
+                            AppError.Network("网络超时", cause = e)
+                        else ->
+                            AppError.LocalIO("备份异常: ${e.message}", s.config.outputPath, cause = e)
+                    }
+                    val errorInfo = com.example.androidbackupgui.backup.ErrorSuggestionFactory.createSuggestion(error, "备份操作")
+                    val errorMessage = buildString {
+                        append(errorInfo.message)
+                        if (errorInfo.suggestion.isNotEmpty()) {
+                            append("\n建议: ${errorInfo.suggestion}")
                         }
-                    _state.update { it.copy(statusText = "备份异常: ${e.message}" + (hint?.let { " ($it)" } ?: "")) }
+                    }
+                    _state.update { it.copy(statusText = errorMessage) }
                 } finally {
                     _state.update { it.copy(isRunning = false) }
                     try {
@@ -255,8 +285,9 @@ class BackupViewModel(
         defaultResticWrapper.binaryPath = binaryPath
         defaultResticWrapper.cacheDir = context.cacheDir.absolutePath
         defaultResticWrapper.backendDomain = s.config.resticBackendDomain
-        val password = PasswordManager.getResticPassword() ?: s.config.resticPassword.takeIf { it.isNotEmpty() } ?: ""
-        val backendPass = PasswordManager.getBackendPass() ?: s.config.resticBackendPass.takeIf { it.isNotEmpty() } ?: ""
+        val credentials = CredentialProvider.resolve(s.config)
+        val password = credentials.resticPassword
+        val backendPass = credentials.backendPass
 
         if (s.config.useStreaming == 1) {
             defaultResticWrapper

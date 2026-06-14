@@ -76,13 +76,47 @@ fun BackupScreen(viewModel: BackupViewModel = viewModel()) {
             }
         }
 
-        // ── Status ──
-        Text(
-            text = state.statusText,
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
-        )
+        // ── Status with progress bar ──
+        if (state.isRunning) {
+            Column(
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                // 进度条
+                LinearProgressIndicator(
+                    progress = { state.progressPercent / 100f },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                // 状态文本
+                Text(
+                    text = state.statusText,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                // ETA 和详细信息
+                if (state.etaSeconds > 0) {
+                    Text(
+                        text = "预计剩余: ${formatEta(state.etaSeconds)}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                }
+                if (state.currentStage.isNotEmpty()) {
+                    Text(
+                        text = "阶段: ${state.currentStage}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        } else {
+            Text(
+                text = state.statusText,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+            )
+        }
 
         // ── App list ──
         LazyColumn(
@@ -157,5 +191,22 @@ private fun AppListItem(
                 }
             }
         }
+    }
+}
+
+/**
+ * 格式化 ETA 为人类可读的字符串。
+ */
+private fun formatEta(seconds: Long): String {
+    if (seconds <= 0) return "计算中..."
+
+    val hours = seconds / 3600
+    val minutes = (seconds % 3600) / 60
+    val secs = seconds % 60
+
+    return when {
+        hours > 0 -> "${hours}小时${minutes}分${secs}秒"
+        minutes > 0 -> "${minutes}分${secs}秒"
+        else -> "${secs}秒"
     }
 }

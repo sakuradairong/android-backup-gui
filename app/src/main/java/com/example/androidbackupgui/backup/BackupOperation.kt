@@ -1,14 +1,18 @@
 package com.example.androidbackupgui.backup
 
 import android.util.Log
-import com.example.androidbackupgui.backup.ResticWrapper.SnapshotAppInfo
+import com.example.androidbackupgui.backup.restic.ResticWrapper.SnapshotAppInfo
+import com.example.androidbackupgui.backup.core.LogUtil
+import com.example.androidbackupgui.backup.restic.ResticWrapper
+import com.example.androidbackupgui.backup.scan.AppScanner
+import com.example.androidbackupgui.backup.scan.SsaidCache
 import com.example.androidbackupgui.root.RootShell
 import com.example.androidbackupgui.root.shellEscape
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
-import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.supervisorScope
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
@@ -68,7 +72,12 @@ object BackupOperation {
         onProgress: suspend (BackupProgress) -> Unit = {},
     ): BackupResult =
         withContext(Dispatchers.IO) {
-            val emit: suspend (BackupProgress) -> Unit = { p -> withContext(Dispatchers.Main) { onProgress(p) } }
+            // emit: forward progress events to caller without forcing a thread switch.
+            // The caller (ViewModel) is expected to update StateFlow from its own
+            // scope; switching dispatchers here would add hundreds of context
+            // switches per backup session. If the caller needs Main-thread
+            // delivery, it can wrap its handler accordingly.
+            val emit: suspend (BackupProgress) -> Unit = { p -> onProgress(p) }
             val startTime = System.currentTimeMillis()
 
             // Safety check: refuse to backup inside Android/data directories
@@ -85,6 +94,16 @@ object BackupOperation {
                 return@withContext BackupResult(0, 0, 0, outputDir.absolutePath, 0)
             }
             LogUtil.i(TAG, "backupApps: starting backup of ${apps.size} apps to ${backupRoot.absolutePath}")
+
+            // Initialize caches for performance optimization
+            val appInfoCache = AppInfoCache()
+            val ssaidCache = SsaidCache(userId)
+            val progressTracker = BackupProgressTracker(apps.size)
+
+            // Pre-warm cache for all apps
+            LogUtil.i(TAG, "backupApps: warming cache for ${apps.size} apps...")
+            appInfoCache.warmAll(apps.map { it.packageName.value })
+            LogUtil.i(TAG, "backupApps: cache warmed, ${appInfoCache.size()} apps cached")
 
             // Read previous metadata for incremental backup comparison
             val oldMetaFile = File(backupRoot, "app_details.json")
@@ -108,7 +127,7 @@ object BackupOperation {
 
             // Write metadata JSON — fresh metadata for selected apps, legacy for historical apps
             val metaFile = File(backupRoot, "app_details.json")
-            if (!writeFileForBackup(metaFile, buildAppDetailsJson(apps, legacyApps))) {
+            if (!writeFileForBackup(metaFile, buildAppDetailsJson(apps, legacyApps, cache = appInfoCache))) {
                 LogUtil.e(TAG, "backupApps: failed to write app_details.json")
                 return@withContext BackupResult(0, 0, 0, outputDir.absolutePath, 0)
             }
@@ -116,189 +135,60 @@ object BackupOperation {
             val backupTargets = if (includePkgs.isEmpty()) apps else apps.filter { it.packageName.value in includePkgs }
             val totalCount = backupTargets.size
             LogUtil.i(TAG, "backupApps: includePkgs=${includePkgs.size} targets=$totalCount")
-            val semaphore = Semaphore(3)
+
+            // 智能并发控制：根据设备性能动态调整并发数
+            val concurrencyConfig = ConcurrencyController.calculateOptimalConcurrency(context, "backup")
+            val semaphore = Semaphore(concurrencyConfig.maxConcurrency)
+            LogUtil.i(TAG, "backupApps: ${concurrencyConfig.reason}")
+
             val successAtomic = AtomicInteger(0)
             val failAtomic = AtomicInteger(0)
             val skippedAtomic = AtomicInteger(0)
             // Collect per-app extra metadata for app_details.json
             val perAppExtraMap = ConcurrentHashMap<String, PerAppExtra>()
 
-            coroutineScope {
+            // Use supervisorScope so that one app's backup failure does NOT
+            // cancel siblings — each app is independent. Errors are logged
+            // and counted via failAtomic, but the overall backup continues.
+            supervisorScope {
                 backupTargets
                     .mapIndexed { index, app ->
                         async {
-                            semaphore.withPermit {
-                                ensureActive()
-                                val pkgName = app.packageName.value
-                                val appDir = File(backupRoot, pkgName)
-                                appDir.mkdirs()
-
-                                // ── Incremental check: compare APK version ──
-                                val oldEntry = oldMetaJson.optJSONObject(pkgName)
-                                val oldApkVersion = oldEntry?.optString("apk_version", null)
-                                var installedVersion: String? = null
-                                var apkChanged = true
-                                if (oldApkVersion != null) {
-                                    val vResult = RootShell.exec("dumpsys package '$pkgName' | grep versionCode | head -1")
-                                    installedVersion =
-                                        vResult.output
-                                            .substringAfter("versionCode=")
-                                            .substringBefore(" ")
-                                            .filter { it.isDigit() }
-                                            .takeIf { it.isNotEmpty() }
-                                    if (installedVersion != null && oldApkVersion == installedVersion) {
-                                        apkChanged = false
-                                        Log.d(TAG, "backupApps: $pkgName APK $oldApkVersion unchanged, skipping")
-                                    }
-                                }
-
-                                // 1. Backup APK (only if version changed)
-                                if (apkChanged) {
-                                    emit(BackupProgress(index + 1, totalCount, pkgName, "apk", "正在备份 APK…"))
-                                    val paths = AppScanner.getApkPaths(pkgName)
-                                    if (paths.isNotEmpty()) {
-                                        val cpOk =
-                                            paths.withIndex().all { (i, apkPath) ->
-                                                val destName = if (paths.size > 1) "${pkgName}_split_$i.apk" else "$pkgName.apk"
-                                                RootShell
-                                                    .exec(
-                                                        "cp '${apkPath.shellEscape()}' '${appDir.absolutePath.shellEscape()}/${destName.shellEscape()}'",
-                                                    ).isSuccess
-                                            }
-                                        if (!cpOk) LogUtil.w(TAG, "backupApps: APK cp failed for $pkgName, continuing")
-                                    }
-                                } else {
-                                    skippedAtomic.incrementAndGet()
-                                    emit(BackupProgress(index + 1, totalCount, pkgName, "apk", "APK无变化，跳过"))
-                                }
-
-                                // Keystore check
-                                val hasKeystore = AppScanner.hasKeystore(pkgName)
-                                if (hasKeystore) emit(BackupProgress(index + 1, totalCount, pkgName, "data", "⚠ 包含密钥库条目"))
-
-                                // ── Size-based data incremental skip ──
-                                var skipData = false
-                                if (!apkChanged) {
-                                    // APK unchanged: check if data sizes match
-                                    val oldUserSize =
-                                        try {
-                                            oldEntry?.optJSONObject("user")?.optString("Size", null)?.toLongOrNull()
-                                        } catch (
-                                            _: Exception,
-                                        ) {
-                                            null
-                                        }
-                                    val oldObbSize =
-                                        try {
-                                            oldEntry?.optJSONObject("obb")?.optString("Size", null)?.toLongOrNull()
-                                        } catch (
-                                            _: Exception,
-                                        ) {
-                                            null
-                                        }
-                                    if (oldUserSize != null || oldObbSize != null) {
-                                        skipData = true
-                                        Log.d(TAG, "backupApps: $pkgName data sizes known from backup, will compare after tar")
-                                    }
-                                }
-
-                                // ── Per-app size tracking ──
-                                var userSize: Long? = null
-                                var userDeSize: Long? = null
-                                var dataSize: Long? = null
-                                var obbSize: Long? = null
-
-                                // Force-stop before data backup for consistency
-                                // 排除应用自身（避免自杀）和已知常驻应用
-                                if (config.backupMode == 1 && !skipData) {
-                                    if (pkgName !in listOf("bin.mt.plus", "com.termux", "bin.mt.plus.canary", context.packageName)) {
-                                        RootShell.exec("am force-stop --user $userId '$pkgName' 2>/dev/null")
-                                    }
-                                }
-
-                                // 2. Backup user data
-                                if (config.backupMode == 1 && config.backupUserData == 1 && !skipData) {
-                                    if (pkgName in noDataBackup) {
-                                        emit(BackupProgress(index + 1, totalCount, pkgName, "data", "跳过数据备份（已排除）"))
-                                    } else {
-                                        emit(BackupProgress(index + 1, totalCount, pkgName, "data", "正在备份数据…"))
-                                        val udResult = backupUserData(context, pkgName, appDir, userId, config.compressionMethod)
-                                        userSize = udResult.first
-                                        userDeSize = udResult.second
-                                        if (udResult.first == null) {
-                                            failAtomic.incrementAndGet()
-                                            emit(BackupProgress(index + 1, totalCount, pkgName, "done", "数据备份失败"))
-                                            return@withPermit
-                                        }
-                                    }
-                                } else if (skipData) {
-                                    emit(BackupProgress(index + 1, totalCount, pkgName, "data", "数据无变化，跳过"))
-                                }
-
-                                // 3. Backup OBB
-                                if (config.backupMode == 1 && config.backupObbData == 1 && !skipData) {
-                                    val hasObb = AppScanner.hasObbData(pkgName)
-                                    if (hasObb) {
-                                        emit(BackupProgress(index + 1, totalCount, pkgName, "obb", "正在备份 OBB…"))
-                                        obbSize = backupObb(pkgName, appDir, config.compressionMethod)
-                                        if (obbSize == null) {
-                                            failAtomic.incrementAndGet()
-                                            emit(BackupProgress(index + 1, totalCount, pkgName, "done", "OBB 备份失败"))
-                                            return@withPermit
-                                        }
-                                    }
-                                }
-
-                                // 3.5 Backup external data
-                                if (config.backupMode == 1 && config.backupUserData == 1 && !skipData) {
-                                    if (pkgName !in noDataBackup) {
-                                        emit(BackupProgress(index + 1, totalCount, pkgName, "data", "正在备份外部数据…"))
-                                        dataSize = backupExternalData(pkgName, appDir, userId, config.compressionMethod)
-                                    }
-                                }
-
-                                // 4. Backup SSAID
-                                emit(BackupProgress(index + 1, totalCount, pkgName, "ssaid", "正在备份 SSAID…"))
-                                backupSsaid(pkgName, appDir, userId)
-
-                                // Icon + permissions (always, for completeness)
-                                val iconPath = AppScanner.extractIcon(pkgName, appDir, app.userId.value)
-                                if (iconPath != null) Log.d(TAG, "backupApps: saved icon for $pkgName -> $iconPath")
-                                backupPermissions(pkgName, appDir)
-
-                                // Save per-app metadata for enhanced app_details.json
-                                val ssaidValue = readTextFile(File(appDir, "ssaid.txt"))?.trim()
-                                val permText = readTextFile(File(appDir, "permissions.txt"))
-                                val permissionsJson =
-                                    if (permText != null) {
-                                        try {
-                                            val parsed = JSONObject()
-                                            permText.lines().forEach { line ->
-                                                val name = line.substringBefore(":").trim()
-                                                val granted = line.contains("granted=true")
-                                                if (name.contains(".")) parsed.put(name, if (granted) "granted:true" else "granted:false")
-                                            }
-                                            parsed
-                                        } catch (_: Exception) {
-                                            null
-                                        }
-                                    } else {
-                                        null
-                                    }
-
-                                perAppExtraMap[pkgName] =
-                                    PerAppExtra(
-                                        ssaid = ssaidValue,
-                                        permissions = permissionsJson,
-                                        keystore = hasKeystore,
-                                        userSize = userSize,
-                                        userDeSize = userDeSize,
-                                        dataSize = dataSize,
-                                        obbSize = obbSize,
+                            // Top-level try/catch per async — without it, a throw
+                            // would propagate up to supervisorScope (tolerated) but
+                            // also crash the coroutine mid-execution leaving state
+                            // inconsistent. Catching here keeps per-app failure
+                            // contained and the result list complete.
+                            try {
+                                semaphore.withPermit {
+                                    ensureActive()
+                                    backupOneApp(
+                                        context = context,
+                                        index = index,
+                                        totalCount = totalCount,
+                                        app = app,
+                                        backupRoot = backupRoot,
+                                        oldMetaJson = oldMetaJson,
+                                        config = config,
+                                        userId = userId,
+                                        noDataBackup = noDataBackup,
+                                        appInfoCache = appInfoCache,
+                                        ssaidCache = ssaidCache,
+                                        skippedAtomic = skippedAtomic,
+                                        successAtomic = successAtomic,
+                                        failAtomic = failAtomic,
+                                        perAppExtraMap = perAppExtraMap,
+                                        progressTracker = progressTracker,
+                                        emit = emit,
                                     )
-
-                                successAtomic.incrementAndGet()
-                                emit(BackupProgress(index + 1, totalCount, pkgName, "done", "完成"))
+                                }
+                            } catch (e: kotlinx.coroutines.CancellationException) {
+                                throw e
+                            } catch (e: Exception) {
+                                failAtomic.incrementAndGet()
+                                val pkg = app.packageName.value
+                                Log.e(TAG, "backupApps: $pkg backup failed: ${e.message}", e)
+                                emit(BackupProgress(index + 1, totalCount, pkg, "done", "备份失败: ${e.message}"))
                             }
                         }
                     }.awaitAll()
@@ -306,7 +196,6 @@ object BackupOperation {
 
             val elapsed = System.currentTimeMillis() - startTime
             RootShell.exec("chmod -R 0755 '${backupRoot.absolutePath}'")
-
             val successCount = successAtomic.get()
             val failCount = failAtomic.get()
             val skippedCount = skippedAtomic.get()
@@ -316,6 +205,24 @@ object BackupOperation {
             // Re-write metadata files with enhanced app_details.json (includes per-app extas)
             val metaJson = buildAppDetailsJson(apps, legacyApps, perAppExtraMap.ifEmpty { null })
             writeFileForBackup(File(backupRoot, "app_details.json"), metaJson)
+
+            // 备份完整性校验（可选）
+            if (successCount > 0) {
+                LogUtil.i(TAG, "backupApps: starting integrity check...")
+                val integrityReport = BackupIntegrityChecker.checkBackupIntegrity(
+                    backupDir = backupRoot,
+                    packages = apps.map { it.packageName.value },
+                    compression = config.compressionMethod,
+                )
+                LogUtil.i(TAG, "backupApps: integrity check completed — ${integrityReport.passedPackages}/${integrityReport.checkedPackages} passed")
+
+                // 生成校验和文件
+                BackupIntegrityChecker.generateChecksumFile(
+                    backupDir = backupRoot,
+                    packages = apps.map { it.packageName.value },
+                    compression = config.compressionMethod,
+                )
+            }
 
             BackupResult(
                 successCount = successCount,
@@ -327,316 +234,200 @@ object BackupOperation {
         }
 
     /**
-     * 备份单个应用的用户数据（/data/data + /data/user_de）。
-     *
-     * 使用 tar + zstd/gzip 创建应用数据存档，支持 3 种回退策略：
-     * 1. 通过 nsenter 直接 tar
-     * 2. 直接 tar 路径（跳过 test -d）
-     * 3. 通过 /proc/1/root 全局挂载命名空间
-     *
-     * @return Pair(userSize, userDeSize)，任一失败时为 null
+     * Per-app backup body executed inside the supervisorScope / Semaphore in
+     * [backupApps]. Extracted as a private method so the concurrency plumbing
+     * stays readable; this method only contains the linear per-app flow.
      */
-    internal suspend fun backupUserData(
+    private suspend fun backupOneApp(
         context: android.content.Context,
-        packageName: String,
-        appDir: File,
+        index: Int,
+        totalCount: Int,
+        app: AppInfo,
+        backupRoot: File,
+        oldMetaJson: org.json.JSONObject,
+        config: BackupConfig,
         userId: String,
-        compression: String,
-    ): Pair<Long?, Long?> {
-        val pkgEsc = packageName.shellEscape()
-        val outputFile = "${appDir.absolutePath.shellEscape()}/${pkgEsc}_data.tar"
+        noDataBackup: Set<String>,
+        appInfoCache: AppInfoCache,
+        ssaidCache: SsaidCache,
+        skippedAtomic: java.util.concurrent.atomic.AtomicInteger,
+        successAtomic: java.util.concurrent.atomic.AtomicInteger,
+        failAtomic: java.util.concurrent.atomic.AtomicInteger,
+        perAppExtraMap: ConcurrentHashMap<String, PerAppExtra>,
+        progressTracker: BackupProgressTracker,
+        emit: suspend (BackupProgress) -> Unit,
+    ) {
+        val appDir = File(backupRoot, pkgName)
+        appDir.mkdirs()
 
-        // Resolve bundled binary paths (fall back to system PATH if not bundled)
-        val bundledTar = BinaryResolver.tarPath(context)
-        val tarCmd = bundledTar ?: "tar"
-
-        var isZstd = compression == "zstd"
-        val bundledZstd = if (isZstd) BinaryResolver.zstdPath(context) else null
-        val zstdCmd = bundledZstd ?: "zstd"
-        if (isZstd && bundledZstd == null) {
-            val zstdCheck = RootShell.exec("$zstdCmd --version 2>/dev/null")
-            if (!zstdCheck.isSuccess) {
-                Log.w(TAG, "backupUserData: zstd not available, falling back to gzip")
-                isZstd = false
+        // ── Incremental check: compare APK version ──
+        val oldEntry = oldMetaJson.optJSONObject(pkgName)
+        val oldApkVersion = oldEntry?.optString("apk_version", null)
+        var installedVersion: String? = null
+        var apkChanged = true
+        if (oldApkVersion != null) {
+            installedVersion = appInfoCache.getVersionCode(pkgName)
+            if (installedVersion != null && oldApkVersion == installedVersion) {
+                apkChanged = false
+                Log.d(TAG, "backupApps: $pkgName APK $oldApkVersion unchanged, skipping")
+                progressTracker.skipApp(pkgName, "APK无变化，跳过")
             }
         }
-        val archiveExt = if (isZstd) ".zst" else ".gz"
-        val archiveRaw = File(appDir, "${packageName}_data.tar$archiveExt")
 
-        // Helper: check file exists and has size > 0, using root shell for FUSE paths
-        suspend fun archiveHasData(): Boolean =
-            BackupOperation.backupPathExists(archiveRaw) &&
-                (archiveRaw.length() > 0 || BackupOperation.backupFileSize(archiveRaw) > 0L)
-
-        Log.d(TAG, "backupUserData: $packageName checking dirs (tar=$tarCmd zstd=$zstdCmd)")
-
-        val rawPkg = packageName
-        val dataPaths = listOf("/data/data/$rawPkg", "/data/user_de/$userId/$rawPkg")
-        val dataExcludes = listOf(".ota", "cache", "lib", "code_cache", "no_backup")
-
-        // 1. Try direct paths after nsenter namespace switch
-        var archiveCreated = false
-        var result: RootShell.ShellResult? = null
-
-        val dirs = dataPaths.filter { RootShell.exec("test -d '${it.shellEscape()}'").isSuccess }.toMutableList()
-        if (dirs.isNotEmpty()) {
-            Log.d(TAG, "backupUserData: $packageName test -d found dirs=$dirs")
-            result = runTar(dirs, outputFile, isZstd, tarCmd, zstdCmd, excludes = dataExcludes)
-            archiveCreated = archiveHasData()
-            Log.d(TAG, "backupUserData: $packageName step1 exit=${result?.exitCode} err='${result?.error?.take(100)}'")
+        // 1. Backup APK (only if version changed)
+        if (apkChanged) {
+            progressTracker.updateStage("apk", "正在备份 APK…")
+            emit(BackupProgress(index + 1, totalCount, pkgName, "apk", "正在备份 APK…"))
+            val paths = appInfoCache.getApkPaths(pkgName)
+            if (paths.isNotEmpty()) {
+                val cpOk =
+                    paths.withIndex().all { (i, apkPath) ->
+                        val destName = if (paths.size > 1) "${pkgName}_split_$i.apk" else "$pkgName.apk"
+                        RootShell
+                            .exec(
+                                "cp '${apkPath.shellEscape()}' '${appDir.absolutePath.shellEscape()}/${destName.shellEscape()}'",
+                            ).isSuccess
+                    }
+                if (!cpOk) LogUtil.w(TAG, "backupApps: APK cp failed for $pkgName, continuing")
+            }
         } else {
-            Log.d(TAG, "backupUserData: $packageName test -d all failed, trying tar directly")
-            result = runTar(dataPaths, outputFile, isZstd, tarCmd, zstdCmd, excludes = dataExcludes)
-            archiveCreated = archiveHasData()
-            Log.d(TAG, "backupUserData: $packageName step2 exit=${result?.exitCode} err='${result?.error?.take(100)}'")
+            skippedAtomic.incrementAndGet()
+            progressTracker.skipApp(pkgName, "APK无变化，跳过")
+            emit(BackupProgress(index + 1, totalCount, pkgName, "apk", "APK无变化，跳过"))
         }
 
-        // 3. Fallback via /proc/1/root (global mount namespace)
-        if (!archiveCreated) {
-            Log.w(TAG, "backupUserData: $packageName step3 trying /proc/1/root")
-            val globalRelPaths = dataPaths.map { it.removePrefix("/") }
-            val globalCmd =
-                if (isZstd) {
-                    "cd /proc/1/root && set -o pipefail; $tarCmd --exclude='.ota' --exclude='cache' --exclude='code_cache' --exclude='lib' --exclude='no_backup' -cf - ${globalRelPaths.joinToString(
-                        " ",
-                    ) { "'${it.shellEscape()}'" }} 2>/dev/null | $zstdCmd -T0 -o '$outputFile.zst'"
-                } else {
-                    "cd /proc/1/root && $tarCmd --exclude='.ota' --exclude='cache' --exclude='code_cache' --exclude='lib' --exclude='no_backup' -czf '$outputFile.gz' ${globalRelPaths.joinToString(
-                        " ",
-                    ) { "'${it.shellEscape()}'" }} 2>/dev/null"
+        // Keystore check - 使用缓存
+        val hasKeystore = appInfoCache.hasKeystore(pkgName) ?: false
+        if (hasKeystore) emit(BackupProgress(index + 1, totalCount, pkgName, "data", "⚠ 包含密钥库条目"))
+
+        // ── Size-based data incremental skip ──
+        var skipData = false
+        if (!apkChanged) {
+            val oldUserSize =
+                try {
+                    oldEntry?.optJSONObject("user")?.optString("Size", null)?.toLongOrNull()
+                } catch (_: Exception) {
+                    null
                 }
-            result = RootShell.exec(globalCmd)
-            archiveCreated = archiveHasData()
-            Log.d(TAG, "backupUserData: $packageName step3 exit=${result?.exitCode} err='${result?.error?.take(100)}'")
-        }
-
-        if (!archiveCreated) {
-            LogUtil.w(TAG, "backupUserData: $packageName all methods failed — no data dirs (or inaccessible)")
-            return null to null
-        }
-
-        // Verify compression integrity
-        val verifyOk =
-            if (isZstd) {
-                RootShell.exec("$zstdCmd -t '$outputFile.zst' 2>/dev/null").isSuccess
-            } else {
-                RootShell.exec("gzip -t '$outputFile.gz' 2>/dev/null").isSuccess
-            }
-        if (!verifyOk) {
-            Log.e(TAG, "backupUserData: $packageName integrity check FAILED")
-            return null to null
-        }
-
-        // Validate tar archive structure
-        val tarValidateOk =
-            if (isZstd) {
-                RootShell.exec("$zstdCmd -d -c '$outputFile.zst' 2>/dev/null | tar -tf - > /dev/null 2>&1").isSuccess
-            } else {
-                RootShell.exec("tar -tf '$outputFile.gz' > /dev/null 2>&1").isSuccess
-            }
-        if (!tarValidateOk) {
-            Log.e(TAG, "backupUserData: $packageName tar archive structure validation FAILED")
-            return null to null
-        }
-        return archiveRaw.length() to 0L // Return (userSize, userDeSize) — combined in one file
-    }
-
-    /**
-     * 运行 tar 命令，自动选择 zstd 或 gzip 压缩。
-     */
-    internal suspend fun runTar(
-        dirs: List<String>,
-        outputFile: String,
-        isZstd: Boolean,
-        tarCmd: String = "tar",
-        zstdCmd: String = "zstd",
-        excludes: List<String> = emptyList(),
-    ): RootShell.ShellResult {
-        val excludeArgs =
-            if (excludes.isNotEmpty()) {
-                excludes.joinToString(" ") { "--exclude='${it.shellEscape()}'" }
-            } else {
-                ""
-            }
-        return if (isZstd) {
-            RootShell.exec(
-                "set -o pipefail; $tarCmd -cf - $excludeArgs ${dirs.joinToString(
-                    " ",
-                ) { "'${it.shellEscape()}'" }} 2>/dev/null | $zstdCmd -T0 -o '$outputFile.zst'",
-            )
-        } else {
-            RootShell.exec("$tarCmd -czf $excludeArgs '$outputFile.gz' ${dirs.joinToString(" ") { "'${it.shellEscape()}'" }} 2>/dev/null")
-        }
-    }
-
-    /**
-     * 备份单个应用的 OBB 数据文件夹。
-     * @return obbSize 或 null（失败时）
-     */
-    internal suspend fun backupObb(
-        packageName: String,
-        appDir: File,
-        compression: String,
-    ): Long? {
-        val obbDir = "/storage/emulated/0/Android/obb/${packageName.shellEscape()}"
-        val escapedAppDir = appDir.absolutePath.shellEscape()
-        val escapedPkg = packageName.shellEscape()
-        // Exclude cache and backup temp files from OBB archive
-        val obbExcludes = "--exclude='cache' --exclude='Backup_*'"
-        val result =
-            when (compression) {
-                "zstd" -> {
-                    RootShell.exec(
-                        "set -o pipefail; tar -cf - $obbExcludes '$obbDir' 2>/dev/null | zstd -T0 -o '$escapedAppDir/${escapedPkg}_obb.tar.zst'",
-                    )
+            val oldObbSize =
+                try {
+                    oldEntry?.optJSONObject("obb")?.optString("Size", null)?.toLongOrNull()
+                } catch (_: Exception) {
+                    null
                 }
-
-                else -> {
-                    RootShell.exec("tar -czf $obbExcludes '$escapedAppDir/${escapedPkg}_obb.tar.gz' '$obbDir' 2>/dev/null")
-                }
+            if (oldUserSize != null || oldObbSize != null) {
+                skipData = true
+                Log.d(TAG, "backupApps: $pkgName data sizes known from backup, skipping data backup (incremental)")
+                progressTracker.skipApp(pkgName, "数据大小已知，跳过数据备份")
             }
-        if (!result.isSuccess) {
-            Log.e(TAG, "Failed to backup OBB for $packageName: exit=${result.exitCode} err=${result.error}")
-            return null
         }
-        val obbArchiveExt = if (compression == "zstd") ".zst" else ".gz"
-        val obbFile = File(appDir, "${packageName}_obb.tar$obbArchiveExt")
-        val obbArchivePath = obbFile.absolutePath.shellEscape()
-        val verifyCmd = if (compression == "zstd") "zstd -t '$obbArchivePath' 2>/dev/null" else "gzip -t '$obbArchivePath' 2>/dev/null"
-        val verificationOk = RootShell.exec(verifyCmd).isSuccess
-        if (!verificationOk) {
-            Log.e(TAG, "OBB archive integrity check FAILED for $packageName")
+
+        var userSize: Long? = null
+        var userDeSize: Long? = null
+        var dataSize: Long? = null
+        var obbSize: Long? = null
+
+        // Force-stop before data backup for consistency.
+        // Exclude the app itself (avoid suicide) and well-known persistent apps.
+        if (config.backupMode == 1 && !skipData) {
+            if (pkgName !in listOf("bin.mt.plus", "com.termux", "bin.mt.plus.canary", context.packageName)) {
+                RootShell.exec("am force-stop --user ${userId.shellEscape()} '${pkgName.shellEscape()}' 2>/dev/null")
+            }
         }
-        // Validate OBB tar structure
-        val tarListCmd =
-            if (compression == "zstd") {
-                "zstd -d -c '$obbArchivePath' 2>/dev/null | tar -tf - > /dev/null 2>&1"
+
+        // 2. Backup user data
+        if (config.backupMode == 1 && config.backupUserData == 1 && !skipData) {
+            if (pkgName in noDataBackup) {
+                emit(BackupProgress(index + 1, totalCount, pkgName, "data", "跳过数据备份（已排除）"))
             } else {
-                "tar -tf '$obbArchivePath' > /dev/null 2>&1"
-            }
-        val tarOk = RootShell.exec(tarListCmd).isSuccess
-        if (!tarOk) {
-            Log.e(TAG, "OBB tar structure validation FAILED for $packageName")
-        }
-        return if (verificationOk && tarOk) BackupOperation.backupFileSize(obbFile) else null
-    }
-
-    /**
-     * 备份单个应用的外部数据目录（/data/media/<userId>/Android/data/<pkg>）。
-     * @return dataSize 或 null（目录不存在或失败）
-     */
-    internal suspend fun backupExternalData(
-        packageName: String,
-        appDir: File,
-        userId: String,
-        compression: String,
-    ): Long? {
-        val pkgEsc = packageName.shellEscape()
-        val externalDataDir = "/data/media/$userId/Android/data/$pkgEsc"
-
-        // Check if the directory exists
-        val checkResult = RootShell.exec("test -d '$externalDataDir' && echo 1 || echo 0")
-        if (checkResult.output.trim() != "1") {
-            Log.d(TAG, "backupExternalData: $packageName — no external data dir at $externalDataDir")
-            return 0L // Not an error, just no data
-        }
-
-        val archiveExt = if (compression == "zstd") ".zst" else ".gz"
-        val archiveFile = File(appDir, "${packageName}_external_data.tar$archiveExt")
-        val archivePath = archiveFile.absolutePath.shellEscape()
-        val dataExcludes = "--exclude='cache' --exclude='Backup_*' --exclude='.ota'"
-
-        val result =
-            if (compression == "zstd") {
-                RootShell.exec(
-                    "set -o pipefail; tar -cf - $dataExcludes '$externalDataDir' 2>/dev/null | zstd -T0 -o '$archivePath'",
+                emit(BackupProgress(index + 1, totalCount, pkgName, "data", "正在备份数据…"))
+                val udResult = BackupAppDataOps.backupUserData(
+                    context, pkgName, appDir, userId, config.compressionMethod,
                 )
+                userSize = udResult.first
+                userDeSize = udResult.second
+                if (udResult.first == null) {
+                    failAtomic.incrementAndGet()
+                    emit(BackupProgress(index + 1, totalCount, pkgName, "done", "数据备份失败"))
+                    return
+                }
+            }
+        } else if (skipData) {
+            emit(BackupProgress(index + 1, totalCount, pkgName, "data", "数据无变化，跳过"))
+        }
+
+        // 3. Backup OBB
+        if (config.backupMode == 1 && config.backupObbData == 1 && !skipData) {
+            val hasObb = AppScanner.hasObbData(pkgName)
+            if (hasObb) {
+                emit(BackupProgress(index + 1, totalCount, pkgName, "obb", "正在备份 OBB…"))
+                obbSize = BackupAppDataOps.backupObb(pkgName, appDir, config.compressionMethod)
+                if (obbSize == null) {
+                    failAtomic.incrementAndGet()
+                    emit(BackupProgress(index + 1, totalCount, pkgName, "done", "OBB 备份失败"))
+                    return
+                }
+            }
+        }
+
+        // 3.5 Backup external data
+        if (config.backupMode == 1 && config.backupUserData == 1 && !skipData) {
+            if (pkgName !in noDataBackup) {
+                emit(BackupProgress(index + 1, totalCount, pkgName, "data", "正在备份外部数据…"))
+                dataSize = BackupAppDataOps.backupExternalData(pkgName, appDir, userId, config.compressionMethod)
+            }
+        }
+
+        // 4. Backup SSAID
+        progressTracker.updateStage("ssaid", "正在备份 SSAID…")
+        emit(BackupProgress(index + 1, totalCount, pkgName, "ssaid", "正在备份 SSAID…"))
+        BackupAppDataOps.backupSsaid(pkgName, appDir, userId, ssaidCache)
+
+        // Icon + permissions
+        val iconPath = AppScanner.extractIcon(pkgName, appDir, app.userId.value)
+        if (iconPath != null) Log.d(TAG, "backupApps: saved icon for $pkgName -> $iconPath")
+        BackupAppDataOps.backupPermissions(pkgName, appDir)
+
+        // Save per-app metadata
+        val ssaidValue = BackupFileIO.readTextFile(File(appDir, "ssaid.txt"))?.trim()
+        val permText = BackupFileIO.readTextFile(File(appDir, "permissions.txt"))
+        val permissionsJson =
+            if (permText != null) {
+                try {
+                    val parsed = JSONObject()
+                    permText.lines().forEach { line ->
+                        val name = line.substringBefore(":").trim()
+                        val granted = line.contains("granted=true")
+                        if (name.contains(".")) parsed.put(name, if (granted) "granted:true" else "granted:false")
+                    }
+                    parsed
+                } catch (_: Exception) {
+                    null
+                }
             } else {
-                RootShell.exec("tar -czf $dataExcludes '$archivePath' '$externalDataDir' 2>/dev/null")
+                null
             }
 
-        if (!result.isSuccess) {
-            Log.w(TAG, "backupExternalData: $packageName tar failed: ${result.error}")
-            return null
-        }
+        perAppExtraMap[pkgName] =
+            PerAppExtra(
+                ssaid = ssaidValue,
+                permissions = permissionsJson,
+                keystore = hasKeystore,
+                userSize = userSize,
+                userDeSize = userDeSize,
+                dataSize = dataSize,
+                obbSize = obbSize,
+            )
 
-        // Verify compression integrity
-        val verifyCmd = if (compression == "zstd") "zstd -t '$archivePath' 2>/dev/null" else "gzip -t '$archivePath' 2>/dev/null"
-        val verificationOk = RootShell.exec(verifyCmd).isSuccess
-        if (!verificationOk) {
-            Log.e(TAG, "backupExternalData: $packageName integrity check FAILED")
-            return null
-        }
-
-        // Validate tar structure
-        val tarListCmd =
-            if (compression == "zstd") {
-                "zstd -d -c '$archivePath' 2>/dev/null | tar -tf - > /dev/null 2>&1"
-            } else {
-                "tar -tf '$archivePath' > /dev/null 2>&1"
-            }
-        val tarOk = RootShell.exec(tarListCmd).isSuccess
-        if (!tarOk) {
-            Log.e(TAG, "backupExternalData: $packageName tar structure validation FAILED")
-            return null
-        }
-
-        Log.i(TAG, "backupExternalData: $packageName backed up (size=${archiveFile.length()})")
-        return BackupOperation.backupFileSize(archiveFile)
-    }
-
-    /**
-     * 备份单个应用的 SSAID（设置安全标识符）。
-     * 从 settings_ssaid.xml 中提取。
-     */
-    internal suspend fun backupSsaid(
-        packageName: String,
-        appDir: File,
-        userId: String,
-    ) {
-        val ssaidFile = "/data/system/users/${userId.shellEscape()}/settings_ssaid.xml"
-        // Parse XML value attribute for this package's SSAID entry
-        val result = RootShell.exec("cat '$ssaidFile' 2>/dev/null")
-        if (!result.isSuccess || result.output.isBlank()) return
-        val ssaidLine =
-            result.output.lines().firstOrNull { line ->
-                line.contains("packageName=\"$packageName\"") || line.contains("packageName='$packageName'")
-            }
-        val value =
-            ssaidLine
-                ?.substringAfter("value=\"")
-                ?.substringBefore("\"")
-                ?.takeIf { it.isNotBlank() }
-        if (value != null) {
-            val ssaidFile = File(appDir, "ssaid.txt")
-            if (!writeFileForBackup(ssaidFile, value)) {
-                Log.w(TAG, "backupSsaid: failed to write ssaid.txt for $packageName")
-            } else {
-                Log.d(TAG, "backupSsaid: backed up SSAID for $packageName = $value")
-            }
-        }
-    }
-
-    /**
-     * 备份单个应用的运行时权限状态。
-     */
-    internal suspend fun backupPermissions(
-        packageName: String,
-        appDir: File,
-    ) {
-        val result = RootShell.exec("dumpsys package '${packageName.shellEscape()}' | grep -E 'granted=(true|false)'")
-        if (result.output.isNotBlank()) {
-            val permFile = File(appDir, "permissions.txt")
-            if (!writeFileForBackup(permFile, result.output)) {
-                Log.w(TAG, "backupPermissions: failed to write permissions.txt for $packageName")
-            }
-        }
+        successAtomic.incrementAndGet()
+        emit(BackupProgress(index + 1, totalCount, pkgName, "done", "完成"))
     }
 
     internal suspend fun buildAppDetailsJson(
         apps: List<AppInfo>,
         legacyApps: Map<String, SnapshotAppInfo>? = null,
         perAppExtra: Map<String, PerAppExtra>? = null,
+        cache: AppInfoCache? = null,
     ): String {
         val root = JSONObject()
         val now = java.text.SimpleDateFormat("yyyy.MM.dd HH:mm:ss", java.util.Locale.US).format(java.util.Date())
@@ -646,18 +437,20 @@ object BackupOperation {
             entry.put("isSystem", app.isSystem)
             entry.put("PackageName", app.packageName.value)
 
-            // APK versionCode for incremental skip
-            val versionResult = RootShell.exec("dumpsys package '${app.packageName.value.shellEscape()}' | grep versionCode | head -1")
-            val apkVersion =
+            // APK versionCode for incremental skip - 使用缓存
+            val apkVersion = cache?.getVersionCode(app.packageName.value) ?: run {
+                // 回退到直接查询
+                val versionResult = RootShell.exec("dumpsys package '${app.packageName.value.shellEscape()}' | grep versionCode | head -1")
                 versionResult.output
                     .substringAfter("versionCode=")
                     .substringBefore(" ")
                     .filter { it.isDigit() }
                     .takeIf { it.isNotEmpty() }
+            }
             if (apkVersion != null) entry.put("apk_version", apkVersion)
 
-            // APK file sizes
-            val paths = AppScanner.getApkPaths(app.packageName.value)
+            // APK file sizes - 使用缓存
+            val paths = cache?.getApkPaths(app.packageName.value) ?: AppScanner.getApkPaths(app.packageName.value)
             val sizes =
                 paths.map { path ->
                     val result = RootShell.exec("stat -c%s '${path.shellEscape()}'")
@@ -721,95 +514,80 @@ object BackupOperation {
         val obbSize: Long? = null,
     )
 
-    /** Create backup output directory, falling back to root shell [mkdir -p]. */
-    internal suspend fun mkdirsForBackup(dir: File): Boolean {
-        if (dir.isDirectory) return true
-        if (dir.mkdirs()) return true
-        val result = RootShell.exec("mkdir -p '${dir.absolutePath.shellEscape()}'")
-        return result.isSuccess && dir.isDirectory
-    }
+    // ── Backward-compat delegations ──────────────────────────────────
+    // 以下委托方法保留以兼容现有调用方（如 RestoreOperation、ResticStreamBackup、
+    // RestoreScreen）。新代码应直接使用 BackupFileIO。
+    @Deprecated("Use BackupFileIO.mkdirsForBackup", ReplaceWith("BackupFileIO.mkdirsForBackup(dir)"))
+    internal suspend fun mkdirsForBackup(dir: File): Boolean = BackupFileIO.mkdirsForBackup(dir)
 
-    /** Write text to a file, falling back to root shell (base64 + cat). */
+    @Deprecated("Use BackupFileIO.writeFileForBackup", ReplaceWith("BackupFileIO.writeFileForBackup(file, text)"))
     internal suspend fun writeFileForBackup(
         file: File,
         text: String,
-    ): Boolean {
-        try {
-            mkdirsForBackup(file.parentFile ?: return false)
-            file.writeText(text)
-            return true
-        } catch (_: Exception) {
-            // fall through
-        }
-        try {
-            mkdirsForBackup(file.parentFile ?: return false)
-            val b64 = android.util.Base64.encodeToString(text.toByteArray(), android.util.Base64.NO_WRAP)
-            val result = RootShell.exec("echo '${b64.shellEscape()}' | base64 -d > '${file.absolutePath.shellEscape()}'")
-            return result.isSuccess
-        } catch (e: Exception) {
-            Log.w(TAG, "writeFileForBackup: all methods failed for ${file.absolutePath}", e)
-            return false
-        }
-    }
+    ): Boolean = BackupFileIO.writeFileForBackup(file, text)
 
-    /** Read file content, falling back to root shell [cat]. Returns null on failure. */
-    internal suspend fun readTextFile(file: File): String? {
-        try {
-            if (file.exists()) return file.readText()
-        } catch (_: Exception) {
-            // fall through
-        }
-        try {
-            val result = RootShell.exec("cat '${file.absolutePath.shellEscape()}' 2>/dev/null")
-            if (result.isSuccess && result.output.isNotBlank()) return result.output
-        } catch (_: Exception) {
-            // fall through
-        }
-        return null
-    }
+    @Deprecated("Use BackupFileIO.readTextFile", ReplaceWith("BackupFileIO.readTextFile(file)"))
+    internal suspend fun readTextFile(file: File): String? = BackupFileIO.readTextFile(file)
 
-    /** Check if a path is a directory, falling back to root shell [test -d]. */
-    internal suspend fun backupIsDirectory(dir: File): Boolean {
-        if (dir.isDirectory()) return true
-        val result = RootShell.exec("test -d '${dir.absolutePath.shellEscape()}' && echo 1 || echo 0")
-        return result.output.trim() == "1"
-    }
+    @Deprecated("Use BackupFileIO.backupIsDirectory", ReplaceWith("BackupFileIO.backupIsDirectory(dir)"))
+    internal suspend fun backupIsDirectory(dir: File): Boolean = BackupFileIO.backupIsDirectory(dir)
 
-    /** Get file size via root shell [stat] when Java File.length() returns 0 on FUSE. */
-    internal suspend fun backupFileSize(file: File): Long {
-        val javaSize = file.length()
-        if (javaSize > 0L) return javaSize
-        val result = RootShell.exec("stat -c%s '${file.absolutePath.shellEscape()}' 2>/dev/null")
-        return result.output.trim().toLongOrNull() ?: 0L
-    }
+    @Deprecated("Use BackupFileIO.backupFileSize", ReplaceWith("BackupFileIO.backupFileSize(file)"))
+    internal suspend fun backupFileSize(file: File): Long = BackupFileIO.backupFileSize(file)
 
-    /** Check if a file/directory exists, falling back to root shell [test -e]. */
-    internal suspend fun backupPathExists(file: File): Boolean {
-        if (file.exists()) return true
-        val result = RootShell.exec("test -e '${file.absolutePath.shellEscape()}' && echo 1 || echo 0")
-        return result.output.trim() == "1"
-    }
+    @Deprecated("Use BackupFileIO.backupPathExists", ReplaceWith("BackupFileIO.backupPathExists(file)"))
+    internal suspend fun backupPathExists(file: File): Boolean = BackupFileIO.backupPathExists(file)
 
-    /**
-     * List immediate children in a directory, falling back to root shell [ls -1].
-     * Returns relative names only (not full paths).
-     */
-    internal suspend fun listBackupFiles(dir: File): List<String>? {
-        try {
-            val javaFiles = dir.listFiles()
-            if (javaFiles != null) {
-                val names = javaFiles.map { it.name }
-                if (names.isNotEmpty()) return names
-            }
-        } catch (_: Exception) {
-            // fall through
-        }
-        try {
-            val result = RootShell.exec("ls -1 '${dir.absolutePath.shellEscape()}' 2>/dev/null")
-            if (!result.isSuccess || result.output.isBlank()) return null
-            return result.output.lines().filter { it.isNotBlank() }
-        } catch (_: Exception) {
-            return null
-        }
-    }
+    @Deprecated("Use BackupFileIO.listBackupFiles", ReplaceWith("BackupFileIO.listBackupFiles(dir)"))
+    internal suspend fun listBackupFiles(dir: File): List<String>? = BackupFileIO.listBackupFiles(dir)
+
+    @Deprecated("Use BackupAppDataOps.runTar", ReplaceWith("BackupAppDataOps.runTar(dirs, outputFile, isZstd, tarCmd, zstdCmd, excludes)"))
+    internal suspend fun runTar(
+        dirs: List<String>,
+        outputFile: String,
+        isZstd: Boolean,
+        tarCmd: String = "tar",
+        zstdCmd: String = "zstd",
+        excludes: List<String> = emptyList(),
+    ): RootShell.ShellResult =
+        BackupAppDataOps.runTar(dirs, outputFile, isZstd, tarCmd, zstdCmd, excludes)
+
+    @Deprecated("Use BackupAppDataOps.backupUserData", ReplaceWith("BackupAppDataOps.backupUserData(context, packageName, appDir, userId, compression)"))
+    internal suspend fun backupUserData(
+        context: android.content.Context,
+        packageName: String,
+        appDir: File,
+        userId: String,
+        compression: String,
+    ): Pair<Long?, Long?> =
+        BackupAppDataOps.backupUserData(context, packageName, appDir, userId, compression)
+
+    @Deprecated("Use BackupAppDataOps.backupObb", ReplaceWith("BackupAppDataOps.backupObb(packageName, appDir, compression)"))
+    internal suspend fun backupObb(
+        packageName: String,
+        appDir: File,
+        compression: String,
+    ): Long? = BackupAppDataOps.backupObb(packageName, appDir, compression)
+
+    @Deprecated("Use BackupAppDataOps.backupExternalData", ReplaceWith("BackupAppDataOps.backupExternalData(packageName, appDir, userId, compression)"))
+    internal suspend fun backupExternalData(
+        packageName: String,
+        appDir: File,
+        userId: String,
+        compression: String,
+    ): Long? = BackupAppDataOps.backupExternalData(packageName, appDir, userId, compression)
+
+    @Deprecated("Use BackupAppDataOps.backupSsaid", ReplaceWith("BackupAppDataOps.backupSsaid(packageName, appDir, userId, ssaidCache)"))
+    internal suspend fun backupSsaid(
+        packageName: String,
+        appDir: File,
+        userId: String,
+        ssaidCache: SsaidCache? = null,
+    ) = BackupAppDataOps.backupSsaid(packageName, appDir, userId, ssaidCache)
+
+    @Deprecated("Use BackupAppDataOps.backupPermissions", ReplaceWith("BackupAppDataOps.backupPermissions(packageName, appDir)"))
+    internal suspend fun backupPermissions(
+        packageName: String,
+        appDir: File,
+    ) = BackupAppDataOps.backupPermissions(packageName, appDir)
 }

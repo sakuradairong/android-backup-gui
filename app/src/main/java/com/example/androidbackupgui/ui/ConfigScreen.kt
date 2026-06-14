@@ -18,7 +18,7 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
-import com.example.androidbackupgui.backup.AppScanner
+import com.example.androidbackupgui.backup.scan.AppScanner
 import com.example.androidbackupgui.backup.BackupConfig
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext

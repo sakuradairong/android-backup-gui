@@ -7,11 +7,11 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.ui.Modifier
-import com.example.androidbackupgui.backup.LogUtil
-import com.example.androidbackupgui.backup.MissingAlgoProvider
-import com.example.androidbackupgui.backup.PasswordManager
-import com.example.androidbackupgui.backup.ResticBinary
-import com.example.androidbackupgui.backup.defaultResticWrapper
+import com.example.androidbackupgui.backup.core.LogUtil
+import com.example.androidbackupgui.backup.security.MissingAlgoProvider
+import com.example.androidbackupgui.backup.security.PasswordManager
+import com.example.androidbackupgui.backup.security.ResticBinary
+import com.example.androidbackupgui.backup.restic.defaultResticWrapper
 import com.example.androidbackupgui.root.RootShell
 import com.example.androidbackupgui.ui.AppScaffold
 import com.example.androidbackupgui.ui.theme.AppTheme

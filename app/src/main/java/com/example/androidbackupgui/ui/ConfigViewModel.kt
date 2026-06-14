@@ -4,11 +4,11 @@ import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.androidbackupgui.backup.BackupConfig
-import com.example.androidbackupgui.backup.PasswordManager
-import com.example.androidbackupgui.backup.ResticBinary
-import com.example.androidbackupgui.backup.ResticWrapper
-import com.example.androidbackupgui.backup.defaultResticWrapper
-import com.example.androidbackupgui.backup.formatSize
+import com.example.androidbackupgui.backup.security.PasswordManager
+import com.example.androidbackupgui.backup.security.ResticBinary
+import com.example.androidbackupgui.backup.restic.ResticWrapper
+import com.example.androidbackupgui.backup.restic.defaultResticWrapper
+import com.example.androidbackupgui.backup.core.formatSize
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancelAndJoin

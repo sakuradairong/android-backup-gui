@@ -1,0 +1,268 @@
+package com.example.androidbackupgui.backup.restic
+
+import android.util.Log
+import jcifs.CIFSContext
+import jcifs.config.PropertyConfiguration
+import jcifs.context.BaseContext
+import jcifs.smb.NtlmPasswordAuthenticator
+import jcifs.smb.SmbException
+import jcifs.smb.SmbFile
+import jcifs.smb.SmbFileInputStream
+import jcifs.smb.SmbFileOutputStream
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.CancellationException
+import java.io.File
+import java.util.Properties
+import java.util.concurrent.atomic.AtomicBoolean
+
+class SmbTransport(
+    private val host: String,
+    private val share: String,
+    private val username: String,
+    private val password: String,
+    private val domain: String = "",
+    private val bufferSize: Int = 8192,
+    private val smbSigning: Boolean = false
+): RemoteTransport {
+    companion object {
+        private const val TAG = "SmbTransport"
+
+        /** Register missing JCA algorithms for jcifs-ng (MD4, AESCMAC, etc.). */
+        private val patchesRegistered = AtomicBoolean(false)
+        fun registerMissingAlgorithms() {
+            if (patchesRegistered.compareAndSet(false, true)) {
+                MissingAlgoProvider.register()
+            }
+        }
+    }
+    private val context: CIFSContext by lazy {
+        registerMissingAlgorithms()
+        val props = Properties().apply {
+            // Force SMB 2.0.2 minimum — SMB1 is disabled on modern Windows
+            setProperty("jcifs.smb.client.minVersion", "SMB202")
+            setProperty("jcifs.smb.client.maxVersion", "SMB311")
+            // Shorter timeouts for Android
+            setProperty("jcifs.smb.client.responseTimeout", "15000")
+            setProperty("jcifs.smb.client.connTimeout", "10000")
+            // SMB signing (disabled by default — most home servers don't support it)
+            if (smbSigning) {
+                setProperty("jcifs.smb.client.signingEnabled", "true")
+                setProperty("jcifs.smb.client.encryptionEnabled", "true")
+            }
+        }
+        val base = BaseContext(PropertyConfiguration(props))
+        if (username.isNotEmpty()) {
+            base.withCredentials(NtlmPasswordAuthenticator(domain, username, password))
+        } else {
+            base
+        }
+    }
+
+    /** Build a full SMB URL. If [path] is already a full URL, pass through. */
+    private fun buildUrl(path: String): String {
+        if (path.startsWith("smb://")) return path
+        val cleanPath = path.trimStart('/')
+        val sharePath = if (share.isNotEmpty()) "$share/$cleanPath" else cleanPath
+        return "smb://$host/$sharePath"
+    }
+
+    private fun smbFile(path: String): SmbFile = SmbFile(buildUrl(path), context)
+
+    override suspend fun upload(localPath: String, remotePath: String, onProgress: suspend (RemoteTransport.TransferProgress) -> Unit, onByteProgress: suspend (RemoteTransport.ByteProgress) -> Unit): AppResult<Unit> =
+        retryWithBackoff(TAG, "SMB 上传") {
+            withContext(Dispatchers.IO) {
+                try {
+                    val localFile = File(localPath)
+                    val remote = smbFile(remotePath)
+                    val parentPath = remote.parent
+                    if (parentPath != null) {
+                        val parent = SmbFile(parentPath, context)
+                        if (!parent.exists()) parent.mkdirs()
+                    }
+                    onProgress(RemoteTransport.TransferProgress("connecting", 0, 1, remotePath))
+                    val fileSize = localFile.length()
+                    SmbFileOutputStream(remote).use { output ->
+                        localFile.inputStream().use { input ->
+                            onProgress(RemoteTransport.TransferProgress("transferring", 0, 1, remotePath))
+                            val buffer = ByteArray(bufferSize)
+                            var totalRead = 0L
+                            var n = input.read(buffer)
+                            while (n != -1) {
+                                output.write(buffer, 0, n)
+                                totalRead += n
+                                onByteProgress(RemoteTransport.ByteProgress(totalRead, fileSize, remotePath))
+                                n = input.read(buffer)
+                            }
+                        }
+                    }
+                    val freshRemote = SmbFile(buildUrl(remotePath), context)
+                    val actualSize = freshRemote.length()
+                    Log.i(TAG, "upload done: $fileSize bytes local, $actualSize bytes on SMB")
+                    if (actualSize != fileSize) {
+                        Log.e(TAG, "upload size mismatch: local=$fileSize smb=$actualSize")
+                        return@withContext err(AppError.Remote("SMB 上传大小不匹配", "upload"))
+                    }
+                    onProgress(RemoteTransport.TransferProgress("completed", 1, 1, remotePath))
+                    AppResult.Success(Unit)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    Log.e(TAG, "upload failed: ${buildUrl(remotePath)}", e)
+                    err(AppError.Remote("SMB 上传失败", "upload", cause = e))
+                }
+            }
+        }
+
+    override suspend fun download(remotePath: String, localPath: String, onProgress: suspend (RemoteTransport.TransferProgress) -> Unit, onByteProgress: suspend (RemoteTransport.ByteProgress) -> Unit): AppResult<Unit> =
+        retryWithBackoff(TAG, "SMB 下载") {
+            withContext(Dispatchers.IO) {
+            try {
+                val localFile = File(localPath)
+                localFile.parentFile?.mkdirs()
+                val remote = smbFile(remotePath)
+                onProgress(RemoteTransport.TransferProgress("connecting", 0, 1, remotePath))
+                val fileSize = remote.length()
+                SmbFileInputStream(remote).use { input ->
+                    localFile.outputStream().use { output ->
+                        onProgress(RemoteTransport.TransferProgress("transferring", 0, 1, remotePath))
+                        val buffer = ByteArray(bufferSize)
+                        var totalRead = 0L
+                        var n = input.read(buffer)
+                        while (n != -1) {
+                            output.write(buffer, 0, n)
+                            totalRead += n
+                            onByteProgress(RemoteTransport.ByteProgress(totalRead, fileSize, remotePath))
+                            n = input.read(buffer)
+                        }
+                    }
+                }
+                onProgress(RemoteTransport.TransferProgress("completed", 1, 1, remotePath))
+                Log.d(TAG, "download ${buildUrl(remotePath)} -> $localPath (${localFile.length()} bytes)")
+                AppResult.Success(Unit)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.e(TAG, "download failed: $remotePath", e)
+                err(AppError.Remote("SMB 下载失败", "download", cause = e))
+            }
+        }
+        }
+
+    override suspend fun listFiles(remoteDir: String): AppResult<List<RemoteTransport.RemoteFileInfo>> =
+        withContext(Dispatchers.IO) {
+            try {
+                val dir = smbFile(remoteDir)
+                if (!dir.exists() || !dir.isDirectory) {
+                    return@withContext err(AppError.Remote("远端路径不存在", "list", isNotFound = true))
+                }
+                // SmbFile.getName() in jcifs-ng 2.1.x is broken — it concatenates
+                // parent-dir + filename without separator. Use the URL to extract
+                // the real basename. Trim trailing '/' first (dir URLs end with '/',
+                // which would give empty last-segment otherwise).
+                // Fall back to f.getName() with parent-path stripping if URL fails.
+                val entries = dir.listFiles()
+                    ?.map { f ->
+                        val urlStr = f.toString().trimEnd('/')  // smb://host/share/test/keys
+                        val urlName = urlStr.substringAfterLast("/")
+                        val name = if (urlName.isNotEmpty()) {
+                            urlName
+                        } else {
+                            // URL parsing gave empty — fall back with heuristic strip
+                            val raw = f.name
+                            // jcifs-ng bug: getName() returns "key/appList.txt" instead of "appList.txt"
+                            val idx = raw.lastIndexOf('/')
+                            if (idx >= 0) raw.substring(idx + 1) else raw
+                        }
+                        RemoteTransport.RemoteFileInfo(
+                            name = name,
+                            size = if (f.isFile) f.length() else 0,
+                            isDirectory = f.isDirectory
+                        )
+                    }
+                    ?: emptyList()
+                Log.d(TAG, "listFiles $remoteDir -> ${entries.size} entries: ${entries.joinToString { "${it.name}(${if (it.isDirectory) "d" else "f"},${it.size})" }}")
+                AppResult.Success(entries)
+            } catch (e: SmbException) {
+                if (e.ntStatus == 0xC0000034.toInt()) {
+                    return@withContext err(AppError.Remote("远端路径不存在", "list", isNotFound = true))
+                }
+                Log.e(TAG, "listFiles failed: $remoteDir", e)
+                err(AppError.Remote("SMB 列表失败", "list", cause = e))
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.e(TAG, "listFiles failed: $remoteDir", e)
+                err(AppError.Remote("SMB 列表失败", "list", cause = e))
+            }
+        }
+
+
+    override suspend fun mkdirs(remotePath: String): AppResult<Unit> =
+        withContext(Dispatchers.IO) {
+            try {
+                val dir = smbFile(remotePath)
+                if (!dir.exists()) dir.mkdirs()
+                AppResult.Success(Unit)
+            } catch (e: SmbException) {
+                // STATUS_OBJECT_NAME_COLLISION (0xC0000035): directory already exists — not an error
+                if (e.ntStatus == 0xC0000035.toInt()) {
+                    AppResult.Success(Unit)
+                } else {
+                    Log.e(TAG, "mkdirs failed: $remotePath — ntStatus=0x${e.ntStatus.toString(16)} msg=${e.message} cause=${e.cause}")
+                    err(AppError.Remote("SMB 创建目录失败", "mkdirs", cause = e))
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.e(TAG, "mkdirs failed: $remotePath — ${e::class.java.name}: ${e.message} cause=${e.cause?.message}")
+                err(AppError.Remote("SMB 创建目录失败", "mkdirs", cause = e))
+            }
+        }
+
+    override suspend fun delete(remotePath: String): AppResult<Unit> =
+        withContext(Dispatchers.IO) {
+            try {
+                val file = smbFile(remotePath)
+                if (file.exists()) file.delete()
+                AppResult.Success(Unit)
+            } catch (e: SmbException) {
+                // STATUS_OBJECT_NAME_NOT_FOUND (0xC0000034): file already gone — not an error
+                if (e.ntStatus == 0xC0000034.toInt()) {
+                AppResult.Success(Unit)
+                } else {
+                    Log.w(TAG, "delete failed: $remotePath — ${e.message}")
+                    err(AppError.Remote("SMB 删除失败", "delete", cause = e))
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w(TAG, "delete failed: $remotePath — ${e.message}")
+                err(AppError.Remote("SMB 删除失败", "delete", cause = e))
+            }
+        }
+
+    override suspend fun exists(remotePath: String): AppResult<Boolean> =
+        withContext(Dispatchers.IO) {
+            try {
+                AppResult.Success(smbFile(remotePath).exists())
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                err(AppError.Remote("SMB 检查失败", "exists", cause = e))
+            }
+        }
+
+    override suspend fun fileSize(remotePath: String): AppResult<Long> =
+        withContext(Dispatchers.IO) {
+            try {
+                val file = smbFile(remotePath)
+                if (!file.exists()) return@withContext err(AppError.Remote("文件不存在", "fileSize"))
+                AppResult.Success(file.length())
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                err(AppError.Remote("SMB 获取文件大小失败", "fileSize", cause = e))
+            }
+        }
+}
