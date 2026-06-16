@@ -43,6 +43,13 @@ fun RestoreScreen() {
     var statusText by remember { mutableStateOf("请选择备份源") }
     var showSnapshotPicker by remember { mutableStateOf(false) }
     var availableSnapshots by remember { mutableStateOf<List<ResticWrapper.ResticSnapshot>>(emptyList()) }
+    // ── 结构化进度状态 ──
+    var progressCurrent by remember { mutableIntStateOf(0) }
+    var progressTotal by remember { mutableIntStateOf(0) }
+    var progressStage by remember { mutableStateOf("") }
+    var progressPackageName by remember { mutableStateOf("") }
+    var progressMessage by remember { mutableStateOf("") }
+    var progressPercent by remember { mutableStateOf<Float?>(null) }
     val configFile = remember { File(context.filesDir, "backup_settings.conf") }
 
     // SAF directory picker for selecting external backup dir
@@ -216,12 +223,17 @@ fun RestoreScreen() {
             }
         }
 
-        // ── Status ──
-        Text(
-            text = statusText,
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+        // ── Progress ──
+        ProgressBlock(
+            isRunning = isRunning,
+            statusText = statusText,
+            progressCurrent = progressCurrent,
+            progressTotal = progressTotal,
+            progressStage = progressStage,
+            progressPackageName = progressPackageName,
+            progressMessage = progressMessage,
+            progressPercent = progressPercent,
+            stageDisplayName = ::restoreStageDisplayName,
         )
 
         // ── App list ──
@@ -284,6 +296,12 @@ fun RestoreScreen() {
                     if (toRestore.isEmpty()) return@Button
                     isRunning = true
                     statusText = "开始恢复 ${toRestore.size} 个应用…"
+                    progressCurrent = 0
+                    progressTotal = toRestore.size
+                    progressStage = ""
+                    progressPackageName = ""
+                    progressMessage = ""
+                    progressPercent = null
 
                     scope.launch {
                         try {
@@ -296,6 +314,9 @@ fun RestoreScreen() {
 
                                 try {
                                     statusText = "正在从 restic 快照恢复…"
+                                    progressStage = "restic"
+                                    progressMessage = "正在拉取快照…"
+                                    progressPercent = null
                                     val restoreResult =
                                         withContext(Dispatchers.IO) {
                                             val rPw =
@@ -314,14 +335,35 @@ fun RestoreScreen() {
                                                 backendUser = config.resticBackendUser,
                                                 backendPass = rBpw,
                                                 backendShare = config.resticBackendShare,
+                                                onProgress = { msg ->
+                                                    // restic restore emits "恢复进度: 12.3%" / "恢复完成: N 个文件"
+                                                    statusText = msg
+                                                    progressMessage = msg
+                                                    val pct =
+                                                        Regex("""(\d{1,3})(?:\.\d+)?%""")
+                                                            .find(msg)
+                                                            ?.groupValues
+                                                            ?.get(1)
+                                                            ?.toFloatOrNull()
+                                                            ?.div(100f)
+                                                            ?.coerceIn(0f, 1f)
+                                                    progressPercent = pct
+                                                },
                                             )
                                         }
                                     if (restoreResult.isFailure) {
                                         statusText = "restic 恢复失败: ${restoreResult.exceptionOrNull()?.message}"
+                                        progressMessage = statusText
+                                        // 清空快照选择，避免用户在半残状态上二次操作
+                                        selectedSnapshot = null
+                                        packages = emptyList()
+                                        appInfos = emptyList()
+                                        selectedPackages = emptySet()
                                         return@launch
                                     }
                                     val restoredDir = File(staging, backupPath.removePrefix("/"))
                                     statusText = "正在从恢复的备份安装应用…"
+                                    progressPercent = null
 
                                     val result =
                                         withContext(Dispatchers.IO) {
@@ -333,16 +375,26 @@ fun RestoreScreen() {
                                                 onProgress = { progress ->
                                                     statusText =
                                                         "[${progress.current}/${progress.total}] ${progress.packageName}: ${progress.message}"
+                                                    progressCurrent = progress.current
+                                                    progressTotal = progress.total
+                                                    progressStage = progress.stage
+                                                    progressPackageName = progress.packageName
+                                                    progressMessage = progress.message
                                                 },
                                             )
                                         }
                                     WifiManager.restore(restoredDir)
+                                    val failed = result.failCount
                                     statusText =
                                         buildString {
-                                            appendLine("恢复完成！")
-                                            appendLine("成功: ${result.successCount} 失败: ${result.failCount}")
+                                            appendLine("恢复${if (failed > 0) "完成（部分失败）" else "完成！"}")
+                                            appendLine("成功: ${result.successCount} 失败: $failed")
                                             append("耗时: ${result.elapsedMs / 1000}秒")
                                         }
+                                    progressCurrent = result.successCount
+                                    progressStage = if (failed > 0) "partial" else "done"
+                                    progressMessage = if (failed > 0) "失败 $failed 个" else "完成"
+                                    progressPercent = null
                                 } finally {
                                     try {
                                         staging.deleteRecursively()
@@ -361,21 +413,33 @@ fun RestoreScreen() {
                                             onProgress = { progress ->
                                                 statusText =
                                                     "[${progress.current}/${progress.total}] ${progress.packageName}: ${progress.message}"
+                                                progressCurrent = progress.current
+                                                progressTotal = progress.total
+                                                progressStage = progress.stage
+                                                progressPackageName = progress.packageName
+                                                progressMessage = progress.message
                                             },
                                         )
                                     }
                                 WifiManager.restore(dir)
+                                val failed = result.failCount
                                 statusText =
                                     buildString {
-                                        appendLine("恢复完成！")
-                                        appendLine("成功: ${result.successCount} 失败: ${result.failCount}")
+                                        appendLine("恢复${if (failed > 0) "完成（部分失败）" else "完成！"}")
+                                        appendLine("成功: ${result.successCount} 失败: $failed")
                                         append("耗时: ${result.elapsedMs / 1000}秒")
                                     }
+                                progressCurrent = result.successCount
+                                progressStage = if (failed > 0) "partial" else "done"
+                                progressMessage = if (failed > 0) "失败 $failed 个" else "完成"
                             }
                         } catch (e: Exception) {
                             statusText = "恢复异常: ${e.message}"
+                            progressMessage = e.message ?: "异常"
+                            progressStage = "partial"
                         } finally {
                             isRunning = false
+                            progressPercent = null
                         }
                     }
                 },

@@ -28,7 +28,7 @@ object RestoreOperation {
         val current: Int,
         val total: Int,
         val packageName: String,
-        val stage: String, // "install", "data", "obb", "ssaid", "permissions", "done"
+        val stage: String, // "install", "data", "obb", "ssaid", "permissions", "appdone" (per-app finish), "done" (reserved for overall)
         val message: String,
     )
 
@@ -114,7 +114,7 @@ object RestoreOperation {
                             LogUtil.i(TAG, "restoreApps: pkg=$pkg appBackupDir=${appBackupDir.absolutePath} exists=$dirExists")
                             if (!dirExists) {
                                 failAtomic.incrementAndGet()
-                                emit(RestoreProgress(index + 1, packages.size, pkg, "done", "备份目录不存在"))
+                                emit(RestoreProgress(index + 1, packages.size, pkg, "appdone", "备份目录不存在"))
                                 return@withPermit
                             }
 
@@ -125,7 +125,7 @@ object RestoreOperation {
 
                             if (!installed) {
                                 failAtomic.incrementAndGet()
-                                emit(RestoreProgress(index + 1, packages.size, pkg, "done", "安装失败"))
+                                emit(RestoreProgress(index + 1, packages.size, pkg, "appdone", "安装失败"))
                                 return@withPermit
                             }
 
@@ -140,7 +140,7 @@ object RestoreOperation {
                             val dataOk = RestoreAppDataOps.restoreData(pkg, userId, appBackupDir, tarCmd, zstdCmd)
                             if (!dataOk) {
                                 failAtomic.incrementAndGet()
-                                emit(RestoreProgress(index + 1, packages.size, pkg, "done", "数据恢复失败"))
+                                emit(RestoreProgress(index + 1, packages.size, pkg, "appdone", "数据恢复失败"))
                                 return@withPermit
                             }
 
@@ -170,7 +170,7 @@ object RestoreOperation {
                             RestoreAppDataOps.fixDataOwnership(pkg, userId) { pkgName -> resolveAppUid(pkgName) }
 
                             successAtomic.incrementAndGet()
-                            emit(RestoreProgress(index + 1, packages.size, pkg, "done", "完成"))
+                            emit(RestoreProgress(index + 1, packages.size, pkg, "appdone", "完成"))
                         }
                     }
                 }

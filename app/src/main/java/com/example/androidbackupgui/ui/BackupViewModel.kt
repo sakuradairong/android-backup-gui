@@ -42,11 +42,13 @@ data class BackupUiState(
     val statusText: String = "请先扫描应用",
     val isRunning: Boolean = false,
     val isScanning: Boolean = false,
-    // 进度相关字段
-    val progressPercent: Float = 0f,
-    val etaSeconds: Long = 0,
-    val currentStage: String = "",
-    val currentApp: String = "",
+    // ── 结构化进度字段 ──
+    val progressCurrent: Int = 0,
+    val progressTotal: Int = 0,
+    val progressStage: String = "", // "apk"/"data"/"obb"/"ssaid"/"appdone"(per-app) /"restic"/"done"/"partial"
+    val progressPackageName: String = "",
+    val progressMessage: String = "",
+    val progressPercent: Float? = null, // restic 百分比（0.0~1.0），null 表示不确定
 )
 
 /** 备份操作的一次性事件。 */
@@ -185,7 +187,18 @@ class BackupViewModel(
         val toBackup = s.allApps.filter { it.packageName.value in s.selectedApps }
         if (toBackup.isEmpty()) return
 
-        _state.update { it.copy(isRunning = true, statusText = "开始备份 ${toBackup.size} 个应用…") }
+        _state.update {
+            it.copy(
+                isRunning = true,
+                statusText = "开始备份 ${toBackup.size} 个应用…",
+                progressCurrent = 0,
+                progressTotal = toBackup.size,
+                progressStage = "",
+                progressPackageName = "",
+                progressMessage = "",
+                progressPercent = null,
+            )
+        }
 
         currentJob =
             viewModelScope.launch {
@@ -203,7 +216,6 @@ class BackupViewModel(
 
                     // 2. 执行备份
                     val outputDir = File(s.config.outputPath.ifEmpty { context.filesDir.absolutePath })
-                    val backupProgressTracker = com.example.androidbackupgui.backup.BackupProgressTracker(toBackup.size)
                     val backupResult =
                         withContext(Dispatchers.IO) {
                             BackupOperation.backupApps(
@@ -214,31 +226,30 @@ class BackupViewModel(
                                 userId = s.config.backupUserId.toString(),
                                 noDataBackup = s.excludeDataFromBackup,
                                 onProgress = { progress ->
-                                    backupProgressTracker.startApp(progress.packageName)
-                                    backupProgressTracker.updateStage(progress.stage, progress.message)
-                                    if (progress.stage == "done") {
-                                        backupProgressTracker.completeApp()
-                                    }
-                                    val progressInfo = backupProgressTracker.getProgress()
                                     _state.update {
                                         it.copy(
-                                            statusText = progressInfo.message,
-                                            progressPercent = progressInfo.percent,
-                                            etaSeconds = progressInfo.etaSeconds,
-                                            currentStage = progressInfo.stage,
-                                            currentApp = progressInfo.packageName,
+                                            statusText = "[${progress.current}/${progress.total}] ${progress.packageName}: ${progress.message}",
+                                            progressCurrent = progress.current,
+                                            progressTotal = progress.total,
+                                            progressStage = progress.stage,
+                                            progressPackageName = progress.packageName,
+                                            progressMessage = progress.message,
+                                            progressPercent = null,
                                         )
                                     }
                                 },
                             )
                         }
+                    val failed = backupResult.failCount
                     _state.update {
                         it.copy(
-                            statusText = "备份完成！成功: ${backupResult.successCount} 失败: ${backupResult.failCount} 耗时: ${backupResult.elapsedMs / 1000}s",
-                            progressPercent = 100f,
-                            etaSeconds = 0,
-                            currentStage = "完成",
-                            currentApp = "",
+                            statusText = "备份${if (failed > 0) "完成（部分失败）" else "完成"}！成功: ${backupResult.successCount} 失败: $failed 耗时: ${backupResult.elapsedMs / 1000}s",
+                            progressCurrent = backupResult.successCount,
+                            progressTotal = toBackup.size,
+                            progressStage = if (failed > 0) "partial" else "done",
+                            progressPackageName = "",
+                            progressMessage = if (failed > 0) "失败 $failed 个" else "完成",
+                            progressPercent = null,
                         )
                     }
 
@@ -270,9 +281,21 @@ class BackupViewModel(
                             append("\n建议: ${errorInfo.suggestion}")
                         }
                     }
-                    _state.update { it.copy(statusText = errorMessage) }
+                    _state.update {
+                        it.copy(
+                            statusText = errorMessage,
+                            progressStage = "partial",
+                            progressMessage = e.message ?: "异常",
+                            progressPercent = null,
+                        )
+                    }
                 } finally {
-                    _state.update { it.copy(isRunning = false) }
+                    _state.update {
+                        it.copy(
+                            isRunning = false,
+                            progressPercent = null,
+                        )
+                    }
                     try {
                         context.startService(Intent(context, BackupService::class.java).apply { action = ACTION_STOP_BACKUP })
                     } catch (_: Exception) {
@@ -312,7 +335,26 @@ class BackupViewModel(
                     backendUser = s.config.resticBackendUser,
                     backendPass = backendPass,
                     backendShare = s.config.resticBackendShare,
-                    onProgress = { msg -> _state.update { it.copy(statusText = msg) } },
+                    onProgress = { msg ->
+                        // 流式备份进度消息包含百分比信息，尝试解析。
+                        // 兼容整数 "100%" 与小数 "12.34%"，并 coerce 到 [0,1]。
+                        val pct =
+                            Regex("""(\d{1,3})(?:\.\d+)?%""")
+                                .find(msg)
+                                ?.groupValues
+                                ?.get(1)
+                                ?.toFloatOrNull()
+                                ?.div(100f)
+                                ?.coerceIn(0f, 1f)
+                        _state.update {
+                            it.copy(
+                                statusText = msg,
+                                progressStage = "restic",
+                                progressMessage = msg,
+                                progressPercent = pct,
+                            )
+                        }
+                    },
                 ).let { result ->
                     when (result) {
                         is AppResult.Success -> {
@@ -327,7 +369,14 @@ class BackupViewModel(
                         }
 
                         is AppResult.Failure -> {
-                            _state.update { it.copy(statusText = "流式备份失败: ${result.errorOrNull()?.message}") }
+                            _state.update {
+                                it.copy(
+                                    statusText = "流式备份失败: ${result.errorOrNull()?.message}",
+                                    progressStage = "partial",
+                                    progressMessage = "上传失败",
+                                    progressPercent = null,
+                                )
+                            }
                         }
                     }
                 }
@@ -354,6 +403,9 @@ class BackupViewModel(
                                             progress.filesDone,
                                             progress.totalFiles,
                                         ),
+                                    progressStage = "restic",
+                                    progressMessage = "上传中: %.0f%%".format(progress.percentDone * 100),
+                                    progressPercent = progress.percentDone.toFloat(),
                                 )
                             }
                         }
@@ -372,7 +424,14 @@ class BackupViewModel(
                         }
 
                         is AppResult.Failure -> {
-                            _state.update { it.copy(statusText = "restic 快照失败: ${result.errorOrNull()?.message}") }
+                            _state.update {
+                                it.copy(
+                                    statusText = "restic 快照失败: ${result.errorOrNull()?.message}",
+                                    progressStage = "partial",
+                                    progressMessage = "上传失败",
+                                    progressPercent = null,
+                                )
+                            }
                         }
                     }
                 }

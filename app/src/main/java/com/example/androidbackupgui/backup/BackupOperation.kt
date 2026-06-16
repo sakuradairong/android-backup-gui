@@ -36,7 +36,7 @@ object BackupOperation {
         val current: Int,
         val total: Int,
         val packageName: String,
-        val stage: String, // "apk", "data", "obb", "ssaid", "done"
+        val stage: String, // "apk", "data", "obb", "ssaid", "appdone" (per-app finish), "done" (reserved for overall)
         val message: String,
     )
 
@@ -189,7 +189,7 @@ object BackupOperation {
                                 failAtomic.incrementAndGet()
                                 val pkg = app.packageName.value
                                 Log.e(TAG, "backupApps: $pkg backup failed: ${e.message}", e)
-                                emit(BackupProgress(index + 1, totalCount, pkg, "done", "备份失败: ${e.message}"))
+                                emit(BackupProgress(index + 1, totalCount, pkg, "appdone", "备份失败: ${e.message}"))
                             }
                         }
                     }.awaitAll()
@@ -350,7 +350,7 @@ object BackupOperation {
                 userDeSize = udResult.second
                 if (udResult.first == null) {
                     failAtomic.incrementAndGet()
-                    emit(BackupProgress(index + 1, totalCount, pkgName, "done", "数据备份失败"))
+                    emit(BackupProgress(index + 1, totalCount, pkgName, "appdone", "数据备份失败"))
                     return
                 }
             }
@@ -366,7 +366,7 @@ object BackupOperation {
                 obbSize = BackupAppDataOps.backupObb(pkgName, appDir, config.compressionMethod)
                 if (obbSize == null) {
                     failAtomic.incrementAndGet()
-                    emit(BackupProgress(index + 1, totalCount, pkgName, "done", "OBB 备份失败"))
+                    emit(BackupProgress(index + 1, totalCount, pkgName, "appdone", "OBB 备份失败"))
                     return
                 }
             }
@@ -422,7 +422,7 @@ object BackupOperation {
             )
 
         successAtomic.incrementAndGet()
-        emit(BackupProgress(index + 1, totalCount, pkgName, "done", "完成"))
+        emit(BackupProgress(index + 1, totalCount, pkgName, "appdone", "完成"))
     }
 
     internal suspend fun buildAppDetailsJson(
