@@ -56,7 +56,7 @@ class ResticRestBridge(
                     )
             val auth = headers["authorization"]
             if (auth != expected) {
-                Log.w(TAG, "auth failed (got=${auth?.take(20)}..., expected=Basic $authToken)")
+                Log.w(TAG, "auth failed")
                 return newFixedLengthResponse(
                     Response.Status.UNAUTHORIZED,
                     "text/plain",

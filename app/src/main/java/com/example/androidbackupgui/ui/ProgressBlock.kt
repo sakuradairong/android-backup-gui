@@ -44,8 +44,8 @@ fun ProgressBlock(
     stageDisplayName: (String) -> String,
     modifier: Modifier = Modifier,
 ) {
+    val isError = progressStage == "partial"
     if (isRunning && progressTotal > 0) {
-        val isError = progressStage == "partial"
         val counterColor = if (isError) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
         val trackColor = if (isError) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
         val computedFraction =
@@ -104,7 +104,7 @@ fun ProgressBlock(
         Text(
             text = statusText,
             style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            color = if (isError) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = modifier.padding(horizontal = 12.dp, vertical = 4.dp),
         )
     }

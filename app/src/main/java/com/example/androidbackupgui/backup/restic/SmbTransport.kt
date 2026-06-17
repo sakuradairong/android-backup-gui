@@ -18,9 +18,11 @@ import jcifs.smb.SmbFileOutputStream
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.ensureActive
 import java.io.File
 import java.util.Properties
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.coroutines.coroutineContext
 
 class SmbTransport(
     private val host: String,
@@ -29,7 +31,8 @@ class SmbTransport(
     private val password: String,
     private val domain: String = "",
     private val bufferSize: Int = 8192,
-    private val smbSigning: Boolean = false
+    private val smbSigning: Boolean = true,
+    private val smbEncryption: Boolean = false
 ): RemoteTransport {
     companion object {
         private const val TAG = "SmbTransport"
@@ -54,6 +57,8 @@ class SmbTransport(
             // SMB signing (disabled by default — most home servers don't support it)
             if (smbSigning) {
                 setProperty("jcifs.smb.client.signingEnabled", "true")
+            }
+            if (smbEncryption) {
                 setProperty("jcifs.smb.client.encryptionEnabled", "true")
             }
         }
@@ -93,16 +98,17 @@ class SmbTransport(
                             onProgress(RemoteTransport.TransferProgress("transferring", 0, 1, remotePath))
                             val buffer = ByteArray(bufferSize)
                             var totalRead = 0L
-                            var n = input.read(buffer)
-                            while (n != -1) {
-                                output.write(buffer, 0, n)
-                                totalRead += n
-                                onByteProgress(RemoteTransport.ByteProgress(totalRead, fileSize, remotePath))
-                                n = input.read(buffer)
-                            }
+                        var n = input.read(buffer)
+                        while (n != -1) {
+                            coroutineContext.ensureActive()
+                            output.write(buffer, 0, n)
+                            totalRead += n
+                            onByteProgress(RemoteTransport.ByteProgress(totalRead, fileSize, remotePath))
+                            n = input.read(buffer)
                         }
                     }
-                    val freshRemote = SmbFile(buildUrl(remotePath), context)
+                }
+                val freshRemote = SmbFile(buildUrl(remotePath), context)
                     val actualSize = freshRemote.length()
                     Log.i(TAG, "upload done: $fileSize bytes local, $actualSize bytes on SMB")
                     if (actualSize != fileSize) {
@@ -136,6 +142,7 @@ class SmbTransport(
                         var totalRead = 0L
                         var n = input.read(buffer)
                         while (n != -1) {
+                            coroutineContext.ensureActive()
                             output.write(buffer, 0, n)
                             totalRead += n
                             onByteProgress(RemoteTransport.ByteProgress(totalRead, fileSize, remotePath))

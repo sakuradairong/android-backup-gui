@@ -106,21 +106,29 @@ fun BackupScreen(viewModel: BackupViewModel = viewModel()) {
             }
         }
 
-        // ── Bottom bar with backup button ──
+        // ── Bottom bar with backup/cancel button ──
         Surface(modifier = Modifier.fillMaxWidth(), tonalElevation = 3.dp) {
-            Button(
-                onClick = { viewModel.executeBackup(context) },
-                enabled = !state.isRunning && state.selectedApps.isNotEmpty(),
-                modifier = Modifier.fillMaxWidth().padding(12.dp),
-            ) {
-                if (state.isRunning) {
-                    CircularProgressIndicator(modifier = Modifier.size(16.dp))
-                    Spacer(Modifier.width(8.dp))
+            if (state.isRunning) {
+                OutlinedButton(
+                    onClick = { viewModel.cancelBackup(context) },
+                    modifier = Modifier.fillMaxWidth().padding(12.dp),
+                    colors = ButtonDefaults.outlinedButtonColors(
+                        contentColor = MaterialTheme.colorScheme.error,
+                    ),
+                ) {
+                    Text("取消备份")
                 }
-                Text("开始备份 (${state.selectedApps.size})")
+            } else {
+                Button(
+                    onClick = { viewModel.executeBackup(context) },
+                    enabled = state.selectedApps.isNotEmpty(),
+                    modifier = Modifier.fillMaxWidth().padding(12.dp),
+                ) {
+                    Text("开始备份 (${state.selectedApps.size})")
             }
         }
     }
+}
 }
 
 @Composable

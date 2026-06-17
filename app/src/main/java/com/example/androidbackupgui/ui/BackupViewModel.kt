@@ -14,9 +14,16 @@ import com.example.androidbackupgui.backup.restic.defaultResticWrapper
 import com.example.androidbackupgui.backup.scan.AppScanner
 import com.example.androidbackupgui.backup.security.CredentialProvider
 import com.example.androidbackupgui.backup.security.ResticBinary
-import com.example.androidbackupgui.backup.BackupService.Companion.ACTION_START_BACKUP
-import com.example.androidbackupgui.backup.BackupService.Companion.ACTION_STOP_BACKUP
+import com.example.androidbackupgui.backup.BackupService.Companion.ACTION_START_TASK
+import com.example.androidbackupgui.backup.BackupService.Companion.ACTION_STOP_TASK
 import com.example.androidbackupgui.backup.BackupService.Companion.EXTRA_STATUS_TEXT
+import com.example.androidbackupgui.backup.BackupService.Companion.EXTRA_TASK_ID
+import com.example.androidbackupgui.backup.BackupService.Companion.EXTRA_TASK_TYPE
+import com.example.androidbackupgui.backup.BackupService.Companion.EXTRA_PROGRESS_CURRENT
+import com.example.androidbackupgui.backup.BackupService.Companion.EXTRA_PROGRESS_TOTAL
+import com.example.androidbackupgui.backup.BackupService.Companion.EXTRA_PROGRESS_PERCENT
+import com.example.androidbackupgui.backup.BackupService.Companion.TASK_TYPE_BACKUP
+import com.example.androidbackupgui.backup.BackupService.Companion.TASK_TYPE_RESTIC
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -27,10 +34,10 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.Locale
+import java.util.UUID
 
 enum class SortMode { NAME_ASC, SIZE_DESC }
 
-/** Backup 界面的完整 UI 状态。 */
 data class BackupUiState(
     val config: BackupConfig = BackupConfig(),
     val allApps: List<AppInfo> = emptyList(),
@@ -42,16 +49,15 @@ data class BackupUiState(
     val statusText: String = "请先扫描应用",
     val isRunning: Boolean = false,
     val isScanning: Boolean = false,
-    // ── 结构化进度字段 ──
     val progressCurrent: Int = 0,
     val progressTotal: Int = 0,
-    val progressStage: String = "", // "apk"/"data"/"obb"/"ssaid"/"appdone"(per-app) /"restic"/"done"/"partial"
+    val progressStage: String = "",
     val progressPackageName: String = "",
     val progressMessage: String = "",
-    val progressPercent: Float? = null, // restic 百分比（0.0~1.0），null 表示不确定
+    val progressPercent: Float? = null,
+    val taskId: String = "",
 )
 
-/** 备份操作的一次性事件。 */
 sealed interface BackupEvent {
     data class Error(
         val message: String,
@@ -75,12 +81,9 @@ class BackupViewModel(
     private var currentJob: Job? = null
 
     init {
-        // 加载配置文件
         val cfg = BackupConfig.fromFile(File(application.filesDir, "backup_settings.conf"))
         _state.update { it.copy(config = cfg) }
     }
-
-    // ── 应用列表排序/过滤 ──────────────────────────────
 
     fun applySortAndFilter() {
         val s = _state.value
@@ -133,8 +136,6 @@ class BackupViewModel(
         }
     }
 
-    // ── 扫描应用 ────────────────────────────────────────
-
     fun scanApps(context: Context) {
         if (_state.value.isScanning) return
         _state.update { it.copy(isScanning = true, statusText = "正在扫描应用…") }
@@ -180,16 +181,17 @@ class BackupViewModel(
             }
     }
 
-    // ── 执行备份 ────────────────────────────────────────
-
     fun executeBackup(context: Context) {
         val s = _state.value
         val toBackup = s.allApps.filter { it.packageName.value in s.selectedApps }
         if (toBackup.isEmpty()) return
 
+        val taskId = "backup_${UUID.randomUUID().toString().take(8)}"
+
         _state.update {
             it.copy(
                 isRunning = true,
+                taskId = taskId,
                 statusText = "开始备份 ${toBackup.size} 个应用…",
                 progressCurrent = 0,
                 progressTotal = toBackup.size,
@@ -200,21 +202,25 @@ class BackupViewModel(
             )
         }
 
+        val registration = TaskCancellationRegistry.register(taskId) {
+            currentJob?.cancel()
+        }
+
         currentJob =
             viewModelScope.launch {
                 try {
-                    // 1. 启动前台服务
                     val serviceIntent =
                         Intent(context, BackupService::class.java).apply {
-                            action = ACTION_START_BACKUP
+                            action = ACTION_START_TASK
                             putExtra(EXTRA_STATUS_TEXT, "正在备份 ${toBackup.size} 个应用…")
+                            putExtra(EXTRA_TASK_ID, taskId)
+                            putExtra(EXTRA_TASK_TYPE, TASK_TYPE_BACKUP)
                         }
                     try {
                         ContextCompat.startForegroundService(context, serviceIntent)
                     } catch (_: Exception) {
                     }
 
-                    // 2. 执行备份
                     val outputDir = File(s.config.outputPath.ifEmpty { context.filesDir.absolutePath })
                     val backupResult =
                         withContext(Dispatchers.IO) {
@@ -226,6 +232,9 @@ class BackupViewModel(
                                 userId = s.config.backupUserId.toString(),
                                 noDataBackup = s.excludeDataFromBackup,
                                 onProgress = { progress ->
+                                    if (registration.cancelled.get()) {
+                                        throw TaskCancellationRegistry.CancellationException(taskId)
+                                    }
                                     _state.update {
                                         it.copy(
                                             statusText = "[${progress.current}/${progress.total}] ${progress.packageName}: ${progress.message}",
@@ -237,6 +246,9 @@ class BackupViewModel(
                                             progressPercent = null,
                                         )
                                     }
+                                    updateServiceNotification(context, taskId, TASK_TYPE_BACKUP,
+                                        "[${progress.current}/${progress.total}] ${progress.packageName}",
+                                        progress.current, progress.total, null)
                                 },
                             )
                         }
@@ -253,17 +265,30 @@ class BackupViewModel(
                         )
                     }
 
-                    // 3. WiFi 备份
                     if (s.config.backupWifi == 1) {
                         WifiManager.backup(File(backupResult.outputDir))
                     }
 
-                    // 4. Restic 上传
                     if (s.config.resticEnabled == 1 && s.config.resticRepo.isNotBlank()) {
-                        executeResticBackup(context, toBackup, s, backupResult)
+                        executeResticBackup(context, toBackup, s, backupResult, taskId)
+                    }
+                } catch (e: TaskCancellationRegistry.CancellationException) {
+                    _state.update {
+                        it.copy(
+                            statusText = "备份已取消",
+                            progressStage = "cancelled",
+                            progressMessage = "已取消",
+                        )
+                    }
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    _state.update {
+                        it.copy(
+                            statusText = "备份已取消",
+                            progressStage = "cancelled",
+                            progressMessage = "已取消",
+                        )
                     }
                 } catch (e: Exception) {
-                    // 使用 ErrorSuggestionFactory 生成友好的错误提示
                     val error = when {
                         e.message?.contains("EPERM", ignoreCase = true) == true ->
                             AppError.LocalIO("写入备份目录被拒绝", s.config.outputPath)
@@ -274,7 +299,7 @@ class BackupViewModel(
                         else ->
                             AppError.LocalIO("备份异常: ${e.message}", s.config.outputPath, cause = e)
                     }
-                    val errorInfo = com.example.androidbackupgui.backup.core.ErrorSuggestionFactory.createSuggestion(error, "备份操作")
+                    val errorInfo = ErrorSuggestionFactory.createSuggestion(error, "备份操作")
                     val errorMessage = buildString {
                         append(errorInfo.message)
                         if (errorInfo.suggestion.isNotEmpty()) {
@@ -296,12 +321,44 @@ class BackupViewModel(
                             progressPercent = null,
                         )
                     }
+                    TaskCancellationRegistry.unregister(taskId)
                     try {
-                        context.startService(Intent(context, BackupService::class.java).apply { action = ACTION_STOP_BACKUP })
+                        context.startService(Intent(context, BackupService::class.java).apply { action = ACTION_STOP_TASK })
                     } catch (_: Exception) {
                     }
                 }
             }
+    }
+
+    fun cancelBackup(context: Context) {
+        val taskId = _state.value.taskId
+        if (taskId.isNotEmpty()) {
+            TaskCancellationRegistry.cancel(taskId)
+        }
+    }
+
+    private fun updateServiceNotification(
+        context: Context,
+        taskId: String,
+        taskType: String,
+        statusText: String,
+        current: Int,
+        total: Int,
+        percent: Float?,
+    ) {
+        try {
+            val intent = Intent(context, BackupService::class.java).apply {
+                action = BackupService.ACTION_UPDATE_TASK
+                putExtra(EXTRA_STATUS_TEXT, statusText)
+                putExtra(EXTRA_TASK_ID, taskId)
+                putExtra(EXTRA_TASK_TYPE, taskType)
+                putExtra(EXTRA_PROGRESS_CURRENT, current)
+                putExtra(EXTRA_PROGRESS_TOTAL, total)
+                percent?.let { putExtra(EXTRA_PROGRESS_PERCENT, it) }
+            }
+            ContextCompat.startForegroundService(context, intent)
+        } catch (_: Exception) {
+        }
     }
 
     private suspend fun executeResticBackup(
@@ -309,6 +366,7 @@ class BackupViewModel(
         toBackup: List<AppInfo>,
         s: BackupUiState,
         backupResult: BackupOperation.BackupResult,
+        taskId: String,
     ) {
         val binaryPath = ResticBinary.prepare(context) ?: return
         defaultResticWrapper.binaryPath = binaryPath
@@ -336,8 +394,6 @@ class BackupViewModel(
                     backendPass = backendPass,
                     backendShare = s.config.resticBackendShare,
                     onProgress = { msg ->
-                        // 流式备份进度消息包含百分比信息，尝试解析。
-                        // 兼容整数 "100%" 与小数 "12.34%"，并 coerce 到 [0,1]。
                         val pct =
                             Regex("""(\d{1,3})(?:\.\d+)?%""")
                                 .find(msg)
@@ -354,6 +410,7 @@ class BackupViewModel(
                                 progressPercent = pct,
                             )
                         }
+                        updateServiceNotification(context, taskId, TASK_TYPE_RESTIC, msg, 0, 0, pct)
                     },
                 ).let { result ->
                     when (result) {
@@ -408,6 +465,9 @@ class BackupViewModel(
                                     progressPercent = progress.percentDone.toFloat(),
                                 )
                             }
+                            updateServiceNotification(context, taskId, TASK_TYPE_RESTIC,
+                                "上传中: %.0f%%".format(progress.percentDone * 100),
+                                progress.filesDone, progress.totalFiles, progress.percentDone.toFloat())
                         }
                     },
                 ).let { result ->

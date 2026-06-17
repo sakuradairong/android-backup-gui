@@ -4,6 +4,7 @@ import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.isActive
 import com.example.androidbackupgui.backup.core.AppError
+import com.example.androidbackupgui.backup.core.LogSanitizer
 import kotlinx.coroutines.withContext
 import java.io.BufferedReader
 import java.io.File
@@ -12,15 +13,10 @@ import java.io.ByteArrayOutputStream
 import java.io.InputStream
 import kotlinx.serialization.Serializable
 
-/**
- * Manages restic binary process execution.
- * Holds the binary path and provides blocking and streaming execution.
- */
 class ResticCommandRunner {
 
     private val TAG = "ResticWrapper"
 
-    /** Path to the restic binary. Default assumes it's on PATH (e.g. Termux). */
     var binaryPath: String = "restic"
 
     @Serializable
@@ -30,13 +26,9 @@ class ResticCommandRunner {
         val exitCode: Int
     )
 
-    /** Build the full command list to run restic. */
     fun buildCommandArgs(args: List<String>): List<String> =
-        (listOf(binaryPath) + args).also { cmd ->
-            Log.d(TAG, "buildCommandArgs: binaryPath=$binaryPath args=$args -> cmd=$cmd")
-        }
+        (listOf(binaryPath) + args)
 
-    /** Wait for process to exit with a polling loop (compatible with API 24+). */
     private fun Process.waitForCompat(deadlineMs: Long = 60_000): Int {
         val deadline = System.currentTimeMillis() + deadlineMs
         while (System.currentTimeMillis() < deadline) {
@@ -52,13 +44,9 @@ class ResticCommandRunner {
         return exitValue()
     }
 
-    /** Run restic (non-streaming). */
     fun runRestic(env: Map<String, String>, args: List<String>): CommandResult {
         val cmdArgs = buildCommandArgs(args)
-        Log.i(TAG, "runRestic cmd=${cmdArgs.joinToString(" ")}")
-        Log.d(TAG, "runRestic REPOSITORY=${env["RESTIC_REPOSITORY"]}")
-        // NOTE: Do NOT log RESTIC_PASSWORD or any value derived from it.
-        // RESTIC_REPOSITORY is safe to log (does not contain secrets).
+        Log.i(TAG, "runRestic cmd=${LogSanitizer.redact(cmdArgs.joinToString(" "))}")
         env["TMPDIR"]?.let { File(it).mkdirs() }
         return try {
             val pb = ProcessBuilder(cmdArgs)
@@ -66,15 +54,11 @@ class ResticCommandRunner {
             pb.redirectErrorStream(false)
             val process = pb.start()
 
-            // Drain stderr on a separate daemon thread to avoid a pipe deadlock:
-            // if stderr's buffer fills while we're still reading stdout, the child
-            // process blocks on writing stderr and we block on reading stdout.
             var stderrBytes = byteArrayOf()
             val stderrThread = Thread {
                 try {
                     stderrBytes = process.errorStream.use { it.readAllBytesCompat() }
                 } catch (_: Exception) {
-                    // stream closed early; leave stderrBytes empty
                 }
             }.apply { isDaemon = true; start() }
 
@@ -85,7 +69,7 @@ class ResticCommandRunner {
             try { stderrThread.join(1_000) } catch (_: InterruptedException) {}
             val stderrText = stderrBytes.decodeToString()
             Log.i(TAG, "runRestic exitCode=$exitCode stdout_len=${stdout.length}")
-            if (stderrText.isNotEmpty()) Log.w(TAG, "runRestic stderr: ${stderrText.trim()}")
+            if (stderrText.isNotEmpty()) Log.w(TAG, "runRestic stderr: ${stderrText.trim().take(500)}")
             CommandResult(stdout.trim(), stderrText.trim(), exitCode)
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
@@ -95,20 +79,65 @@ class ResticCommandRunner {
         }
     }
 
-    /** Run restic with single-string args. */
     fun runRestic(env: Map<String, String>, vararg args: String): CommandResult {
         return runRestic(env, args.toList())
     }
 
-    /** Run restic, calling onLine for each stdout line (for streaming progress). */
+    suspend fun runResticCancellable(
+        env: Map<String, String>,
+        args: List<String>,
+        onBeforeStart: ((Process) -> Unit)? = null,
+    ): CommandResult = withContext(Dispatchers.IO) {
+        val cmdArgs = buildCommandArgs(args)
+        Log.i(TAG, "runResticCancellable cmd=${LogSanitizer.redact(cmdArgs.joinToString(" "))}")
+        env["TMPDIR"]?.let { File(it).mkdirs() }
+
+        var process: Process? = null
+        try {
+            val pb = ProcessBuilder(cmdArgs)
+            pb.environment().putAll(env)
+            pb.redirectErrorStream(false)
+            process = pb.start()
+            onBeforeStart?.invoke(process)
+
+            var stderrBytes = byteArrayOf()
+            val stderrThread = Thread {
+                try {
+                    stderrBytes = process.errorStream.use { it.readAllBytesCompat() }
+                } catch (_: Exception) {
+                }
+            }.apply { isDaemon = true; start() }
+
+            val stdout = process.inputStream.bufferedReader().use(BufferedReader::readText)
+            val exitCode = try {
+                process.waitForCompat()
+            } catch (_: Exception) { -1 }
+            try { stderrThread.join(1_000) } catch (_: InterruptedException) {}
+            val stderrText = stderrBytes.decodeToString().trim()
+            Log.i(TAG, "runResticCancellable exitCode=$exitCode stdout_len=${stdout.length}")
+            if (stderrText.isNotEmpty()) Log.w(TAG, "runResticCancellable stderr: ${stderrText.take(500)}")
+            CommandResult(stdout.trim(), stderrText, exitCode)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            try { process?.destroy() } catch (_: Exception) {}
+            try {
+                Thread.sleep(500)
+                if (android.os.Build.VERSION.SDK_INT >= 26 && process?.isAlive == true) process?.destroyForcibly()
+            } catch (_: Exception) {}
+            throw e
+        } catch (e: Exception) {
+            Log.e(TAG, "runResticCancellable exception", e)
+            try { process?.destroy() } catch (_: Exception) {}
+            CommandResult("", e.message ?: "Unknown error", -1)
+        }
+    }
+
     suspend fun runResticStreaming(
         env: Map<String, String>,
         args: List<String>,
         onLine: suspend (String) -> Unit
     ): CommandResult = withContext(Dispatchers.IO) {
         val cmdArgs = buildCommandArgs(args)
-        Log.i(TAG, "runResticStreaming cmd=${cmdArgs.joinToString(" ")}")
-        Log.d(TAG, "runResticStreaming REPOSITORY=${env["RESTIC_REPOSITORY"]}")
+        Log.i(TAG, "runResticStreaming cmd=${LogSanitizer.redact(cmdArgs.joinToString(" "))}")
         env["TMPDIR"]?.let { File(it).mkdirs() }
 
         var process: Process? = null
@@ -118,15 +147,11 @@ class ResticCommandRunner {
             pb.redirectErrorStream(false)
             process = pb.start()
 
-            // Drain stderr on a separate daemon thread to avoid a pipe deadlock:
-            // if stderr's buffer fills while we're still reading stdout, the child
-            // process blocks on writing stderr and we block on reading stdout.
             var stderrBytes = byteArrayOf()
             val stderrThread = Thread {
                 try {
                     stderrBytes = process.errorStream.use { it.readAllBytesCompat() }
                 } catch (_: Exception) {
-                    // stream closed early; leave stderrBytes empty
                 }
             }.apply { isDaemon = true; start() }
 
@@ -154,8 +179,8 @@ class ResticCommandRunner {
             } catch (_: Exception) { -1 }
 
             Log.i(TAG, "runResticStreaming exitCode=$exitCode stdout_len=${stdoutText.length}")
-            if (stderrText.isNotEmpty()) Log.w(TAG, "runResticStreaming stderr: ${stderrText}")
-            CommandResult(stdoutText.toString().trim(), stderrText.trim(), exitCode)
+            if (stderrText.isNotEmpty()) Log.w(TAG, "runResticStreaming stderr: ${stderrText.take(500)}")
+            CommandResult(stdoutText.toString().trim(), stderrText, exitCode)
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -167,10 +192,6 @@ class ResticCommandRunner {
 
 }
 
-/**
- * Compat implementation of InputStream.readAllBytes() for API < 33.
- * Reads the entire stream into a byte array.
- */
 internal fun InputStream.readAllBytesCompat(): ByteArray {
     val buffer = ByteArrayOutputStream()
     val data = ByteArray(4096)

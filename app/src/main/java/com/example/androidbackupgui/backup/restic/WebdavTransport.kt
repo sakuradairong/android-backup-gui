@@ -11,12 +11,14 @@ import com.thegrizzlylabs.sardineandroid.impl.SardineException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.ensureActive
 import android.util.Base64
 import java.net.HttpURLConnection
 import java.net.URL
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.IOException
+import kotlin.coroutines.coroutineContext
 
 class WebdavTransport(
     private val baseUrl: String,
@@ -24,10 +26,30 @@ class WebdavTransport(
     private val password: String,
     private val bufferSize: Int = 8192,
     private val connectTimeoutSeconds: Int = 15,
-    private val readTimeoutSeconds: Int = 30
+    private val readTimeoutSeconds: Int = 30,
+    private val allowInsecure: Boolean = false,
 ): RemoteTransport {
 
     companion object { private const val TAG = "WebdavTransport" }
+
+    init {
+        val scheme = baseUrl.substringBefore("://", "").lowercase()
+        val hasCredentials = username.isNotEmpty()
+        if (scheme == "http") {
+            if (hasCredentials) {
+                throw IllegalArgumentException("WebDAV Basic auth over HTTP is not allowed. Use HTTPS.")
+            }
+            if (!allowInsecure) {
+                throw IllegalArgumentException("WebDAV HTTP is not allowed by default. Enable 'allow insecure WebDAV' in settings or use HTTPS.")
+            }
+        }
+        if (baseUrl.contains("@") && (baseUrl.startsWith("http://") || baseUrl.startsWith("https://"))) {
+            val afterScheme = baseUrl.substringAfter("://")
+            if (afterScheme.contains("@")) {
+                throw IllegalArgumentException("URL userinfo is not allowed. Put credentials in the username/password fields.")
+            }
+        }
+    }
 
     private val sardine: Sardine by lazy {
         val client = okhttp3.OkHttpClient.Builder()
@@ -65,6 +87,7 @@ class WebdavTransport(
                         var totalRead = 0L
                         var n = input.read(buffer)
                         while (n != -1) {
+                            coroutineContext.ensureActive()
                             out.write(buffer, 0, n)
                             totalRead += n
                             onByteProgress(RemoteTransport.ByteProgress(totalRead, fileSize, remotePath))
@@ -107,6 +130,7 @@ class WebdavTransport(
                                 var totalRead = 0L
                                 var n = input.read(buffer)
                                 while (n != -1) {
+                                    coroutineContext.ensureActive()
                                     output.write(buffer, 0, n)
                                     totalRead += n
                                     onByteProgress(RemoteTransport.ByteProgress(totalRead, 0, remotePath))
@@ -129,13 +153,8 @@ class WebdavTransport(
                     err(AppError.Remote("WebDAV 下载失败", "download", cause = e))
                 }
             }
-        }   // retryWithBackoff
+        }
 
-    /**
-     * Resume a partial WebDAV download using HTTP Range header.
-     * Reads from [partFile] which already has [offset] bytes, requests remaining bytes via
-     * [HttpURLConnection] with Basic auth, and appends to the file.
-     */
     private suspend fun downloadRangeResume(
         url: String,
         partFile: File,
@@ -168,6 +187,7 @@ class WebdavTransport(
                     var totalRead = offset
                     var n = input.read(buffer)
                     while (n != -1) {
+                        coroutineContext.ensureActive()
                         output.write(buffer, 0, n)
                         totalRead += n
                         onByteProgress(RemoteTransport.ByteProgress(totalRead, totalSize, remotePath))
@@ -179,12 +199,12 @@ class WebdavTransport(
             conn.disconnect()
         }
     }
+
     override suspend fun listFiles(remoteDir: String): AppResult<List<RemoteTransport.RemoteFileInfo>> =
         withContext(Dispatchers.IO) {
             try {
                 val url = buildUrl(remoteDir)
                 val resources = sardine.list(url)
-                // Also filter out the directory itself (href matches request URL)
                 val urlPath = url.replace(Regex("/+$"), "")
                 val entries = resources
                     .filter { r ->
@@ -202,11 +222,8 @@ class WebdavTransport(
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                // Only treat 404 as empty for non-root paths; the caller (listRemoteRecursive)
-                // handles the distinction. We propagate the error so the caller can decide.
                 val is404 = e is SardineException && e.statusCode == 404
                 if (is404) {
-                    // Return a failure with a distinguishable marker so callers can check
                     Log.d(TAG, "listFiles $remoteDir -> 404 (not found)")
                     return@withContext err(AppError.Remote("远端路径不存在", "list", isNotFound = true))
                 }
@@ -264,10 +281,13 @@ class WebdavTransport(
         withContext(Dispatchers.IO) {
             try {
                 val url = buildUrl(remotePath)
-                if (!sardine.exists(url)) return@withContext err(AppError.Remote("文件不存在", "fileSize"))
                 val resources = sardine.list(url)
-                val size = resources.firstOrNull()?.contentLength ?: 0L
-                AppResult.Success(size)
+                val resource = resources.firstOrNull { it.name == remotePath.substringAfterLast("/") }
+                if (resource != null) {
+                    AppResult.Success(resource.contentLength)
+                } else {
+                    err(AppError.Remote("文件不存在", "fileSize"))
+                }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {

@@ -55,16 +55,19 @@ interface RemoteTransport {
             user: String,
             pass: String,
             share: String,
-            domain: String = ""
+            domain: String = "",
+            allowInsecureWebdav: Boolean = false,
+            smbSigning: Boolean = true,
+            smbEncryption: Boolean = false,
         ): RemoteTransport? {
             return when (backend) {
                 "webdav" -> {
                     val baseUrl = url.trimEnd('/')
-                    WebdavTransport(baseUrl, user, pass)
+                    WebdavTransport(baseUrl, user, pass, allowInsecure = allowInsecureWebdav)
                 }
                 "smb" -> {
                     val host = url.trimEnd('/')
-                    SmbTransport(host, share, user, pass, domain)
+                    SmbTransport(host, share, user, pass, domain, smbSigning = smbSigning, smbEncryption = smbEncryption)
                 }
                 else -> null
             }

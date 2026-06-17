@@ -88,7 +88,7 @@ class RestBridgeRunner {
             }
 
             val bridgeUrl = "rest:http://127.0.0.1:$port/$repoPath"
-            Log.i(TAG, "REST bridge ready on port $port for $remoteBase (auth=${authToken.take(8)}…)")
+            Log.i(TAG, "REST bridge ready on port $port for $remoteBase")
             return block(bridgeUrl, authToken)
         } finally {
             try {
