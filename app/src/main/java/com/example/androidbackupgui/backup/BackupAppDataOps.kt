@@ -49,7 +49,8 @@ object BackupAppDataOps {
         val bundledTar = BinaryResolver.tarPath(context)
         val tarCmd = bundledTar ?: "tar"
 
-        var isZstd = compression == "zstd"
+        val compressionMethod = BackupConfig.normalizeCompressionMethod(compression)
+        var isZstd = compressionMethod == "zstd"
         val bundledZstd = if (isZstd) BinaryResolver.zstdPath(context) else null
         val zstdCmd = bundledZstd ?: "zstd"
         if (isZstd && bundledZstd == null) {
@@ -157,7 +158,7 @@ object BackupAppDataOps {
                 ) { "'${it.shellEscape()}'" }} 2>/dev/null | $zstdCmd -T0 -o '$outputFile.zst'",
             )
         } else {
-            RootShell.exec("$tarCmd -czf $excludeArgs '$outputFile.gz' ${dirs.joinToString(" ") { "'${it.shellEscape()}'" }} 2>/dev/null")
+            RootShell.exec("$tarCmd -czf '$outputFile.gz' $excludeArgs ${dirs.joinToString(" ") { "'${it.shellEscape()}'" }} 2>/dev/null")
         }
     }
 
@@ -175,8 +176,9 @@ object BackupAppDataOps {
         val escapedPkg = packageName.shellEscape()
         // Exclude cache and backup temp files from OBB archive
         val obbExcludes = "--exclude='cache' --exclude='Backup_*'"
+        val compressionMethod = BackupConfig.normalizeCompressionMethod(compression)
         val result =
-            when (compression) {
+            when (compressionMethod) {
                 "zstd" -> {
                     RootShell.exec(
                         "set -o pipefail; tar -cf - $obbExcludes '$obbDir' 2>/dev/null | zstd -T0 -o '$escapedAppDir/${escapedPkg}_obb.tar.zst'",
@@ -184,24 +186,24 @@ object BackupAppDataOps {
                 }
 
                 else -> {
-                    RootShell.exec("tar -czf $obbExcludes '$escapedAppDir/${escapedPkg}_obb.tar.gz' '$obbDir' 2>/dev/null")
+                    RootShell.exec("tar -czf '$escapedAppDir/${escapedPkg}_obb.tar.gz' $obbExcludes '$obbDir' 2>/dev/null")
                 }
             }
         if (!result.isSuccess) {
             Log.e(TAG, "Failed to backup OBB for $packageName: exit=${result.exitCode} err=${result.error}")
             return null
         }
-        val obbArchiveExt = if (compression == "zstd") ".zst" else ".gz"
+        val obbArchiveExt = if (compressionMethod == "zstd") ".zst" else ".gz"
         val obbFile = File(appDir, "${packageName}_obb.tar$obbArchiveExt")
         val obbArchivePath = obbFile.absolutePath.shellEscape()
-        val verifyCmd = if (compression == "zstd") "zstd -t '$obbArchivePath' 2>/dev/null" else "gzip -t '$obbArchivePath' 2>/dev/null"
+        val verifyCmd = if (compressionMethod == "zstd") "zstd -t '$obbArchivePath' 2>/dev/null" else "gzip -t '$obbArchivePath' 2>/dev/null"
         val verificationOk = RootShell.exec(verifyCmd).isSuccess
         if (!verificationOk) {
             Log.e(TAG, "OBB archive integrity check FAILED for $packageName")
         }
         // Validate OBB tar structure
         val tarListCmd =
-            if (compression == "zstd") {
+            if (compressionMethod == "zstd") {
                 "zstd -d -c '$obbArchivePath' 2>/dev/null | tar -tf - > /dev/null 2>&1"
             } else {
                 "tar -tf '$obbArchivePath' > /dev/null 2>&1"
@@ -233,18 +235,19 @@ object BackupAppDataOps {
             return 0L // Not an error, just no data
         }
 
-        val archiveExt = if (compression == "zstd") ".zst" else ".gz"
+        val compressionMethod = BackupConfig.normalizeCompressionMethod(compression)
+        val archiveExt = if (compressionMethod == "zstd") ".zst" else ".gz"
         val archiveFile = File(appDir, "${packageName}_external_data.tar$archiveExt")
         val archivePath = archiveFile.absolutePath.shellEscape()
         val dataExcludes = "--exclude='cache' --exclude='Backup_*' --exclude='.ota'"
 
         val result =
-            if (compression == "zstd") {
+            if (compressionMethod == "zstd") {
                 RootShell.exec(
                     "set -o pipefail; tar -cf - $dataExcludes '$externalDataDir' 2>/dev/null | zstd -T0 -o '$archivePath'",
                 )
             } else {
-                RootShell.exec("tar -czf $dataExcludes '$archivePath' '$externalDataDir' 2>/dev/null")
+                RootShell.exec("tar -czf '$archivePath' $dataExcludes '$externalDataDir' 2>/dev/null")
             }
 
         if (!result.isSuccess) {
@@ -253,7 +256,7 @@ object BackupAppDataOps {
         }
 
         // Verify compression integrity
-        val verifyCmd = if (compression == "zstd") "zstd -t '$archivePath' 2>/dev/null" else "gzip -t '$archivePath' 2>/dev/null"
+        val verifyCmd = if (compressionMethod == "zstd") "zstd -t '$archivePath' 2>/dev/null" else "gzip -t '$archivePath' 2>/dev/null"
         val verificationOk = RootShell.exec(verifyCmd).isSuccess
         if (!verificationOk) {
             Log.e(TAG, "backupExternalData: $packageName integrity check FAILED")
@@ -262,7 +265,7 @@ object BackupAppDataOps {
 
         // Validate tar structure
         val tarListCmd =
-            if (compression == "zstd") {
+            if (compressionMethod == "zstd") {
                 "zstd -d -c '$archivePath' 2>/dev/null | tar -tf - > /dev/null 2>&1"
             } else {
                 "tar -tf '$archivePath' > /dev/null 2>&1"

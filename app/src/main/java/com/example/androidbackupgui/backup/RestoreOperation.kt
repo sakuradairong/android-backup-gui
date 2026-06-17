@@ -69,12 +69,15 @@ object RestoreOperation {
             LogUtil.i(TAG, "restoreApps: appListContent=${appListContent?.substringBefore("\n")?.take(100)}")
             val allPackages =
                 appListContent?.let { content ->
-                    content.lines().map { it.trim() }.filter { it.isNotEmpty() && !it.startsWith("#") }
+                    content.lines()
+                        .map { it.trim() }
+                        .filter { it.isNotEmpty() && !it.startsWith("#") }
+                        .mapNotNull { PackageName.safe(it)?.value }
                 } ?: run {
                     LogUtil.i(TAG, "restoreApps: readTextFile returned null, trying listBackupFiles")
                     val children = BackupOperation.listBackupFiles(backupDir)
                     LogUtil.i(TAG, "restoreApps: listBackupFiles returned ${children?.size} children")
-                    children?.filter { name ->
+                    children?.mapNotNull { name -> PackageName.safe(name)?.value }?.filter { name ->
                         val apkFile = File(File(backupDir, name), "$name.apk")
                         val exists = BackupOperation.backupPathExists(apkFile)
                         LogUtil.i(TAG, "restoreApps: child $name apkExists=$exists")
@@ -104,12 +107,19 @@ object RestoreOperation {
             val semaphore = Semaphore(concurrencyConfig.maxConcurrency)
             LogUtil.i(TAG, "restoreApps: ${concurrencyConfig.reason}")
 
+            val backupCanonical = backupDir.canonicalFile
+
             supervisorScope {
                 packages.forEachIndexed { index, pkg ->
                     launch {
                         if (!coroutineContext.isActive) return@launch
                         semaphore.withPermit {
-                            val appBackupDir = File(backupDir, pkg)
+                            val appBackupDir = File(backupCanonical, pkg).canonicalFile
+                            if (!appBackupDir.path.startsWith(backupCanonical.path + File.separator)) {
+                                failAtomic.incrementAndGet()
+                                emit(RestoreProgress(index + 1, packages.size, pkg, "appdone", "备份目录路径非法"))
+                                return@withPermit
+                            }
                             val dirExists = BackupFileIO.backupPathExists(appBackupDir)
                             LogUtil.i(TAG, "restoreApps: pkg=$pkg appBackupDir=${appBackupDir.absolutePath} exists=$dirExists")
                             if (!dirExists) {

@@ -88,8 +88,10 @@ object BackupOperation {
                 return@withContext BackupResult(0, 0, 0, absOut, 0)
             }
 
+            val compressionMethod = BackupConfig.normalizeCompressionMethod(config.compressionMethod)
+
             // Create backup structure
-            val backupRoot = File(outputDir, "Backup_${config.compressionMethod}_$userId")
+            val backupRoot = File(outputDir, "Backup_${compressionMethod}_$userId")
             if (!mkdirsForBackup(backupRoot)) {
                 LogUtil.e(TAG, "backupApps: cannot create output dir ${backupRoot.absolutePath}")
                 return@withContext BackupResult(0, 0, 0, outputDir.absolutePath, 0)
@@ -170,7 +172,7 @@ object BackupOperation {
                                         app = app,
                                         backupRoot = backupRoot,
                                         oldMetaJson = oldMetaJson,
-                                        config = config,
+                                        config = config.copy(compressionMethod = compressionMethod),
                                         userId = userId,
                                         noDataBackup = noDataBackup,
                                         appInfoCache = appInfoCache,
@@ -196,7 +198,7 @@ object BackupOperation {
             }
 
             val elapsed = System.currentTimeMillis() - startTime
-            RootShell.exec("chmod -R 0755 '${backupRoot.absolutePath}'")
+            RootShell.exec("chmod -R go-rwx '${backupRoot.absolutePath.shellEscape()}'")
             val successCount = successAtomic.get()
             val failCount = failAtomic.get()
             val skippedCount = skippedAtomic.get()
@@ -213,7 +215,7 @@ object BackupOperation {
                 val integrityReport = BackupIntegrityChecker.checkBackupIntegrity(
                     backupDir = backupRoot,
                     packages = apps.map { it.packageName.value },
-                    compression = config.compressionMethod,
+                    compression = compressionMethod,
                 )
                 LogUtil.i(TAG, "backupApps: integrity check completed — ${integrityReport.passedPackages}/${integrityReport.checkedPackages} passed")
 
@@ -221,7 +223,7 @@ object BackupOperation {
                 BackupIntegrityChecker.generateChecksumFile(
                     backupDir = backupRoot,
                     packages = apps.map { it.packageName.value },
-                    compression = config.compressionMethod,
+                    compression = compressionMethod,
                 )
             }
 
@@ -281,16 +283,24 @@ object BackupOperation {
             progressTracker.updateStage("apk", "正在备份 APK…")
             emit(BackupProgress(index + 1, totalCount, pkgName, "apk", "正在备份 APK…"))
             val paths = appInfoCache.getApkPaths(pkgName)
-            if (paths.isNotEmpty()) {
-                val cpOk =
-                    paths.withIndex().all { (i, apkPath) ->
-                        val destName = if (paths.size > 1) "${pkgName}_split_$i.apk" else "$pkgName.apk"
-                        RootShell
-                            .exec(
-                                "cp '${apkPath.shellEscape()}' '${appDir.absolutePath.shellEscape()}/${destName.shellEscape()}'",
-                            ).isSuccess
-                    }
-                if (!cpOk) LogUtil.w(TAG, "backupApps: APK cp failed for $pkgName, continuing")
+            if (paths.isEmpty()) {
+                failAtomic.incrementAndGet()
+                emit(BackupProgress(index + 1, totalCount, pkgName, "appdone", "APK 路径为空"))
+                return
+            }
+            val cpOk =
+                paths.withIndex().all { (i, apkPath) ->
+                    val destName = if (paths.size > 1) "${pkgName}_split_$i.apk" else "$pkgName.apk"
+                    val dest = File(appDir, destName)
+                    RootShell
+                        .exec(
+                            "cp '${apkPath.shellEscape()}' '${dest.absolutePath.shellEscape()}'",
+                        ).isSuccess && BackupFileIO.backupPathExists(dest) && BackupFileIO.backupFileSize(dest) > 0L
+                }
+            if (!cpOk) {
+                failAtomic.incrementAndGet()
+                emit(BackupProgress(index + 1, totalCount, pkgName, "appdone", "APK 备份失败"))
+                return
             }
         } else {
             skippedAtomic.incrementAndGet()
@@ -302,28 +312,8 @@ object BackupOperation {
         val hasKeystore = appInfoCache.hasKeystore(pkgName) ?: false
         if (hasKeystore) emit(BackupProgress(index + 1, totalCount, pkgName, "data", "⚠ 包含密钥库条目"))
 
-        // ── Size-based data incremental skip ──
-        var skipData = false
-        if (!apkChanged) {
-            val oldUserSize =
-                try {
-                    oldEntry?.optJSONObject("user")?.optString("Size", null)?.toLongOrNull()
-                } catch (_: Exception) {
-                    null
-                }
-            val oldObbSize =
-                try {
-                    oldEntry?.optJSONObject("obb")?.optString("Size", null)?.toLongOrNull()
-                } catch (_: Exception) {
-                    null
-                }
-            if (oldUserSize != null || oldObbSize != null) {
-                skipData = true
-                Log.d(TAG, "backupApps: $pkgName data sizes known from backup, skipping data backup (incremental)")
-                progressTracker.skipApp(pkgName, "数据大小已知，跳过数据备份")
-            }
-        }
-
+        // App data changes independently of APK version; do not skip mutable
+        // data based only on stale metadata from a previous backup.
         var userSize: Long? = null
         var userDeSize: Long? = null
         var dataSize: Long? = null
@@ -331,14 +321,14 @@ object BackupOperation {
 
         // Force-stop before data backup for consistency.
         // Exclude the app itself (avoid suicide) and well-known persistent apps.
-        if (config.backupMode == 1 && !skipData) {
+        if (config.backupMode == 1) {
             if (pkgName !in listOf("bin.mt.plus", "com.termux", "bin.mt.plus.canary", context.packageName)) {
                 RootShell.exec("am force-stop --user ${userId.shellEscape()} '${pkgName.shellEscape()}' 2>/dev/null")
             }
         }
 
         // 2. Backup user data
-        if (config.backupMode == 1 && config.backupUserData == 1 && !skipData) {
+        if (config.backupMode == 1 && config.backupUserData == 1) {
             if (pkgName in noDataBackup) {
                 emit(BackupProgress(index + 1, totalCount, pkgName, "data", "跳过数据备份（已排除）"))
             } else {
@@ -354,12 +344,10 @@ object BackupOperation {
                     return
                 }
             }
-        } else if (skipData) {
-            emit(BackupProgress(index + 1, totalCount, pkgName, "data", "数据无变化，跳过"))
         }
 
         // 3. Backup OBB
-        if (config.backupMode == 1 && config.backupObbData == 1 && !skipData) {
+        if (config.backupMode == 1 && config.backupObbData == 1) {
             val hasObb = AppScanner.hasObbData(pkgName)
             if (hasObb) {
                 emit(BackupProgress(index + 1, totalCount, pkgName, "obb", "正在备份 OBB…"))
@@ -373,10 +361,15 @@ object BackupOperation {
         }
 
         // 3.5 Backup external data
-        if (config.backupMode == 1 && config.backupUserData == 1 && !skipData) {
+        if (config.backupMode == 1 && config.backupUserData == 1) {
             if (pkgName !in noDataBackup) {
                 emit(BackupProgress(index + 1, totalCount, pkgName, "data", "正在备份外部数据…"))
                 dataSize = BackupAppDataOps.backupExternalData(pkgName, appDir, userId, config.compressionMethod)
+                if (dataSize == null) {
+                    failAtomic.incrementAndGet()
+                    emit(BackupProgress(index + 1, totalCount, pkgName, "appdone", "外部数据备份失败"))
+                    return
+                }
             }
         }
 

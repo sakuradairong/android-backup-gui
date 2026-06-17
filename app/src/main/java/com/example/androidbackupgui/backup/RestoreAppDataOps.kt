@@ -69,7 +69,11 @@ object RestoreAppDataOps {
         for (archive in dataFiles) {
             val archivePath = archive.absolutePath.shellEscape()
             Log.d(TAG, "restoreData: found archive ${archive.name}")
-            if (!RestoreArchiveSafety.isArchiveSafe(archive, zstdCmd)) {
+            if (!RestoreArchiveSafety.isArchiveSafe(
+                    archive,
+                    zstdCmd,
+                    additionalAllowedPrefixes = dataPaths.map { "$it/" },
+                )) {
                 Log.e(TAG, "restoreData: archive UNSAFE, ABORTING restore for $packageName: ${archive.name}")
                 return false
             }
@@ -82,11 +86,11 @@ object RestoreAppDataOps {
                     }
 
                     archive.name.endsWith(".gz") -> {
-                        "$tarCmd -xzf $excludeArgs '$archivePath' -C / 2>/dev/null"
+                        "$tarCmd -xzf '$archivePath' $excludeArgs -C / 2>/dev/null"
                     }
 
                     archive.name.endsWith(".tar") -> {
-                        "$tarCmd -xf $excludeArgs '$archivePath' -C / 2>/dev/null"
+                        "$tarCmd -xf '$archivePath' $excludeArgs -C / 2>/dev/null"
                     }
 
                     else -> {
@@ -156,8 +160,8 @@ object RestoreAppDataOps {
         var anyExtracted = false
         for (archive in obbFiles) {
             if (!RestoreArchiveSafety.isArchiveSafe(archive, zstdCmd, additionalAllowedPrefixes = listOf(
-                    "/storage/emulated/0/Android/obb/",
-                    "/data/media/$userId/Android/obb/",
+                    "/storage/emulated/0/Android/obb/$packageName/",
+                    "/data/media/$userId/Android/obb/$packageName/",
                 ))) {
                 Log.e(TAG, "restoreObb: archive UNSAFE, ABORTING OBB restore for $packageName: ${archive.name}")
                 return false
@@ -170,11 +174,11 @@ object RestoreAppDataOps {
                     }
 
                     archive.name.endsWith(".gz") -> {
-                        RootShell.exec("$tarCmd -xzf $excludeArgs '$archivePath' -C / 2>/dev/null")
+                        RootShell.exec("$tarCmd -xzf '$archivePath' $excludeArgs -C / 2>/dev/null")
                     }
 
                     archive.name.endsWith(".tar") -> {
-                        RootShell.exec("$tarCmd -xf $excludeArgs '$archivePath' -C / 2>/dev/null")
+                        RootShell.exec("$tarCmd -xf '$archivePath' $excludeArgs -C / 2>/dev/null")
                     }
 
                     else -> {
@@ -227,8 +231,8 @@ object RestoreAppDataOps {
         for (name in extNames) {
             val archive = File(appDir, name)
             if (!RestoreArchiveSafety.isArchiveSafe(archive, zstdCmd, additionalAllowedPrefixes = listOf(
-                    "/data/media/$userId/Android/data/",
-                    "/storage/emulated/0/Android/data/",
+                    "/data/media/$userId/Android/data/$packageName/",
+                    "/storage/emulated/0/Android/data/$packageName/",
                 ))) {
                 Log.e(TAG, "restoreExternalData: archive UNSAFE, ABORTING external data restore for $packageName: $name")
                 return false

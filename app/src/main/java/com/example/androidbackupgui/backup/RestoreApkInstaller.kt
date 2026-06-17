@@ -38,7 +38,10 @@ object RestoreApkInstaller {
             LogUtil.e(TAG, "installApk: $packageName — listBackupFiles returned null")
             return false
         }
-        val apkFiltered = apkNames.filter { it.endsWith(".apk") }.sorted()
+        val apkFiltered =
+            apkNames
+                .filter { it.endsWith(".apk") && !it.contains('/') && !it.contains('\\') && it != "." && it != ".." }
+                .sorted()
         LogUtil.i(TAG, "installApk: $packageName apkFiltered=$apkFiltered")
         if (apkFiltered.isEmpty()) return false
 
@@ -61,7 +64,7 @@ object RestoreApkInstaller {
         }
 
         suspend fun doInstall(): Boolean {
-            val apkPaths = localApks.joinToString(" ") { it.absolutePath.shellEscape() }
+            val apkPaths = localApks.joinToString(" ") { "'${it.absolutePath.shellEscape()}'" }
             if (localApks.size > 1) {
                 val result = RootShell.exec("pm install-create -r -t 2>/dev/null")
                 val sessionId =

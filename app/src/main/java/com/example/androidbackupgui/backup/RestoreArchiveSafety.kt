@@ -53,17 +53,17 @@ object RestoreArchiveSafety {
             result = RootShell.exec(fallbackCmd)
         }
         if (!result.isSuccess) return false
+        val allowedPrefixes = additionalAllowedPrefixes.ifEmpty { BUILTIN_ALLOWED_PREFIXES }
         return !result.output.lines().any { line ->
             val parts = line.split(" -> ", limit = 2)
             val rawPath = parts[0]
             val path = rawPath.trimStart('/')
+            val normalizedPath = "/$path"
             val linkTarget = parts.getOrNull(1)
 
-            // 1. 拒绝绝对路径（以 / 开头）——防止 tar -C / 写入系统文件
-            //    但允许内置的 app data 前缀和调用方指定的额外前缀。
-            if (rawPath.startsWith("/") && !isPathAllowed(rawPath, additionalAllowedPrefixes)) {
-                return@any true
-            }
+            // 1. 恢复使用 tar -C /，所以相对路径 etc/passwd 也会写入
+            //    /etc/passwd。所有条目必须落在调用方允许的目标前缀内。
+            if (!matchesAllowedPrefix(normalizedPath, allowedPrefixes)) return@any true
 
             // 2. 拒绝路径遍历
             if (path.split("/").any { it == ".." }) return@any true
@@ -88,7 +88,14 @@ object RestoreArchiveSafety {
         rawPath: String,
         additionalAllowedPrefixes: List<String>,
     ): Boolean {
-        return (BUILTIN_ALLOWED_PREFIXES + additionalAllowedPrefixes).any { prefix ->
+        return matchesAllowedPrefix(rawPath, BUILTIN_ALLOWED_PREFIXES + additionalAllowedPrefixes)
+    }
+
+    private fun matchesAllowedPrefix(
+        rawPath: String,
+        allowedPrefixes: List<String>,
+    ): Boolean {
+        return allowedPrefixes.any { prefix ->
             rawPath == prefix.dropLast(1) || rawPath.startsWith(prefix)
         }
     }
