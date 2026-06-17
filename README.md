@@ -11,11 +11,12 @@ Android 应用备份与恢复工具，通过 **root 权限** 实现应用的完�
 - **存档完整性校验** — 备份后自动 zstd/gzip 校验 + tar 结构验证
 - **restic 增量去重** — 内建 `librestic.so`（~24MB），SSD 加密快照，增量备份
 - **远程后端** — 本地 REST 桥 + NanoHTTPD 将 SMB/WebDAV 协议翻译为 restic 可直接访问的 REST API
-- **流式备份** — FIFO 管道对接 `restic backup --stdin`，无需本地暂存
-- **配置持久化** — 仓库路径、密码、后端参数、目标用户保存在 `backup_settings.conf`
+- **实验性 Restic 临时目录备份** — 将备份数据暂存到临时目录后由 restic 统一上传（不包含 OBB、外部数据、权限、SSAID、Wi-Fi）
+- **配置持久化** — 仓库路径、后端参数、目标用户保存在 `backup_settings.conf`；密码存储在 EncryptedSharedPreferences
 - **快照管理** — 初始化、查看统计、按策略清理旧快照（保留 7 天/4 周/3 月）、解锁
 - **累积快照** — 从历史快照读取元数据，合并为增量累积备份
 - **应用名显示** — 备份时缓存应用名称到 `app_details.json`，已卸载应用也显示中文名
+- **任务取消** — 备份和恢复支持从 UI 和通知栏取消
 
 ## 技术栈
 
@@ -38,11 +39,13 @@ Android 应用备份与恢复工具，通过 **root 权限** 实现应用的完�
 │  AppScaffold → BackupScreen / RestoreScreen │
 │              / ConfigScreen                  │
 │              / ConfigViewModel (StateFlow)   │
+│              / BackupViewModel (StateFlow)   │
+│              / RestoreViewModel (StateFlow)  │
 ├─────────────────────────────────────────────┤
 │  业务逻辑层 (backup/)                        │
 │  BackupOperation   → root shell tar/cp      │
 │  RestoreOperation  → root shell pm install  │
-│  StreamingBackup   → FIFO pipe → restic     │
+│  ResticStreamBackup → 临时目录 → restic      │
 │  ResticWrapper     → facade 委托给:          │
 │    ├── ResticBackup      (备份)              │
 │    ├── ResticRestore     (恢复 + dump)       │
@@ -104,6 +107,7 @@ restic 通过 REST HTTP API 与本地桥通信，桥接器将请求翻译为 SMB
 
 | 版本 | 更新内容 |
 |------|---------|
+| v1.17 | 安全修复：root 注入防护、路径穿越防护、网络默认安全、凭据加密存储、任务取消 |
 | v1.14 | 修复 shell 转义/管道死锁/配置序列化缺陷，新增配置导出与 BackupConfig 单元测试 |
 | v1.13 | Compose Material 3 UI 重构、Unlock 支持、ResticBinary 启动初始化、修复 500 错误和刷新竞态 |
 | v1.12 | 引擎 + Compose Material 3 UI 重构 |
@@ -128,6 +132,7 @@ KEYSTORE_PASSWORD=<密码> KEY_PASSWORD=<密码> ./gradlew assembleRelease
 ```
 
 > Release 构建需要 `app/release.keystore`；原生库放在 `jniLibs/arm64-v8a/`。
+> Release 构建必须提供签名配置，否则构建失败。
 
 ## 使用说明
 
@@ -148,8 +153,16 @@ KEYSTORE_PASSWORD=<密码> KEY_PASSWORD=<密码> ./gradlew assembleRelease
 | 共享名称 | — | `back` |
 | 仓库存放路径 | `backup` | `backup` |
 
+### 安全说明
+
+- WebDAV 默认要求 HTTPS。HTTP 连接默认被拒绝。
+- SMB 默认开启签名（signing），降级需要显式配置。
+- 密码存储在 EncryptedSharedPreferences 中，不会明文写入配置文件。
+- 备份和恢复支持从 UI 和通知栏取消。
+
 ### 注意事项
 
 - 应用卸载会清除 `backup_settings.conf`，建议定期导出配置
 - Restic 仓库需先「初始化」才能使用（自动检测已有仓库）
 - SMB 密码错误多次会导致 Windows 账户锁定，需在服务器上解锁
+- 实验性 Restic 临时目录备份不包含 OBB、外部数据、权限、SSAID、Wi-Fi
