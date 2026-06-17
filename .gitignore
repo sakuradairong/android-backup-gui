@@ -23,3 +23,10 @@ memory:*
 # Restic test repository (contains encryption keys)
 /test/
 kmboxnet
+
+# Release artifacts
+app/release/*.apk
+app/release/*.aab
+app/release/*.idsig
+app/release/*.sha256
+app/release/output-metadata.json

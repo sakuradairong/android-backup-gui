@@ -82,6 +82,21 @@ object ResticStreamBackup {
                     File(workDir, "app_details.json"),
                     BackupOperation.buildAppDetailsJson(apps, legacyApps),
                 )
+                val manifestJson = buildString {
+                    append("{")
+                    append("\"schemaVersion\":1,")
+                    append("\"mode\":\"restic-streaming-experimental\",")
+                    append("\"completeBackup\":false,")
+                    append("\"included\":[\"metadata\",\"apk\",\"app_data\"],")
+                    append("\"excluded\":[\"obb\",\"external_data\",\"permissions\",\"ssaid\",\"wifi\"],")
+                    append("\"maxAppDataBytes\":${MAX_STREAM_APP_SIZE_BYTES},")
+                    append("\"createdAtEpochSeconds\":${System.currentTimeMillis() / 1000}")
+                    append("}")
+                }
+                BackupOperation.writeFileForBackup(
+                    File(workDir, "streaming_manifest.json"),
+                    manifestJson,
+                )
                 Log.i(TAG, "Metadata written to ${workDir.absolutePath}")
 
                 // ── 3. Backup APK files ───────────────────

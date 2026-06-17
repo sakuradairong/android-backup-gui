@@ -66,7 +66,7 @@ fun ConfigScreen(
         backupWifi = config.backupWifi == 1
         ignoreRunning = config.backgroundAppsIgnore == 1
         outputPath = config.outputPath
-        compressionMethod = config.compressionMethod
+        compressionMethod = BackupConfig.normalizeCompressionMethod(config.compressionMethod)
         backupUserId = config.backupUserId
         resticEnabled = config.resticEnabled == 1
         resticRepo = config.resticRepo
@@ -289,6 +289,14 @@ fun ConfigScreen(
                             label = { Text(backendDisplay.urlHint.ifEmpty { "后端地址" }) },
                             modifier = Modifier.fillMaxWidth(),
                             singleLine = true,
+                            isError = resticBackend == "webdav" && resticBackendUrl.startsWith("http://") && resticBackendUser.isNotEmpty(),
+                            supportingText = {
+                                if (resticBackend == "webdav" && resticBackendUrl.startsWith("http://") && resticBackendUser.isNotEmpty()) {
+                                    Text("Basic auth over HTTP 不允许，请使用 HTTPS", color = MaterialTheme.colorScheme.error)
+                                } else if (resticBackend == "webdav" && resticBackendUrl.startsWith("http://")) {
+                                    Text("HTTP 不安全，建议使用 HTTPS", color = MaterialTheme.colorScheme.error)
+                                }
+                            },
                         )
                     }
                     if (resticBackend == "webdav" || resticBackend == "smb") {
@@ -328,18 +336,24 @@ fun ConfigScreen(
                     }
 
                     // ── Streaming backup toggle ──
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
+                    Column(modifier = Modifier.fillMaxWidth()) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                "实验性 Restic 临时目录备份",
+                                modifier = Modifier.weight(1f),
+                                style = MaterialTheme.typography.bodyMedium,
+                            )
+                            Switch(
+                                checked = streamingEnabled,
+                                onCheckedChange = { streamingEnabled = it },
+                            )
+                        }
                         Text(
-                            "流式备份 (FIFO管道 → restic --stdin)",
-                            modifier = Modifier.weight(1f),
-                            style = MaterialTheme.typography.bodyMedium,
-                        )
-                        Switch(
-                            checked = streamingEnabled,
-                            onCheckedChange = { streamingEnabled = it },
+                            "不等同完整备份：不包含 OBB、外部数据、权限、SSAID、Wi-Fi；大应用数据可能被跳过。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error,
                         )
                     }
 
@@ -477,7 +491,7 @@ fun ConfigScreen(
                         backgroundAppsIgnore = if (ignoreRunning) 1 else 0,
                         backupUserId = backupUserId,
                         outputPath = outputPath,
-                        compressionMethod = compressionMethod.ifEmpty { "zstd" },
+                        compressionMethod = BackupConfig.normalizeCompressionMethod(compressionMethod),
                         resticEnabled = if (resticEnabled) 1 else 0,
                         resticRepo = resticRepo,
                         resticPassword = resticPassword,

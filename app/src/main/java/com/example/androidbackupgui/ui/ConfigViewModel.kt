@@ -4,6 +4,7 @@ import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.androidbackupgui.backup.BackupConfig
+import com.example.androidbackupgui.backup.security.LegacyCredentialMigrator
 import com.example.androidbackupgui.backup.security.PasswordManager
 import com.example.androidbackupgui.backup.security.ResticBinary
 import com.example.androidbackupgui.backup.restic.ResticWrapper
@@ -150,10 +151,18 @@ class ConfigViewModel(
 
     /** Read config from file and refresh restic status. */
     fun load() {
+        val migrationResult = LegacyCredentialMigrator.migrate(configFile)
         val config = BackupConfig.fromFile(configFile)
         val backendDisplay = deriveBackendDisplay(config.resticBackend, config.resticRepo, config.resticBackendUrl)
         _uiState.update {
             it.copy(config = config, backendDisplay = backendDisplay)
+        }
+        if (migrationResult.migratedResticPassword || migrationResult.migratedBackendPass) {
+            _uiState.update {
+                it.copy(resticStatus = it.resticStatus.copy(
+                    message = "已迁移旧版明文密码到加密存储"
+                ))
+            }
         }
         refreshResticStatus(readResticForm())
     }
@@ -244,8 +253,8 @@ class ConfigViewModel(
 
     /**
      * Export the current saved config to a user-selected destination [Uri] (SAF).
-     * Writes the same on-disk config format, including the plaintext restic password,
-     * so the warning is surfaced in the UI before export.
+     * Writes the same on-disk config format. Passwords are stored as placeholders
+     * in the exported file; actual passwords remain in EncryptedSharedPreferences.
      */
     fun exportConfig(uri: android.net.Uri) {
         viewModelScope.launch {

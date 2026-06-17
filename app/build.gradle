@@ -48,12 +48,20 @@ android {
     }
     buildTypes {
         release {
-            if (rootProject.file("app/release.keystore").exists()) {
-                def ksPass = System.getenv("KEYSTORE_PASSWORD")
-                def kPass = System.getenv("KEY_PASSWORD")
-                if (ksPass != null && kPass != null) {
-                    signingConfig signingConfigs.release
+            minifyEnabled true
+            shrinkResources true
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+            def ksFile = rootProject.file("app/release.keystore")
+            def ksPass = System.getenv("KEYSTORE_PASSWORD")
+            def kPass = System.getenv("KEY_PASSWORD")
+            def isReleaseTask = gradle.startParameter.taskNames.any { it.toLowerCase().contains("release") }
+            if (isReleaseTask) {
+                if (!ksFile.exists() || ksPass == null || ksPass.isEmpty() || kPass == null || kPass.isEmpty()) {
+                    throw new GradleException("Release build requires signing config. Set KEYSTORE_PASSWORD and KEY_PASSWORD env vars and ensure app/release.keystore exists.")
                 }
+                signingConfig signingConfigs.release
+            } else if (ksFile.exists() && ksPass != null && !ksPass.isEmpty() && kPass != null && !kPass.isEmpty()) {
+                signingConfig signingConfigs.release
             }
         }
     }

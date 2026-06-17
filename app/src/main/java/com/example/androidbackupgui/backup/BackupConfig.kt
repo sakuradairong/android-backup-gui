@@ -74,6 +74,9 @@ data class BackupConfig(
     // Streaming backup: pipe tar data through FIFO directly into restic --stdin
     // 0=disabled (default, stable), 1=enabled (experimental, avoids temp files)
     val useStreaming: Int = 0,
+    val allowInsecureWebdav: Int = 0,
+    val allowInsecureRestServer: Int = 0,
+    val smbSigningMode: String = "required",
 ) {
     companion object {
         /**
@@ -181,7 +184,7 @@ data class BackupConfig(
                 blacklist = lines("blacklist"),
                 whitelist = lines("whitelist"),
                 system = lines("system"),
-                compressionMethod = str("Compression_method").ifEmpty { "zstd" },
+                compressionMethod = normalizeCompressionMethod(str("Compression_method")),
                 rgbA = int("rgb_a").let { if (it == 0) 226 else it },
                 rgbB = int("rgb_b").let { if (it == 0) 123 else it },
                 rgbC = int("rgb_c").let { if (it == 0) 177 else it },
@@ -196,6 +199,9 @@ data class BackupConfig(
                 resticBackendShare = str("restic_backend_share"),
                 resticBackendDomain = str("restic_backend_domain"),
                 useStreaming = int("streaming_backup"),
+                allowInsecureWebdav = int("allow_insecure_webdav"),
+                allowInsecureRestServer = int("allow_insecure_rest_server"),
+                smbSigningMode = str("smb_signing_mode").ifEmpty { "required" },
             )
         }
 
@@ -236,7 +242,7 @@ data class BackupConfig(
                     append("system=\"")
                     config.system.forEach { append(" ${it.replace(" ", "%20")}") }
                     appendLine(" \"")
-                    appendLine("Compression_method=${config.compressionMethod}")
+                    appendLine("Compression_method=${normalizeCompressionMethod(config.compressionMethod)}")
                     appendLine("rgb_a=${config.rgbA}")
                     appendLine("rgb_b=${config.rgbB}")
                     appendLine("rgb_c=${config.rgbC}")
@@ -253,10 +259,20 @@ data class BackupConfig(
                     appendLine("restic_backend_share=\"${escapeValue(config.resticBackendShare)}\"")
                     appendLine("restic_backend_domain=\"${escapeValue(config.resticBackendDomain)}\"")
                     appendLine("streaming_backup=${config.useStreaming}")
+                    appendLine("allow_insecure_webdav=${config.allowInsecureWebdav}")
+                    appendLine("allow_insecure_rest_server=${config.allowInsecureRestServer}")
+                    appendLine("smb_signing_mode=${config.smbSigningMode}")
                 },
             )
             file.setReadable(true, true) // owner only
             file.setWritable(true, true) // owner only
         }
+
+        fun normalizeCompressionMethod(value: String): String =
+            when (value.trim().lowercase()) {
+                "tar", "gzip", "gz" -> "tar"
+                "zstd", "zst", "" -> "zstd"
+                else -> "zstd"
+            }
     }
 }

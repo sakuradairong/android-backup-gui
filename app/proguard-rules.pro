@@ -24,35 +24,32 @@
 -keep class fi.iki.elonen.** { *; }
 
 # --- RemoteTransport (WebDAV/SMB) ---
--keep class com.example.androidbackupgui.backup.RemoteTransport { *; }
+-keep class com.example.androidbackupgui.backup.restic.RemoteTransport { *; }
 
 # --- Data classes (serialization) ---
--keep class com.example.androidbackupgui.backup.ResticProgress { *; }
--keep class com.example.androidbackupgui.backup.BackupSummary { *; }
--keep class com.example.androidbackupgui.backup.ResticSnapshot { *; }
--keep class com.example.androidbackupgui.backup.RestoreProgress { *; }
+-keep class com.example.androidbackupgui.backup.restic.ResticWrapper$ResticProgress { *; }
+-keep class com.example.androidbackupgui.backup.restic.ResticWrapper$BackupSummary { *; }
+-keep class com.example.androidbackupgui.backup.restic.ResticWrapper$ResticSnapshot { *; }
+-keep class com.example.androidbackupgui.backup.RestoreOperation$RestoreProgress { *; }
 -keep class com.example.androidbackupgui.backup.BackupConfig { *; }
--keep class com.example.androidbackupgui.backup.AppError { *; }
--keep class com.example.androidbackupgui.backup.AppResult { *; }
-
+-keep class com.example.androidbackupgui.backup.core.AppError { *; }
+-keep class com.example.androidbackupgui.backup.core.AppResult { *; }
 
 # --- RemoteTransport implementations ---
--keep class com.example.androidbackupgui.backup.SmbTransport { *; }
--keep class com.example.androidbackupgui.backup.WebdavTransport { *; }
+-keep class com.example.androidbackupgui.backup.restic.SmbTransport { *; }
+-keep class com.example.androidbackupgui.backup.restic.WebdavTransport { *; }
 
 # --- WifiManager (called from UI, kept for safety) ---
 -keep class com.example.androidbackupgui.backup.WifiManager { *; }
+
 # --- Keep data models used by kotlinx.serialization ---
-## Keep all model classes that may be referenced via @Serializable
 -keep class com.example.androidbackupgui.model.** { *; }
 
 # --- Keep R classes (referenced by code) ---
 -keep class com.example.androidbackupgui.R { *; }
 
-
-
-# --- jcifs-ng (SMB) — keep class/member names for reflection (was MD4Provider) ---
+# --- jcifs-ng (SMB) — keep class/member names for reflection ---
 -keep class jcifs.util.Crypto { *; }
 -keep class jcifs.smb.NtlmUtil { *; }
 -keep class jcifs.ntlmssp.Type3Message { *; }
--keep class jcifs.smb.NtlmContext { *; }
+-keep class jcifs.ntlmssp.NtlmContext { *; }
