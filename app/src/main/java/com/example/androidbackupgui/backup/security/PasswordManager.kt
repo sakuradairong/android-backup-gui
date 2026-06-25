@@ -2,6 +2,7 @@ package com.example.androidbackupgui.backup.security
 
 import android.content.Context
 import android.content.SharedPreferences
+import android.util.Log
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
 
@@ -15,6 +16,7 @@ import androidx.security.crypto.MasterKey
  */
 object PasswordManager {
 
+    private const val TAG = "PasswordManager"
     private const val PREF_NAME = "secure_credentials"
     private const val KEY_RESTIC_PASSWORD = "restic_password"
     private const val KEY_BACKEND_PASSWORD = "backend_password"
@@ -23,24 +25,47 @@ object PasswordManager {
     @Volatile
     private var prefs: SharedPreferences? = null
 
+    @Volatile
+    private var lastInitError: Throwable? = null
+
     /**
      * 初始化加密存储。需要在应用启动时（Application.onCreate 或
      * MainActivity.onCreate）尽早调用。
+     *
+     * 不会向上抛异常：若 EncryptedSharedPreferences 不可用（设备未设锁屏、
+     * KeyStore 不可用、StrongBox 异常等），异常被捕获并记录到 [lastInitError]，
+     * [prefs] 保持 null，调用方可继续运行（后续 getXxx 返回 null、setXxx no-op），
+     * 凭据解析会自动回退到 BackupConfig 字段。
+     *
+     * 调用方可通过 [lastInitError] / [isInitialized] 判定是否真正初始化成功。
      */
     fun init(context: Context) {
         if (prefs != null) return
         synchronized(this) {
             if (prefs != null) return
-            val masterKey = MasterKey.Builder(context)
-                .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
-                .build()
-            prefs = EncryptedSharedPreferences.create(
-                context,
-                PREF_NAME,
-                masterKey,
-                EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
-                EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
-            )
+            try {
+                val masterKey = MasterKey.Builder(context)
+                    .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
+                    .build()
+                prefs = EncryptedSharedPreferences.create(
+                    context,
+                    PREF_NAME,
+                    masterKey,
+                    EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+                    EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
+                )
+                lastInitError = null
+                Log.i(TAG, "EncryptedSharedPreferences ready (${PREF_NAME})")
+            } catch (e: Throwable) {
+                // 捕获 Throwable 而非 Exception：EncryptedSharedPreferences.create 内部
+                // 可能抛出 java.security.KeyStoreException / GeneralSecurityException /
+                // IOException / 罕见的 Error（如 OutOfMemoryError 的子类型）。捕获
+                // Throwable 后向上抛出会导致 app 启动崩溃（v1.17 阶段 1-3 引入）。
+                // 这里改为吞掉并记录，调用方可通过 isInitialized()/lastInitError 感知。
+                lastInitError = e
+                prefs = null
+                Log.e(TAG, "init: failed to create EncryptedSharedPreferences, falling back to plaintext config", e)
+            }
         }
     }
 
@@ -86,8 +111,11 @@ object PasswordManager {
 
     // ── 状态检查 ─────────────────────────────────────
 
-    /** 检查密码管理器是否已初始化。 */
+    /** 检查密码管理器是否已初始化。失败时返回 false。 */
     fun isInitialized(): Boolean = prefs != null
+
+    /** 返回 init() 上一次的失败原因（成功时为 null）。 */
+    fun lastInitError(): Throwable? = lastInitError
 
     /** 检查 restic 密码是否已设置。 */
     fun hasResticPassword(): Boolean = getResticPassword() != null

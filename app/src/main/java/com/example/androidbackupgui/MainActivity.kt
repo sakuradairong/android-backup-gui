@@ -32,6 +32,15 @@ class MainActivity : ComponentActivity() {
         // Initialize file-based logging and secure credential storage
         LogUtil.init(filesDir)
         PasswordManager.init(this)
+        PasswordManager.lastInitError()?.let { err ->
+            // 不抛异常让 app 崩溃：fail-soft。密码会回退到 BackupConfig 字段。
+            // 仍记 Log.e 让 v1.17 阶段 1-3 引入的故障可观测。
+            LogUtil.e(
+                "MainActivity",
+                "PasswordManager init failed (continuing without encrypted storage): ${err.javaClass.simpleName}: ${err.message}",
+            )
+            android.util.Log.e("MainActivity", "PasswordManager init failed", err)
+        }
         // 启动时初始化 SMB 加密库（MD4/AESCMAC），避免首次 SMB 操作时延迟失败
         MissingAlgoProvider.register()
 
