@@ -17,6 +17,9 @@ object LegacyCredentialMigrator {
         if (!configFile.exists()) {
             return MigrationResult(false, false, false)
         }
+        if (!PasswordManager.isInitialized()) {
+            return MigrationResult(false, false, false)
+        }
 
         return try {
             val lines = configFile.readLines()
@@ -47,7 +50,7 @@ object LegacyCredentialMigrator {
                 !PasswordManager.hasResticPassword()
             ) {
                 PasswordManager.setResticPassword(resticPassword)
-                migratedRestic = true
+                migratedRestic = PasswordManager.getResticPassword() == resticPassword
             }
 
             if (!backendPass.isNullOrEmpty() &&
@@ -55,7 +58,7 @@ object LegacyCredentialMigrator {
                 PasswordManager.getBackendPass() == null
             ) {
                 PasswordManager.setBackendPass(backendPass)
-                migratedBackend = true
+                migratedBackend = PasswordManager.getBackendPass() == backendPass
             }
 
             // 仅当至少一个字段真正迁移成功时才重写配置文件，并按字段独立替换：
@@ -130,8 +133,8 @@ object LegacyCredentialMigrator {
         if (!shouldRedact) return content
         val placeholder = "$fieldName=\"stored-in-keystore\""
         return content
-            .replace(Regex("""${Regex.escape(fieldName)}[ \t]*=[ \t]*"[^"]*""""), placeholder)
-            .replace(Regex("""${Regex.escape(fieldName)}[ \t]*=[ \t]*[^" \t]+"""), placeholder)
+            .replace(Regex("""${Regex.escape(fieldName)}[ \t]*=[ \t]*"[^"\r\n]*""""), placeholder)
+            .replace(Regex("""${Regex.escape(fieldName)}[ \t]*=[ \t]*[^\r\n" \t]+"""), placeholder)
     }
 
     private fun unquote(raw: String): String {

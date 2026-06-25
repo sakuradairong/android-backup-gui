@@ -2,6 +2,9 @@ package com.example.androidbackupgui.backup.security
 
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.shouldBe
+import io.mockk.every
+import io.mockk.mockkObject
+import io.mockk.unmockkObject
 import java.io.File
 import java.nio.file.Files
 
@@ -15,14 +18,9 @@ import java.nio.file.Files
  *     旧的实现仍会替换 restic_backend_pass 为占位符，导致 backend 明文丢失。
  *
  * 本测试在不依赖 Android Context/KeyStore 的前提下覆盖修复后的行为：
+ *  - PasswordManager 未初始化时不重写配置，避免明文凭据丢失
  *  - 字段独立 replace（按字段名 + 开关）
  *  - 临时文件 + renameTo 原子写入
- *  - PasswordManager 未初始化（prefs == null）时 setXxx 是 no-op
- *
- * PasswordManager.init() 不调用（需要 Android Context），因此 PasswordManager 状态
- * 始终为 prefs == null。setResticPassword/setBackendPass 内部是 prefs?.edit()，
- * 实际不会写入任何值。migrate() 检测到 PasswordManager 还没有密码时仍会尝试迁移
- * （因为 hasResticPassword() 返回 false），所以会触发文件重写路径。
  */
 class LegacyCredentialMigratorTest : FunSpec({
 
@@ -33,12 +31,14 @@ class LegacyCredentialMigratorTest : FunSpec({
     }
 
     afterTest {
+        unmockkObject(PasswordManager)
         tempDir.deleteRecursively()
     }
 
     // ── HIGH 2 修复：原子写入 + 字段独立 ─────────────
 
     test("迁移成功后配置文件不含明文密码") {
+        mockInitializedPasswordManager()
         val config = writeConfig(tempDir, 
             """
             output_path=/storage/emulated/0/Backup
@@ -49,10 +49,6 @@ class LegacyCredentialMigratorTest : FunSpec({
 
         val result = LegacyCredentialMigrator.migrate(config)
 
-        // PasswordManager 未初始化时 setResticPassword 是 no-op，hasResticPassword 返回 false，
-        // 所以这里 migratedResticPassword / migratedBackendPass 都是 true（migrate 函数
-        // 会执行 setXxx 调用，但因 prefs == null 实际不写入）。这是测试的限制，与真机
-        // 行为不同；我们主要验证的是文件重写逻辑。
         val rewritten = config.readText()
         (rewritten.contains("real-restic-pass")) shouldBe false
         (rewritten.contains("real-backend-pass")) shouldBe false
@@ -63,11 +59,7 @@ class LegacyCredentialMigratorTest : FunSpec({
     // ── HIGH 3 修复：仅迁移 restic 时，backend 明文必须保留 ─────
 
     test("仅迁移 restic 时，backend 明文必须保留") {
-        // 模拟场景：PasswordManager 已有 backendPass（prefs 存在但 getResticPassword == null）。
-        // 由于本测试不调用 init，PasswordManager.prefs 永远为 null，
-        // migratedRestic 和 migratedBackend 都会尝试为 true。为模拟"仅迁移 restic"，
-        // 我们用 content="..." 直接走 redactField 单元逻辑不可行（私有方法），
-        // 因此改测"两个字段都迁移时都被替换"与"都不迁移时不替换"的端到端行为。
+        mockInitializedPasswordManager(backendPass = "already-secure")
         val config = writeConfig(tempDir, 
             """
             restic_password="plain-restic"
@@ -78,16 +70,19 @@ class LegacyCredentialMigratorTest : FunSpec({
         val result = LegacyCredentialMigrator.migrate(config)
 
         val content = config.readText()
-        // 在 PasswordManager 未初始化时，migrate 会尝试迁移两个字段并都标记 true，
-        // 所以两个字段都会被 redact（这是测试环境限制，不是被测代码 bug）。
         (content.contains("plain-restic")) shouldBe false
-        (content.contains("plain-backend")) shouldBe false
+        content.contains("plain-backend") shouldBe true
+        content.contains("restic_password=\"stored-in-keystore\"") shouldBe true
+        content.contains("restic_backend_pass=\"plain-backend\"") shouldBe true
+        result.migratedResticPassword shouldBe true
+        result.migratedBackendPass shouldBe false
         result.rewroteFile shouldBe true
     }
 
     // ── 端到端：两个字段都迁移时被正确 redact ───────────
 
     test("两个字段都被迁移时都正确 redact 为 stored-in-keystore") {
+        mockInitializedPasswordManager()
         val config = writeConfig(tempDir, 
             """
             # legacy config
@@ -150,6 +145,7 @@ class LegacyCredentialMigratorTest : FunSpec({
     // ── 端到端：未加引号的明文密码也能正确 redact ────
 
     test("未加引号的密码也能被正确 redact") {
+        mockInitializedPasswordManager()
         val config = writeConfig(tempDir, 
             """
             restic_password=plain-no-quotes
@@ -165,9 +161,45 @@ class LegacyCredentialMigratorTest : FunSpec({
         content.contains("restic_password=\"stored-in-keystore\"") shouldBe true
     }
 
+    test("未加引号的 restic 密码 redact 时不能吞掉后续配置行") {
+        mockInitializedPasswordManager()
+        val config = writeConfig(tempDir,
+            """
+            restic_password=plain-no-quotes
+            restic_backend_pass=plain-backend-no-quotes
+            output_path=/sdcard/Backup
+            """.trimIndent()
+        )
+
+        LegacyCredentialMigrator.migrate(config)
+
+        val content = config.readText()
+        content.contains("restic_password=\"stored-in-keystore\"") shouldBe true
+        content.contains("restic_backend_pass=\"stored-in-keystore\"") shouldBe true
+        content.contains("output_path=/sdcard/Backup") shouldBe true
+    }
+
+    test("PasswordManager 未初始化时不会迁移或重写明文配置") {
+        val config = writeConfig(tempDir,
+            """
+            restic_password=plain-restic
+            restic_backend_pass=plain-backend
+            """.trimIndent()
+        )
+
+        val result = LegacyCredentialMigrator.migrate(config)
+
+        result.migratedResticPassword shouldBe false
+        result.migratedBackendPass shouldBe false
+        result.rewroteFile shouldBe false
+        config.readText().contains("plain-restic") shouldBe true
+        config.readText().contains("plain-backend") shouldBe true
+    }
+
     // ── 端到端：原子写入不残留临时文件 ───────────────
 
     test("原子写入后不残留临时文件") {
+        mockInitializedPasswordManager()
         val config = writeConfig(tempDir, 
             """
             restic_password="plain"
@@ -201,6 +233,25 @@ class LegacyCredentialMigratorTest : FunSpec({
             val file = File(parent, "backup_settings.conf")
             file.writeText(content)
             return file
+        }
+
+        internal fun mockInitializedPasswordManager(
+            resticPassword: String? = null,
+            backendPass: String? = null,
+        ) {
+            var storedResticPassword = resticPassword
+            var storedBackendPass = backendPass
+            mockkObject(PasswordManager)
+            every { PasswordManager.isInitialized() } returns true
+            every { PasswordManager.getResticPassword() } answers { storedResticPassword }
+            every { PasswordManager.hasResticPassword() } answers { storedResticPassword != null }
+            every { PasswordManager.setResticPassword(any()) } answers {
+                storedResticPassword = firstArg()
+            }
+            every { PasswordManager.getBackendPass() } answers { storedBackendPass }
+            every { PasswordManager.setBackendPass(any()) } answers {
+                storedBackendPass = firstArg()
+            }
         }
     }
 }
