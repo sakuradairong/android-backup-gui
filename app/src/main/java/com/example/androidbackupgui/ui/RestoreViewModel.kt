@@ -359,6 +359,7 @@ class RestoreViewModel(
                 _state.update {
                     it.copy(statusText = "恢复已取消", progressStage = "cancelled", progressMessage = "已取消")
                 }
+                throw e
             } catch (e: Exception) {
                 _state.update {
                     it.copy(
