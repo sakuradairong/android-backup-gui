@@ -19,6 +19,7 @@ release.keystore
 
 # Memory files from agent harness
 memory:*
+.omo/run-continuation/
 
 # Restic test repository (contains encryption keys)
 /test/
