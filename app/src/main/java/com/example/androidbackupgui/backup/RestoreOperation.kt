@@ -159,6 +159,7 @@ object RestoreOperation {
                             val obbOk = RestoreAppDataOps.restoreObb(pkg, appBackupDir, tarCmd, zstdCmd, userId)
                             if (!obbOk) {
                                 Log.w(TAG, "restoreApps: OBB restore failed for $pkg, continuing")
+                                failAtomic.incrementAndGet()
                             }
 
                             // 4.5 Restore external data (Android/data)
@@ -166,6 +167,7 @@ object RestoreOperation {
                             val extDataOk = RestoreAppDataOps.restoreExternalData(pkg, appBackupDir, tarCmd, zstdCmd, userId)
                             if (!extDataOk) {
                                 Log.w(TAG, "restoreApps: external data restore failed for $pkg, continuing")
+                                failAtomic.incrementAndGet()
                             }
 
                             // 5. Restore SSAID

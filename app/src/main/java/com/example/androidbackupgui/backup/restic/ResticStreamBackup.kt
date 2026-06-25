@@ -191,6 +191,11 @@ object ResticStreamBackup {
 
                 emit("数据备份完成 (成功 $successCount, 失败 $failCount)，正在上传至 restic…")
 
+                if (failCount > 0) {
+                    Log.w(TAG, "backup: $failCount app(s) failed tar, aborting restic backup")
+                    return@withContext err(AppError.Restic("tar failed for $failCount app(s)", -1, ""))
+                }
+
                 // ── 5. Run restic backup ──────────────────
                 val args = mutableListOf("backup", "--json")
                 args.add(workDir.absolutePath)
@@ -265,7 +270,7 @@ object ResticStreamBackup {
                 // ── 7. Verify snapshot ───────────────────
                 val snapshotId = summary.snapshotId
                 emit("正在验证快照 ${snapshotId.take(8)}…")
-                try {
+                val verified = try {
                     restic.executor.withBackend(
                         repoPath = repoPath,
                         password = password,
@@ -281,15 +286,18 @@ object ResticStreamBackup {
                         bridgeRunner = restic.bridgeRunner,
                     ) { env ->
                         val verifyResult = restic.runner.runRestic(env, "snapshots", "--json")
-                        if (verifyResult.exitCode == 0 && verifyResult.stdout.contains(snapshotId)) {
-                            Log.i(TAG, "backup: snapshot $snapshotId verified")
-                        } else {
-                            Log.w(TAG, "backup: snapshot $snapshotId NOT found in snapshots list!")
-                        }
+                        verifyResult.exitCode == 0 && verifyResult.stdout.contains(snapshotId)
                     }
                 } catch (e: Exception) {
                     Log.w(TAG, "backup: snapshot verification failed: ${e.message}")
+                    false
                 }
+
+                if (!verified) {
+                    Log.w(TAG, "backup: snapshot $snapshotId NOT found in snapshots list!")
+                    return@withContext err(AppError.Restic("快照验证失败: $snapshotId", -1, ""))
+                }
+                Log.i(TAG, "backup: snapshot $snapshotId verified")
 
                 AppResult.Success(summary)
             } catch (e: CancellationException) {

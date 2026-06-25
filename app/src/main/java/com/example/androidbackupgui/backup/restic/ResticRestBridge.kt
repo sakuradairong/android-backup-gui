@@ -5,6 +5,7 @@ import android.util.Log
 import fi.iki.elonen.NanoHTTPD
 import fi.iki.elonen.NanoHTTPD.IHTTPSession
 import kotlinx.coroutines.runBlocking
+import com.example.androidbackupgui.backup.core.AppError
 import com.example.androidbackupgui.backup.core.AppResult
 import com.example.androidbackupgui.backup.core.err
 import kotlinx.serialization.Serializable
@@ -215,6 +216,7 @@ class ResticRestBridge(
                 NanoHTTPD.Method.HEAD -> {
                     var configExists = false
                     var configSize = 0L
+                    var notFound = false
                     // 先试 exists，失败时回退到 download 确认（某些 SMB 实现 exists 可能假阴性）
                     when (val exists = transport.exists(remotePath)) {
                         is AppResult.Success -> {
@@ -222,22 +224,26 @@ class ResticRestBridge(
                                 configExists = true
                                 val sizeResult = transport.fileSize(remotePath)
                                 if (sizeResult is AppResult.Success) configSize = sizeResult.data
+                            } else {
+                                notFound = true
                             }
                         }
 
                         is AppResult.Failure -> { /* fall through to download check */ }
                     }
-                    if (!configExists) {
+                    if (!configExists && !notFound) {
                         // Fallback: try downloading the config file to confirm existence
                         val tmp = File(cacheDir, "restic_blob_${UUID.randomUUID()}")
                         try {
-                            when (transport.download(remotePath, tmp.absolutePath)) {
+                            when (val downloadResult = transport.download(remotePath, tmp.absolutePath)) {
                                 is AppResult.Success -> {
                                     configExists = true
                                     configSize = tmp.length()
                                 }
 
-                                is AppResult.Failure -> { /* truly not found */ }
+                                is AppResult.Failure -> {
+                                    notFound = downloadResult.error is AppError.Remote && downloadResult.error.isNotFound
+                                }
                             }
                         } finally {
                             tmp.delete()
@@ -250,15 +256,17 @@ class ResticRestBridge(
                             ByteArrayInputStream(ByteArray(0)),
                             configSize,
                         )
-                    } else {
+                    } else if (notFound) {
                         newFixedLengthResponse(Response.Status.NOT_FOUND, "text/plain", "")
+                    } else {
+                        newFixedLengthResponse(Response.Status.INTERNAL_ERROR, "text/plain", "")
                     }
                 }
 
                 NanoHTTPD.Method.GET -> {
                     val tempFile = File(cacheDir, "restic_blob_${UUID.randomUUID()}")
                     try {
-                        when (transport.download(remotePath, tempFile.absolutePath)) {
+                        when (val downloadResult = transport.download(remotePath, tempFile.absolutePath)) {
                             is AppResult.Success -> {
                                 val data = tempFile.readBytes()
                                 newFixedLengthResponse(
@@ -270,8 +278,13 @@ class ResticRestBridge(
                             }
 
                             is AppResult.Failure -> {
+                                val status = if (downloadResult.error is AppError.Remote && downloadResult.error.isNotFound) {
+                                    Response.Status.NOT_FOUND
+                                } else {
+                                    Response.Status.INTERNAL_ERROR
+                                }
                                 newFixedLengthResponse(
-                                    Response.Status.NOT_FOUND,
+                                    status,
                                     "text/plain",
                                     "",
                                 )
@@ -334,8 +347,13 @@ class ResticRestBridge(
                 }
 
                 is AppResult.Failure -> {
+                    val status = if (result.error is AppError.Remote && result.error.isNotFound) {
+                        Response.Status.NOT_FOUND
+                    } else {
+                        Response.Status.INTERNAL_ERROR
+                    }
                     newFixedLengthResponse(
-                        Response.Status.NOT_FOUND,
+                        status,
                         "text/plain",
                         "",
                     )
@@ -372,8 +390,13 @@ class ResticRestBridge(
                 }
 
                 is AppResult.Failure -> {
+                    val status = if (result.error is AppError.Remote && result.error.isNotFound) {
+                        Response.Status.NOT_FOUND
+                    } else {
+                        Response.Status.INTERNAL_ERROR
+                    }
                     newFixedLengthResponse(
-                        Response.Status.NOT_FOUND,
+                        status,
                         "text/plain",
                         "",
                     )
@@ -393,7 +416,7 @@ class ResticRestBridge(
             // Use RandomAccessFile to avoid loading entire blob into memory
             val tempFile = File(cacheDir, "restic_blob_${UUID.randomUUID()}")
             try {
-                when (transport.download(remotePath, tempFile.absolutePath)) {
+                when (val downloadResult = transport.download(remotePath, tempFile.absolutePath)) {
                     is AppResult.Success -> {
                         val rangeHeader = headers["range"]?.lowercase()
 
@@ -454,8 +477,13 @@ class ResticRestBridge(
                     }
 
                     is AppResult.Failure -> {
+                        val status = if (downloadResult.error is AppError.Remote && downloadResult.error.isNotFound) {
+                            Response.Status.NOT_FOUND
+                        } else {
+                            Response.Status.INTERNAL_ERROR
+                        }
                         newFixedLengthResponse(
-                            Response.Status.NOT_FOUND,
+                            status,
                             "text/plain",
                             "",
                         )

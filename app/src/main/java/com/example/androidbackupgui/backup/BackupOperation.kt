@@ -219,12 +219,21 @@ object BackupOperation {
                 )
                 LogUtil.i(TAG, "backupApps: integrity check completed — ${integrityReport.passedPackages}/${integrityReport.checkedPackages} passed")
 
+                if (integrityReport.failedPackages > 0) {
+                    LogUtil.w(TAG, "backupApps: integrity check failed for ${integrityReport.failedPackages} packages")
+                    failAtomic.addAndGet(integrityReport.failedPackages)
+                }
+
                 // 生成校验和文件
-                BackupIntegrityChecker.generateChecksumFile(
+                val checksumOk = BackupIntegrityChecker.generateChecksumFile(
                     backupDir = backupRoot,
                     packages = apps.map { it.packageName.value },
                     compression = compressionMethod,
                 )
+                if (!checksumOk) {
+                    LogUtil.w(TAG, "backupApps: checksum file generation failed")
+                    failAtomic.incrementAndGet()
+                }
             }
 
             BackupResult(
