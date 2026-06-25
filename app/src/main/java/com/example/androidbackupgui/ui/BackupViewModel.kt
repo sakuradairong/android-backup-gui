@@ -288,6 +288,7 @@ class BackupViewModel(
                             progressMessage = "已取消",
                         )
                     }
+                    throw e
                 } catch (e: Exception) {
                     val error = when {
                         e.message?.contains("EPERM", ignoreCase = true) == true ->
