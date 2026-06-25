@@ -27,6 +27,11 @@ object LogUtil {
         executor.execute { rotateLogs() }
     }
 
+    fun d(tag: String, message: String) {
+        Log.d(tag, message)
+        writeLog("D", tag, message)
+    }
+
     fun i(tag: String, message: String) {
         Log.i(tag, message)
         writeLog("I", tag, message)
@@ -37,9 +42,19 @@ object LogUtil {
         writeLog("W", tag, message)
     }
 
+    fun w(tag: String, message: String, throwable: Throwable) {
+        Log.w(tag, message, throwable)
+        writeLog("W", tag, "$message — ${throwable.javaClass.simpleName}: ${throwable.message}")
+    }
+
     fun e(tag: String, message: String) {
         Log.e(tag, message)
         writeLog("E", tag, message)
+    }
+
+    fun e(tag: String, message: String, throwable: Throwable) {
+        Log.e(tag, message, throwable)
+        writeLog("E", tag, "$message — ${throwable.javaClass.simpleName}: ${throwable.message}")
     }
 
     private fun writeLog(level: String, tag: String, message: String) {
