@@ -1,19 +1,19 @@
 package com.example.androidbackupgui.backup.restic
 
 import android.util.Base64
-import android.util.Log
-import fi.iki.elonen.NanoHTTPD
-import fi.iki.elonen.NanoHTTPD.IHTTPSession
-import kotlinx.coroutines.runBlocking
 import com.example.androidbackupgui.backup.core.AppError
 import com.example.androidbackupgui.backup.core.AppResult
+import com.example.androidbackupgui.backup.core.LogUtil
 import com.example.androidbackupgui.backup.core.err
-import kotlinx.serialization.Serializable
-import kotlinx.serialization.encodeToString
-import kotlinx.serialization.json.Json
+import fi.iki.elonen.NanoHTTPD
+import fi.iki.elonen.NanoHTTPD.IHTTPSession
 import java.io.ByteArrayInputStream
 import java.io.File
 import java.util.UUID
+import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
 
 /**
  * NanoHTTPD-based REST bridge implementing the restic REST backend API.
@@ -57,7 +57,7 @@ class ResticRestBridge(
                     )
             val auth = headers["authorization"]
             if (auth != expected) {
-                Log.w(TAG, "auth failed")
+                LogUtil.w(TAG, "auth failed")
                 return newFixedLengthResponse(
                     Response.Status.UNAUTHORIZED,
                     "text/plain",
@@ -66,12 +66,12 @@ class ResticRestBridge(
             }
         }
 
-        Log.d(TAG, "$method $uri")
+        LogUtil.d(TAG, "$method $uri")
 
         return try {
             handleRequest(method, uri, headers, params, session)
         } catch (e: Exception) {
-            Log.e(TAG, "request failed: $method $uri", e)
+            LogUtil.e(TAG, "request failed: $method $uri", e)
             newFixedLengthResponse(
                 Response.Status.INTERNAL_ERROR,
                 "text/plain",
@@ -169,7 +169,7 @@ class ResticRestBridge(
             val tmpFile = File(tmpDir, "restic_blob_${UUID.randomUUID()}")
             val contentLength = session.headers["content-length"]?.toLongOrNull() ?: -1L
             val input = (session as NanoHTTPD.HTTPSession).inputStream
-            Log.d(TAG, "streamBodyToFile: reading body (content-length=$contentLength)...")
+            LogUtil.d(TAG, "streamBodyToFile: reading body (content-length=$contentLength)...")
             tmpFile.outputStream().use { output ->
                 if (contentLength > 0) {
                     // Read exactly Content-Length bytes to avoid blocking on keep-alive
@@ -183,7 +183,7 @@ class ResticRestBridge(
                         remaining -= n
                     }
                     if (remaining > 0) {
-                        Log.w(
+                        LogUtil.w(
                             TAG,
                             "streamBodyToFile: body truncated, expected $contentLength bytes but got EOF after ${contentLength - remaining}",
                         )
@@ -195,11 +195,11 @@ class ResticRestBridge(
             }
             val elapsed = System.currentTimeMillis() - started
             val bytes = tmpFile.length()
-            Log.i(TAG, "streamBodyToFile: read $bytes bytes in ${elapsed}ms")
+            LogUtil.i(TAG, "streamBodyToFile: read $bytes bytes in ${elapsed}ms")
             Result.success(tmpFile)
         } catch (e: Exception) {
             val elapsed = System.currentTimeMillis() - started
-            Log.w(TAG, "streamBodyToFile failed after ${elapsed}ms", e)
+            LogUtil.w(TAG, "streamBodyToFile failed after ${elapsed}ms", e)
             Result.failure(e)
         }
     }

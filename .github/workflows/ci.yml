@@ -28,9 +28,14 @@ jobs:
         run: ./gradlew test
 
       - name: Build release APK
+        if: ${{ github.event_name != 'pull_request' || (env.KEYSTORE_PASSWORD != '' && env.KEY_PASSWORD != '') }}
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: ./gradlew assembleRelease
 
       - name: Upload APK
+        if: ${{ github.event_name != 'pull_request' || (env.KEYSTORE_PASSWORD != '' && env.KEY_PASSWORD != '') }}
         uses: actions/upload-artifact@v4
         with:
           name: app-release
