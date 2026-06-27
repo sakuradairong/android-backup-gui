@@ -1,8 +1,6 @@
 package com.example.androidbackupgui.ui
 
-import android.content.Context
 import android.net.Uri
-import android.util.Log
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
@@ -15,84 +13,78 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.FileDownload
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
-import com.example.androidbackupgui.backup.core.LogUtil
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.viewmodel.compose.viewModel
+import com.example.androidbackupgui.R
+import com.example.androidbackupgui.ui.theme.Spacing
 import java.io.File
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun LogScreen() {
-    val context = LocalContext.current
-    var logFiles by remember { mutableStateOf(listOf<File>()) }
-    var selectedFile by remember { mutableStateOf<File?>(null) }
-    var logContent by remember { mutableStateOf<List<String>>(emptyList()) }
-    val scope = rememberCoroutineScope()
-
-    // Refresh log list
-    fun refresh() {
-        logFiles = LogUtil.getLogFiles()
-        if (selectedFile != null && selectedFile !in logFiles) {
-            selectedFile = null
-            logContent = emptyList()
-        }
-    }
-    LaunchedEffect(Unit) { refresh() }
+fun LogScreen(viewModel: LogViewModel = viewModel()) {
+    val uiState = viewModel.uiState.collectAsStateWithLifecycle()
 
     // SAF export launcher
     val exportLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.CreateDocument("text/plain")
-    ) { uri ->
-        if (uri != null && selectedFile != null) {
-            exportLogFile(context, uri, selectedFile!!)
+    ) { uri: Uri? ->
+        val file = uiState.value.selectedFile
+        if (uri != null && file != null) {
+            viewModel.exportToUri(uri, file)
         }
     }
 
-    Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(horizontal = Spacing.pageHorizontal, vertical = Spacing.pageVertical)
+    ) {
         // ── Header ──
         Row(
             verticalAlignment = Alignment.CenterVertically,
             modifier = Modifier.fillMaxWidth()
         ) {
-            Text("运行日志", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
-            IconButton(onClick = { refresh() }) {
-                Icon(Icons.Filled.Refresh, contentDescription = "刷新")
+            Text(
+                text = stringResource(R.string.log_title),
+                style = MaterialTheme.typography.titleMedium,
+                modifier = Modifier.weight(1f)
+            )
+            IconButton(onClick = { viewModel.refresh() }) {
+                Icon(
+                    imageVector = Icons.Filled.Refresh,
+                    contentDescription = stringResource(R.string.log_refresh)
+                )
             }
         }
 
-        if (logFiles.isEmpty()) {
+        if (uiState.value.logFiles.isEmpty()) {
             Text(
-                "暂无日志文件",
+                text = stringResource(R.string.log_no_files),
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(vertical = 24.dp)
+                modifier = Modifier.padding(vertical = Spacing.xl)
             )
         }
 
         // ── Log file list ──
-        Text("日志文件", style = MaterialTheme.typography.labelLarge)
+        Text(
+            text = stringResource(R.string.log_files),
+            style = MaterialTheme.typography.labelLarge
+        )
         LazyColumn(
             modifier = Modifier.heightIn(max = 160.dp),
-            verticalArrangement = Arrangement.spacedBy(4.dp)
+            verticalArrangement = Arrangement.spacedBy(Spacing.xs)
         ) {
-            items(logFiles, key = { it.absolutePath }) { file ->
-                val isSelected = file == selectedFile
+            items(uiState.value.logFiles, key = { it.absolutePath }) { file ->
+                val isSelected = file == uiState.value.selectedFile
                 Card(
-                    onClick = {
-                        selectedFile = file
-                        scope.launch {
-                            logContent = withContext(Dispatchers.IO) {
-                                file.readLines()
-                            }
-                        }
-                    },
+                    onClick = { viewModel.selectFile(file) },
                     colors = CardDefaults.cardColors(
                         containerColor = if (isSelected)
                             MaterialTheme.colorScheme.primaryContainer
@@ -101,7 +93,9 @@ fun LogScreen() {
                     )
                 ) {
                     Row(
-                        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = Spacing.md, vertical = Spacing.sm),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
@@ -119,39 +113,45 @@ fun LogScreen() {
             }
         }
 
-        Spacer(Modifier.height(12.dp))
+        Spacer(Modifier.height(Spacing.md))
 
         // ── Action buttons ──
+        val selectedFile = uiState.value.selectedFile
         if (selectedFile != null) {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(horizontalArrangement = Arrangement.spacedBy(Spacing.sm)) {
                 OutlinedButton(
-                    onClick = { exportLauncher.launch(selectedFile!!.name) },
+                    onClick = { exportLauncher.launch(selectedFile.name) },
                     modifier = Modifier.weight(1f)
                 ) {
-                    Icon(Icons.Filled.FileDownload, contentDescription = null, modifier = Modifier.size(18.dp))
-                    Spacer(Modifier.width(4.dp))
-                    Text("导出")
+                    Icon(
+                        imageVector = Icons.Filled.FileDownload,
+                        contentDescription = stringResource(R.string.action_export),
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(Modifier.width(Spacing.xs))
+                    Text(text = stringResource(R.string.action_export))
                 }
                 OutlinedButton(
-                    onClick = {
-                        selectedFile!!.delete()
-                        refresh()
-                    },
+                    onClick = { viewModel.deleteSelected() },
                     colors = ButtonDefaults.outlinedButtonColors(
                         contentColor = MaterialTheme.colorScheme.error
                     ),
                     modifier = Modifier.weight(1f)
                 ) {
-                    Icon(Icons.Filled.Delete, contentDescription = null, modifier = Modifier.size(18.dp))
-                    Spacer(Modifier.width(4.dp))
-                    Text("删除")
+                    Icon(
+                        imageVector = Icons.Filled.Delete,
+                        contentDescription = stringResource(R.string.action_delete),
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(Modifier.width(Spacing.xs))
+                    Text(text = stringResource(R.string.action_delete))
                 }
             }
-            Spacer(Modifier.height(8.dp))
+            Spacer(Modifier.height(Spacing.sm))
 
             // ── Log content ──
             Text(
-                "日志内容 — ${selectedFile!!.name}",
+                text = stringResource(R.string.log_content_title, selectedFile.name),
                 style = MaterialTheme.typography.labelLarge
             )
             Surface(
@@ -159,9 +159,15 @@ fun LogScreen() {
                 color = MaterialTheme.colorScheme.surfaceVariant,
                 shape = MaterialTheme.shapes.small
             ) {
-                if (logContent.isEmpty()) {
-                    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        Text("（空）", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                if (uiState.value.logContent.isEmpty()) {
+                    Box(
+                        modifier = Modifier.fillMaxSize(),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = stringResource(R.string.log_empty),
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
                     }
                 } else {
                     val scrollState = rememberScrollState()
@@ -169,10 +175,10 @@ fun LogScreen() {
                         modifier = Modifier
                             .fillMaxSize()
                             .verticalScroll(scrollState)
-                            .padding(8.dp)
+                            .padding(Spacing.sm)
                     ) {
                         // Show last 500 lines (newest at bottom)
-                        val displayLines = logContent.takeLast(500)
+                        val displayLines = uiState.value.logContent.takeLast(500)
                         for (line in displayLines) {
                             Text(
                                 text = line,
@@ -186,17 +192,5 @@ fun LogScreen() {
                 }
             }
         }
-    }
-}
-
-private fun exportLogFile(context: Context, uri: Uri, file: File) {
-    try {
-        context.contentResolver.openOutputStream(uri)?.use { out ->
-            file.inputStream().use { `in` ->
-                `in`.copyTo(out)
-            }
-        }
-    } catch (e: Exception) {
-        Log.e("LogScreen", "导出日志失败", e)
     }
 }

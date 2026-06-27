@@ -1,6 +1,5 @@
 package com.example.androidbackupgui.ui
 
-import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
@@ -11,9 +10,12 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
-import com.example.androidbackupgui.backup.restic.ResticWrapper
+import com.example.androidbackupgui.R
+import com.example.androidbackupgui.ui.components.AppListItem
+import com.example.androidbackupgui.ui.theme.Spacing
 
 @Composable
 fun RestoreScreen(viewModel: RestoreViewModel = viewModel()) {
@@ -30,31 +32,39 @@ fun RestoreScreen(viewModel: RestoreViewModel = viewModel()) {
         }
 
     Column(modifier = Modifier.fillMaxSize()) {
-        Card(modifier = Modifier.fillMaxWidth().padding(12.dp)) {
-            Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(Spacing.pageHorizontal),
+        ) {
+            Column(
+                modifier = Modifier.padding(Spacing.card),
+                verticalArrangement = Arrangement.spacedBy(Spacing.itemGap),
+            ) {
+                Row(horizontalArrangement = Arrangement.spacedBy(Spacing.sm)) {
                     OutlinedButton(
                         onClick = { viewModel.loadDefaultDir(context) },
                         enabled = !state.isRunning,
                         modifier = Modifier.weight(1f),
-                    ) { Text("本地备份") }
+                    ) { Text(stringResource(R.string.source_local)) }
 
                     OutlinedButton(
                         onClick = { dirPickerLauncher.launch(null) },
                         enabled = !state.isRunning,
                         modifier = Modifier.weight(1f),
-                    ) { Text("选择目录") }
+                    ) { Text(stringResource(R.string.source_select_dir)) }
 
                     Button(
                         onClick = { viewModel.listResticSnapshots(context) },
                         enabled = !state.isRunning && state.resticConfig != null,
                         modifier = Modifier.weight(1f),
-                    ) { Text("Restic 快照") }
+                    ) { Text(stringResource(R.string.source_restic_snapshots)) }
                 }
 
                 val sourceText = when {
                     state.backupDir != null -> state.backupDir!!.absolutePath
-                    state.selectedSnapshot != null -> "restic: ${state.selectedSnapshot!!.time.take(19)}"
+                    state.selectedSnapshot != null ->
+                        "restic: ${state.selectedSnapshot!!.time.take(19)}"
                     else -> ""
                 }
                 if (sourceText.isNotEmpty()) {
@@ -81,133 +91,180 @@ fun RestoreScreen(viewModel: RestoreViewModel = viewModel()) {
 
         if (state.packages.isNotEmpty()) {
             Row(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = Spacing.pageHorizontal, vertical = Spacing.xs),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                horizontalArrangement = Arrangement.spacedBy(Spacing.sm),
             ) {
-                TextButton(onClick = { viewModel.selectAll() }, enabled = !state.isRunning) { Text("全选应用") }
-                TextButton(onClick = { viewModel.clearSelection() }, enabled = !state.isRunning) { Text("取消全选") }
+                TextButton(
+                    onClick = { viewModel.selectAll() },
+                    enabled = !state.isRunning,
+                ) { Text(stringResource(R.string.action_select_all_apps)) }
+                TextButton(
+                    onClick = { viewModel.clearSelection() },
+                    enabled = !state.isRunning,
+                ) { Text(stringResource(R.string.action_deselect_all_apps)) }
                 Spacer(Modifier.weight(1f))
-                Text("恢复 Wi-Fi", style = MaterialTheme.typography.bodySmall)
-                Switch(checked = state.restoreWifi, onCheckedChange = { viewModel.toggleRestoreWifi(it) }, enabled = !state.isRunning)
+                Text(
+                    stringResource(R.string.restore_wifi),
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                Switch(
+                    checked = state.restoreWifi,
+                    onCheckedChange = { viewModel.toggleRestoreWifi(it) },
+                    enabled = !state.isRunning,
+                )
             }
         }
 
         LazyColumn(
-            modifier = Modifier.weight(1f).fillMaxWidth(),
-            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
-            verticalArrangement = Arrangement.spacedBy(4.dp),
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth(),
+            contentPadding = PaddingValues(
+                horizontal = Spacing.pageHorizontal,
+                vertical = Spacing.xs,
+            ),
+            verticalArrangement = Arrangement.spacedBy(Spacing.xs),
         ) {
             items(state.appInfos, key = { it.packageName.value }) { app ->
-                Card(
-                    onClick = {
-                        val pkg = app.packageName.value
-                        viewModel.toggleApp(pkg, pkg !in state.selectedPackages)
-                    },
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Row(
-                        modifier = Modifier.padding(12.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Checkbox(
-                            checked = app.packageName.value in state.selectedPackages,
-                            onCheckedChange = { checked -> viewModel.toggleApp(app.packageName.value, checked) },
-                        )
-                        Spacer(Modifier.width(8.dp))
-                        Column {
-                            Text(
-                                text = app.label.ifEmpty { app.packageName.value },
-                                style = MaterialTheme.typography.bodyLarge,
-                            )
-                            Text(
-                                text = app.packageName.value,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                    }
-                }
+                val pkg = app.packageName.value
+                AppListItem(
+                    app = app,
+                    isSelected = pkg in state.selectedPackages,
+                    onToggle = { checked -> viewModel.toggleApp(pkg, checked) },
+                )
             }
         }
 
-        Surface(modifier = Modifier.fillMaxWidth(), tonalElevation = 3.dp) {
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            tonalElevation = Spacing.cardElevation,
+        ) {
             if (state.isRunning) {
                 OutlinedButton(
                     onClick = { viewModel.cancelRestore() },
-                    modifier = Modifier.fillMaxWidth().padding(12.dp),
-                    colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error),
-                ) { Text("取消恢复") }
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(Spacing.card),
+                    colors = ButtonDefaults.outlinedButtonColors(
+                        contentColor = MaterialTheme.colorScheme.error,
+                    ),
+                ) { Text(stringResource(R.string.action_cancel_restore)) }
             } else {
                 Button(
                     onClick = { viewModel.requestRestore() },
-                    enabled = state.selectedPackages.isNotEmpty() && (state.backupDir != null || state.selectedSnapshot != null),
-                    modifier = Modifier.fillMaxWidth().padding(12.dp),
-                ) { Text("开始恢复 (${state.selectedPackages.size})") }
+                    enabled = state.selectedPackages.isNotEmpty() &&
+                        (state.backupDir != null || state.selectedSnapshot != null),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(Spacing.card),
+                ) {
+                    Text(
+                        stringResource(
+                            R.string.action_start_restore_count,
+                            state.selectedPackages.size,
+                        )
+                    )
+                }
             }
         }
     }
 
     if (state.showRestoreConfirm) {
-        val toRestore = state.packages.filter { it in state.selectedPackages }
-        val sourceText = when {
-            state.backupDir != null -> "本地目录: ${state.backupDir!!.name}"
-            state.selectedSnapshot != null -> "Restic 快照: ${state.selectedSnapshot!!.time.take(19)}"
-            else -> "未知"
-        }
-        AlertDialog(
-            onDismissRequest = { viewModel.dismissRestoreConfirm() },
-            title = { Text("确认恢复") },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("即将恢复 ${toRestore.size} 个应用")
-                    Text("备份源: $sourceText")
-                    Text("目标用户: ${state.config.backupUserId}")
-                    if (state.restoreWifi) {
-                        Text("将恢复 Wi-Fi 配置", color = MaterialTheme.colorScheme.error)
-                    }
-                    if (state.isStreamingBackup) {
-                        Text(
-                            "这是实验性不完整备份，不会恢复 OBB、外部数据、权限、SSAID、Wi-Fi",
-                            color = MaterialTheme.colorScheme.error,
-                            style = MaterialTheme.typography.bodySmall,
-                        )
-                    }
-                    Spacer(Modifier.height(8.dp))
+        RestoreConfirmDialog(viewModel = viewModel, state = state)
+    }
+
+    if (state.showSnapshotPicker && state.availableSnapshots.isNotEmpty()) {
+        SnapshotPickerDialog(viewModel = viewModel, state = state)
+    }
+}
+
+@Composable
+private fun RestoreConfirmDialog(
+    viewModel: RestoreViewModel,
+    state: RestoreUiState,
+) {
+    val context = LocalContext.current
+    val toRestoreCount = state.selectedPackages.size
+    val sourceText = when {
+        state.backupDir != null ->
+            stringResource(R.string.restore_source, state.backupDir.name)
+        state.selectedSnapshot != null ->
+            stringResource(
+                R.string.restore_source,
+                "Restic ${state.selectedSnapshot.time.take(19)}",
+            )
+        else -> stringResource(R.string.restore_source, "未知")
+    }
+
+    AlertDialog(
+        onDismissRequest = { viewModel.dismissRestoreConfirm() },
+        title = { Text(stringResource(R.string.dialog_title_confirm_restore)) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(Spacing.sm)) {
+                Text(stringResource(R.string.restore_summary, toRestoreCount))
+                Text(sourceText)
+                Text(stringResource(R.string.restore_target_user, state.config.backupUserId))
+                if (state.restoreWifi) {
                     Text(
-                        "⚠️ 警告：这将覆盖现有应用数据，操作不可撤销。",
+                        stringResource(R.string.restore_wifi_warning),
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
+                if (state.isStreamingBackup) {
+                    Text(
+                        stringResource(R.string.restore_streaming_warning),
                         color = MaterialTheme.colorScheme.error,
                         style = MaterialTheme.typography.bodySmall,
                     )
                 }
-            },
-            confirmButton = {
-                Button(onClick = { viewModel.confirmRestore(context) }) { Text("确认恢复") }
-            },
-            dismissButton = {
-                TextButton(onClick = { viewModel.dismissRestoreConfirm() }) { Text("取消") }
-            },
-        )
-    }
+                Spacer(Modifier.height(Spacing.sm))
+                Text(
+                    stringResource(R.string.restore_irreversible_warning),
+                    color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+        },
+        confirmButton = {
+            Button(onClick = { viewModel.confirmRestore(context) }) {
+                Text(stringResource(R.string.action_confirm))
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = { viewModel.dismissRestoreConfirm() }) {
+                Text(stringResource(R.string.action_cancel))
+            }
+        },
+    )
+}
 
-    if (state.showSnapshotPicker && state.availableSnapshots.isNotEmpty()) {
-        AlertDialog(
-            onDismissRequest = { viewModel.dismissSnapshotPicker() },
-            title = { Text("选择快照") },
-            text = {
-                Column {
-                    state.availableSnapshots.forEach { snap ->
-                        val label = "${snap.time.take(19)} (${snap.shortId})"
-                        TextButton(
-                            onClick = { viewModel.selectSnapshot(context, snap) },
-                            modifier = Modifier.fillMaxWidth(),
-                        ) { Text(label) }
-                    }
+@Composable
+private fun SnapshotPickerDialog(
+    viewModel: RestoreViewModel,
+    state: RestoreUiState,
+) {
+    val context = LocalContext.current
+    AlertDialog(
+        onDismissRequest = { viewModel.dismissSnapshotPicker() },
+        title = { Text(stringResource(R.string.dialog_title_select_snapshot)) },
+        text = {
+            Column {
+                state.availableSnapshots.forEach { snap ->
+                    val label = "${snap.time.take(19)} (${snap.shortId})"
+                    TextButton(
+                        onClick = { viewModel.selectSnapshot(context, snap) },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) { Text(label) }
                 }
-            },
-            confirmButton = {
-                TextButton(onClick = { viewModel.dismissSnapshotPicker() }) { Text("取消") }
-            },
-        )
-    }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { viewModel.dismissSnapshotPicker() }) {
+                Text(stringResource(R.string.action_cancel))
+            }
+        },
+    )
 }

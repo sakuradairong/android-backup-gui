@@ -33,6 +33,9 @@ object Spacing {
     /** Vertical gap between related items inside a section. */
     val itemGap = sm
 
+    /** Vertical padding for a row containing a radio button. */
+    val radioRow = xs
+
     /** Minimum touch target size for small tappable elements. */
     val minTouchTarget = 48.dp
 
