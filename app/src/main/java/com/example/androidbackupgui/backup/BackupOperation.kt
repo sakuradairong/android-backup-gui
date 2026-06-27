@@ -70,6 +70,7 @@ object BackupOperation {
         noDataBackup: Set<String> = emptySet(),
         includePkgs: Set<String> = emptySet(),
         legacyApps: Map<String, SnapshotAppInfo>? = null,
+        appInfoCache: AppInfoCache = AppInfoCache(),
         onProgress: suspend (BackupProgress) -> Unit = {},
     ): BackupResult =
         withContext(Dispatchers.IO) {
@@ -99,7 +100,6 @@ object BackupOperation {
             LogUtil.i(TAG, "backupApps: starting backup of ${apps.size} apps to ${backupRoot.absolutePath}")
 
             // Initialize caches for performance optimization
-            val appInfoCache = AppInfoCache()
             val ssaidCache = SsaidCache(userId)
             val progressTracker = BackupProgressTracker(apps.size)
 

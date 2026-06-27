@@ -1,9 +1,10 @@
 package com.example.androidbackupgui.backup.restic
 
-import android.util.Log
 import com.example.androidbackupgui.backup.core.AppError
 import com.example.androidbackupgui.backup.core.AppResult
 import com.example.androidbackupgui.backup.core.err
+import com.example.androidbackupgui.backup.core.LogSanitizer
+import com.example.androidbackupgui.backup.core.LogUtil
 import com.example.androidbackupgui.backup.core.retryWithBackoff
 import com.thegrizzlylabs.sardineandroid.Sardine
 import com.thegrizzlylabs.sardineandroid.impl.OkHttpSardine
@@ -78,7 +79,7 @@ class WebdavTransport(
                     if (fileSize > 50 * 1024 * 1024L) {
                         return@withContext err(AppError.Remote("WebDAV 上传: 文件过大 (${fileSize / 1024 / 1024}MB), 上限 50MB", "upload"))
                     }
-                    Log.d(TAG, "upload $localPath -> $url ($fileSize bytes)")
+                    LogUtil.d(TAG, "upload ${LogSanitizer.redact(localPath)} -> ${LogSanitizer.redact(url)} ($fileSize bytes)")
                     onProgress(RemoteTransport.TransferProgress("connecting", 0, 1, remotePath))
                     val data = file.inputStream().buffered(bufferSize).use { input ->
                         onProgress(RemoteTransport.TransferProgress("transferring", 0, 1, remotePath))
@@ -101,7 +102,7 @@ class WebdavTransport(
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
-                    Log.e(TAG, "upload failed: $remotePath", e)
+                    LogUtil.e(TAG, "upload failed: ${LogSanitizer.redact(remotePath)}", e)
                     err(AppError.Remote("WebDAV 上传失败", "upload", cause = e))
                 }
             }
@@ -120,7 +121,7 @@ class WebdavTransport(
                     onProgress(RemoteTransport.TransferProgress("connecting", 0, 1, remotePath))
 
                     if (existingBytes > 0L) {
-                        Log.d(TAG, "download 发现 .part 文件, 从 offset=$existingBytes 续传: $remotePath")
+                        LogUtil.d(TAG, "download 发现 .part 文件, 从 offset=$existingBytes 续传: ${LogSanitizer.redact(remotePath)}")
                         downloadRangeResume(url, partFile, existingBytes, onByteProgress, remotePath)
                     } else {
                         sardine.get(url).use { input ->
@@ -144,12 +145,12 @@ class WebdavTransport(
                         partFile.renameTo(localFile)
                     }
                     onProgress(RemoteTransport.TransferProgress("completed", 1, 1, remotePath))
-                    Log.d(TAG, "download $url -> $localPath (${localFile.length()} bytes)")
+                    LogUtil.d(TAG, "download ${LogSanitizer.redact(url)} -> ${LogSanitizer.redact(localPath)} (${localFile.length()} bytes)")
                     AppResult.Success(Unit)
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
-                    Log.e(TAG, "download failed: $remotePath", e)
+                    LogUtil.e(TAG, "download failed: ${LogSanitizer.redact(remotePath)}", e)
                     err(AppError.Remote("WebDAV 下载失败", "download", cause = e))
                 }
             }
@@ -217,17 +218,17 @@ class WebdavTransport(
                         size = it.contentLength,
                         isDirectory = it.isDirectory
                     ) }
-                Log.d(TAG, "listFiles $remoteDir -> ${entries.size} entries")
+                LogUtil.d(TAG, "listFiles ${LogSanitizer.redact(remoteDir)} -> ${entries.size} entries")
                 AppResult.Success(entries)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
                 val is404 = e is SardineException && e.statusCode == 404
                 if (is404) {
-                    Log.d(TAG, "listFiles $remoteDir -> 404 (not found)")
+                    LogUtil.d(TAG, "listFiles ${LogSanitizer.redact(remoteDir)} -> 404 (not found)")
                     return@withContext err(AppError.Remote("远端路径不存在", "list", isNotFound = true))
                 }
-                Log.e(TAG, "listFiles failed: $remoteDir", e)
+                LogUtil.e(TAG, "listFiles failed: ${LogSanitizer.redact(remoteDir)}", e)
                 err(AppError.Remote("WebDAV 列表失败", "list", cause = e))
             }
         }
@@ -240,13 +241,13 @@ class WebdavTransport(
                 for (part in parts) {
                     current = if (current.isEmpty()) part else "$current/$part"
                     try { sardine.createDirectory(buildUrl(current)) }
-                    catch (_: Exception) { Log.w(TAG, "mkdirs: failed to create $current"); continue }
+                    catch (_: Exception) { LogUtil.w(TAG, "mkdirs: failed to create ${LogSanitizer.redact(current)}"); continue }
                 }
                 AppResult.Success(Unit)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                Log.e(TAG, "mkdirs failed: $remotePath — ${e.message}")
+                LogUtil.e(TAG, "mkdirs failed: ${LogSanitizer.redact(remotePath)} — ${e.message}")
                 err(AppError.Remote("WebDAV mkdirs 失败", "mkdirs", cause = e))
             }
         }
@@ -260,7 +261,7 @@ class WebdavTransport(
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                Log.w(TAG, "delete failed (ignoring): $remotePath — ${e.message}")
+                LogUtil.w(TAG, "delete failed (ignoring): ${LogSanitizer.redact(remotePath)} — ${e.message}")
                 err(AppError.Remote("WebDAV 删除失败", "delete", cause = e))
             }
         }
