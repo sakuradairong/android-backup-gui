@@ -238,10 +238,34 @@ class WebdavTransport(
             try {
                 val parts = remotePath.trimStart('/').split("/")
                 var current = ""
+                var createdCount = 0
+                var lastError: Exception? = null
                 for (part in parts) {
                     current = if (current.isEmpty()) part else "$current/$part"
-                    try { sardine.createDirectory(buildUrl(current)) }
-                    catch (_: Exception) { LogUtil.w(TAG, "mkdirs: failed to create ${LogSanitizer.redact(current)}"); continue }
+                    try {
+                        sardine.createDirectory(buildUrl(current))
+                        createdCount++
+                    } catch (e: SardineException) {
+                        // 409 Conflict / 405 Method Not Allowed usually means the directory already exists
+                        if (e.statusCode == 409 || e.statusCode == 405) {
+                            createdCount++
+                        } else {
+                            lastError = e
+                            LogUtil.w(TAG, "mkdirs: failed to create ${LogSanitizer.redact(current)} — HTTP ${e.statusCode}")
+                        }
+                    } catch (e: Exception) {
+                        lastError = e
+                        LogUtil.w(TAG, "mkdirs: failed to create ${LogSanitizer.redact(current)} — ${e.message}")
+                    }
+                }
+                if (createdCount == 0 && parts.isNotEmpty()) {
+                    return@withContext err(
+                        AppError.Remote(
+                            "WebDAV 创建目录失败: 无法创建任何层级",
+                            "mkdirs",
+                            cause = lastError,
+                        ),
+                    )
                 }
                 AppResult.Success(Unit)
             } catch (e: CancellationException) {

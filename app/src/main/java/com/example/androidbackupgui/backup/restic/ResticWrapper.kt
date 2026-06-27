@@ -423,7 +423,7 @@ class ResticWrapper(
                         apkSizes = sizes,
                     )
             }
-        } catch (_: Exception) {
+        } catch (e: org.json.JSONException) {
             Log.w(TAG, "parseAppDetailsJson: failed to parse JSON")
         }
         return map

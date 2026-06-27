@@ -65,16 +65,28 @@ object WifiManager {
             val result = RootShell.exec("cp '$backupPath' '$fallback'")
             if (!result.isSuccess) return@withContext false
             val chownResult = RootShell.exec("chown system:wifi '$fallback'")
-            if (!chownResult.isSuccess) Log.w(TAG, "chown failed: ${chownResult.error}")
+            if (!chownResult.isSuccess) {
+                Log.w(TAG, "chown failed: ${chownResult.error}")
+                return@withContext false
+            }
             val chmodResult = RootShell.exec("chmod 0660 '$fallback'")
-            if (!chmodResult.isSuccess) Log.w(TAG, "chmod failed: ${chmodResult.error}")
+            if (!chmodResult.isSuccess) {
+                Log.w(TAG, "chmod failed: ${chmodResult.error}")
+                return@withContext false
+            }
         } else {
             val result = RootShell.exec("cp '$backupPath' '$wifiTarget'")
             if (!result.isSuccess) return@withContext false
             val chownResult = RootShell.exec("chown system:wifi '$wifiTarget'")
-            if (!chownResult.isSuccess) Log.w(TAG, "chown failed: ${chownResult.error}")
+            if (!chownResult.isSuccess) {
+                Log.w(TAG, "chown failed: ${chownResult.error}")
+                return@withContext false
+            }
             val chmodResult = RootShell.exec("chmod 0660 '$wifiTarget'")
-            if (!chmodResult.isSuccess) Log.w(TAG, "chmod failed: ${chmodResult.error}")
+            if (!chmodResult.isSuccess) {
+                Log.w(TAG, "chmod failed: ${chmodResult.error}")
+                return@withContext false
+            }
         }
 
         // WiFi backup only takes effect after reboot, but we can try reloading

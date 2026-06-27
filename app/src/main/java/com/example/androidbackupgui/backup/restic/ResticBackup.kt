@@ -98,6 +98,8 @@ class ResticBackup(
             try {
                 val summary = resticJson.decodeFromString<ResticWrapper.BackupSummary>(line)
                 if (summary.messageType == "summary" && summary.snapshotId.isNotEmpty()) return AppResult.Success(summary)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
             } catch (_: Exception) {
                 // keep looking
             }
