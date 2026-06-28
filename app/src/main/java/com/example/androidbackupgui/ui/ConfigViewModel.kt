@@ -8,12 +8,8 @@ import com.example.androidbackupgui.backup.security.LegacyCredentialMigrator
 import com.example.androidbackupgui.backup.security.PasswordManager
 import com.example.androidbackupgui.backup.restic.ResticSessionFactory
 import com.example.androidbackupgui.backup.restic.DefaultResticSessionFactory
-import com.example.androidbackupgui.backup.restic.ResticWrapper
 import com.example.androidbackupgui.backup.core.RepoUrlBuilder
-import com.example.androidbackupgui.backup.core.formatSize
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -24,7 +20,6 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
-import java.util.concurrent.atomic.AtomicBoolean
 
 /** UI-visible state driven by [ConfigViewModel]. */
 data class ConfigUiState(
@@ -145,11 +140,16 @@ class ConfigViewModel(
     private val _uiState = MutableStateFlow(ConfigUiState())
     val uiState: StateFlow<ConfigUiState> = _uiState.asStateFlow()
 
-    /** Guards against concurrent [initResticRepo] calls. */
-    private val initGuard = AtomicBoolean(false)
-
-    /** Guards against stale [refreshResticStatus] coroutines. */
-    private var refreshJob: Job? = null
+    /** 协调 restic 操作（初始化/状态/解锁/统计/清理）。 */
+    private val resticOperationsCoordinator = ResticOperationsCoordinator(
+        viewModelScope = viewModelScope,
+        resticSessionFactory = resticSessionFactory,
+        application = getApplication(),
+        updateResticStatus = { transform ->
+            _uiState.update { it.copy(resticStatus = transform(it.resticStatus)) }
+        },
+        emitEvent = { event -> _operationEvents.emit(event) },
+    )
 
     init {
         load()
@@ -382,426 +382,15 @@ class ConfigViewModel(
         }
     }
 
-    /**
-     * 通过 [resticSessionFactory] 准备配置就绪的 restic 会话。
-     * @return 可用的 [ResticWrapper]，若 restic 二进制不可用则返回 `null`
-     */
-    private fun prepareRestic(backendDomain: String): ResticWrapper? =
-        resticSessionFactory.prepare(getApplication(), backendDomain)
+    // ── Async restic operations (delegated to ResticOperationsCoordinator) ──
 
-    // ── Async restic operations ──────────────────────────────────────
+    fun initResticRepo(form: ResticForm) = resticOperationsCoordinator.initResticRepo(form)
 
-    fun initResticRepo(form: ResticForm) {
-        if (!initGuard.compareAndSet(false, true)) {
-            Log.w(TAG, "initResticRepo: already in progress, ignoring")
-            return
-        }
-        Log.i(TAG, "initResticRepo called: repo=${form.repo} backend=${form.backend}")
+    fun refreshResticStatus(form: ResticForm) = resticOperationsCoordinator.refreshResticStatus(form)
 
-        val restic = prepareRestic(form.backendDomain)
-        if (restic == null) {
-            _uiState.update {
-                it.copy(
-                    resticStatus =
-                        it.resticStatus.copy(
-                            message = "restic 二进制未就绪，请确保已安装 restic 于 Termux 或 APK 内置版本可用",
-                        ),
-                )
-            }
-            return
-        }
-        Log.i(TAG, "initResticRepo: repo=${form.repo} backend=${form.backend} url=${form.backendUrl}")
+    fun unlockResticRepo(form: ResticForm) = resticOperationsCoordinator.unlockResticRepo(form)
 
-        if (form.repo.isEmpty() || form.password.isEmpty()) {
-            _uiState.update { it.copy(resticStatus = it.resticStatus.copy(message = "请填写仓库路径和密码")) }
-            return
-        }
+    fun showResticStats(form: ResticForm) = resticOperationsCoordinator.showResticStats(form)
 
-        _uiState.update {
-            it.copy(
-                resticStatus =
-                    it.resticStatus.copy(
-                        message = "正在初始化 restic 仓库…",
-                        initButtonEnabled = false,
-                    ),
-            )
-        }
-
-        viewModelScope.launch {
-            try {
-                _operationEvents.emit(OperationEvent.InitStarted)
-                val result =
-                    restic.init(
-                        form.repo,
-                        form.password,
-                        backend = form.backend,
-                        backendUrl = form.backendUrl,
-                        backendUser = form.backendUser,
-                        backendPass = form.backendPass,
-                        backendShare = form.backendShare,
-                    )
-                if (result.isSuccess) {
-                    _operationEvents.emit(OperationEvent.InitCompleted)
-                    _uiState.update {
-                        it.copy(
-                            resticStatus =
-                                it.resticStatus.copy(
-                                    message = "仓库初始化成功: ${form.repo}",
-                                ),
-                        )
-                    }
-                    refreshResticStatus(form)
-                } else {
-                    _operationEvents.emit(OperationEvent.InitFailed)
-                    Log.e(TAG, "initResticRepo failed: ${result.exceptionOrNull()?.message}")
-                    _uiState.update {
-                        it.copy(
-                            resticStatus =
-                                it.resticStatus.copy(
-                                    message = "初始化失败: ${result.exceptionOrNull()?.message}",
-                                ),
-                        )
-                    }
-                    refreshResticStatus(form)
-                }
-            } finally {
-                initGuard.set(false)
-            }
-        }
-    }
-
-    fun refreshResticStatus(form: ResticForm) {
-        if (form.repo.isBlank()) {
-            _uiState.update {
-                it.copy(
-                    resticStatus =
-                        ResticStatus(
-                            message = "请填写仓库路径和密码后初始化",
-                            initButtonVisible = true,
-                            statsButtonVisible = false,
-                            pruneButtonVisible = false,
-                        ),
-                )
-            }
-            return
-        }
-
-        if (prepareRestic(form.backendDomain) == null) {
-            _uiState.update {
-                it.copy(
-                    resticStatus =
-                        ResticStatus(
-                            message = "restic 二进制未就绪",
-                            initButtonVisible = true,
-                            statsButtonVisible = false,
-                            pruneButtonVisible = false,
-                        ),
-                )
-            }
-            return
-        }
-        val restic = prepareRestic(form.backendDomain)!!
-
-        _uiState.update { it.copy(resticStatus = it.resticStatus.copy(message = "正在检测仓库状态…")) }
-
-        // Cancel any stale status check so a slow old coroutine doesn't overwrite new results
-        refreshJob?.cancel()
-        refreshJob =
-            viewModelScope.launch {
-                val snapshotsResult =
-                    restic.listSnapshots(
-                        form.repo,
-                        form.password,
-                        backend = form.backend,
-                        backendUrl = form.backendUrl,
-                        backendUser = form.backendUser,
-                        backendPass = form.backendPass,
-                        backendShare = form.backendShare,
-                    )
-                if (snapshotsResult.isSuccess) {
-                    val snapshots = snapshotsResult.getOrDefault(emptyList())
-                    _uiState.update {
-                        it.copy(
-                            resticStatus =
-                                ResticStatus(
-                                    message = "仓库就绪，${snapshots.size} 个快照",
-                                    snapshotCount = snapshots.size,
-                                    initButtonVisible = false,
-                                    statsButtonVisible = true,
-                                    pruneButtonVisible = true,
-                                    unlockButtonVisible = true,
-                                ),
-                        )
-                    }
-                } else {
-                    val errMsg = snapshotsResult.errorOrNull()?.message ?: ""
-                    val hasLock = errMsg.contains("lock", ignoreCase = true) || errMsg.contains("already locked", ignoreCase = true)
-
-                    if (hasLock) {
-                        _uiState.update {
-                            it.copy(
-                                resticStatus =
-                                    ResticStatus(
-                                        message = "仓库被锁定，请先解锁",
-                                        initButtonVisible = false,
-                                        statsButtonVisible = false,
-                                        pruneButtonVisible = false,
-                                        unlockButtonVisible = true,
-                                    ),
-                            )
-                        }
-                    } else {
-                        // snapshots 失败时自动尝试 init（处理已初始化的旧仓库）
-                        val initResult =
-                            restic.init(
-                                form.repo,
-                                form.password,
-                                backend = form.backend,
-                                backendUrl = form.backendUrl,
-                                backendUser = form.backendUser,
-                                backendPass = form.backendPass,
-                                backendShare = form.backendShare,
-                            )
-                        if (initResult.isSuccess) {
-                            val snaps =
-                                restic
-                                    .listSnapshots(
-                                        form.repo,
-                                        form.password,
-                                        backend = form.backend,
-                                        backendUrl = form.backendUrl,
-                                        backendUser = form.backendUser,
-                                        backendPass = form.backendPass,
-                                        backendShare = form.backendShare,
-                                    ).getOrDefault(emptyList())
-                            _uiState.update {
-                                it.copy(
-                                    resticStatus =
-                                        ResticStatus(
-                                            message = "仓库就绪，${snaps.size} 个快照",
-                                            snapshotCount = snaps.size,
-                                            initButtonVisible = false,
-                                            statsButtonVisible = true,
-                                            pruneButtonVisible = true,
-                                            unlockButtonVisible = true,
-                                        ),
-                                )
-                            }
-                        } else {
-                            _uiState.update {
-                                it.copy(
-                                    resticStatus =
-                                        ResticStatus(
-                                            message = "仓库未初始化或认证失败",
-                                            initButtonVisible = true,
-                                            statsButtonVisible = false,
-                                            pruneButtonVisible = false,
-                                            unlockButtonVisible = false,
-                                        ),
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-    }
-
-    fun unlockResticRepo(form: ResticForm) {
-        _uiState.update {
-            it.copy(
-                resticStatus =
-                    it.resticStatus.copy(
-                        message = "正在解锁仓库…",
-                        unlockButtonEnabled = false,
-                    ),
-            )
-        }
-        viewModelScope.launch {
-            val restic = prepareRestic(form.backendDomain) ?: run {
-                _uiState.update {
-                    it.copy(
-                        resticStatus =
-                            it.resticStatus.copy(
-                                message = "restic 不可用",
-                                unlockButtonEnabled = true,
-                            ),
-                    )
-                }
-                return@launch
-            }
-            val result =
-                restic.unlock(
-                    form.repo,
-                    form.password,
-                    backend = form.backend,
-                    backendUrl = form.backendUrl,
-                    backendUser = form.backendUser,
-                    backendPass = form.backendPass,
-                    backendShare = form.backendShare,
-                )
-            _uiState.update {
-                it.copy(
-                    resticStatus =
-                        it.resticStatus.copy(
-                            message = if (result.isSuccess) "解锁完成" else "解锁失败: ${result.errorOrNull()?.message}",
-                            unlockButtonEnabled = true,
-                        ),
-                )
-            }
-            refreshResticStatus(form)
-        }
-    }
-
-    fun showResticStats(form: ResticForm) {
-        _uiState.update {
-            it.copy(
-                resticStatus =
-                    it.resticStatus.copy(
-                        message = "正在读取统计…",
-                        statsButtonEnabled = false,
-                    ),
-            )
-        }
-
-        viewModelScope.launch {
-            try {
-                _operationEvents.emit(OperationEvent.StatsStarted)
-                val restic = prepareRestic(form.backendDomain) ?: return@launch
-                val statsResult =
-                    restic.stats(
-                        form.repo,
-                        form.password,
-                        backend = form.backend,
-                        backendUrl = form.backendUrl,
-                        backendUser = form.backendUser,
-                        backendPass = form.backendPass,
-                        backendShare = form.backendShare,
-                    )
-                val snapshotsResult =
-                    restic.listSnapshots(
-                        form.repo,
-                        form.password,
-                        backend = form.backend,
-                        backendUrl = form.backendUrl,
-                        backendUser = form.backendUser,
-                        backendPass = form.backendPass,
-                        backendShare = form.backendShare,
-                    )
-
-                val snapshotCount = snapshotsResult.getOrDefault(emptyList()).size
-                _uiState.update {
-                    it.copy(
-                        resticStatus =
-                            it.resticStatus.copy(
-                                message =
-                                    buildString {
-                                        appendLine("快照数: $snapshotCount")
-                                        if (statsResult.isSuccess) {
-                                            appendLine(statsResult.getOrDefault(""))
-                                        } else {
-                                            appendLine("统计读取失败: ${statsResult.errorOrNull()?.message}")
-                                        }
-                                    },
-                                snapshotCount = snapshotCount,
-                                statsButtonEnabled = true,
-                            ),
-                    )
-                }
-                _operationEvents.emit(OperationEvent.StatsCompleted)
-            } finally {
-                _uiState.update { it.copy(resticStatus = it.resticStatus.copy(statsButtonEnabled = true)) }
-            }
-        }
-    }
-
-    fun pruneResticSnapshots(form: ResticForm) {
-        _uiState.update {
-            it.copy(
-                resticStatus =
-                    it.resticStatus.copy(
-                        message = "正在清理旧快照 (保留 7 天 / 4 周 / 3 月)…",
-                        pruneButtonEnabled = false,
-                    ),
-            )
-        }
-
-        viewModelScope.launch {
-            try {
-                _operationEvents.emit(OperationEvent.PruneStarted)
-
-                // Remove stale locks before forget/prune
-                val restic = prepareRestic(form.backendDomain) ?: return@launch
-                restic.unlock(
-                    form.repo,
-                    form.password,
-                    backend = form.backend,
-                    backendUrl = form.backendUrl,
-                    backendUser = form.backendUser,
-                    backendPass = form.backendPass,
-                    backendShare = form.backendShare,
-                )
-
-                val forgetResult =
-                    restic.forget(
-                        form.repo,
-                        form.password,
-                        keepDaily = 7,
-                        keepWeekly = 4,
-                        keepMonthly = 3,
-                        backend = form.backend,
-                        backendUrl = form.backendUrl,
-                        backendUser = form.backendUser,
-                        backendPass = form.backendPass,
-                        backendShare = form.backendShare,
-                    )
-                if (forgetResult.isFailure) {
-                    _operationEvents.emit(OperationEvent.PruneFailed)
-                    _uiState.update {
-                        it.copy(
-                            resticStatus =
-                                it.resticStatus.copy(
-                                    message = "forget 失败: ${forgetResult.exceptionOrNull()?.message}",
-                                    pruneButtonEnabled = true,
-                                ),
-                        )
-                    }
-                    return@launch
-                }
-
-                _uiState.update { it.copy(resticStatus = it.resticStatus.copy(message = "正在回收空间…")) }
-
-                val pruneResult =
-                    restic.prune(
-                        form.repo,
-                        form.password,
-                        backend = form.backend,
-                        backendUrl = form.backendUrl,
-                        backendUser = form.backendUser,
-                        backendPass = form.backendPass,
-                        backendShare = form.backendShare,
-                    )
-                _uiState.update {
-                    it.copy(
-                        resticStatus =
-                            it.resticStatus.copy(
-                                message =
-                                    if (pruneResult.isSuccess) {
-                                        "清理完成！建议执行完整性检查 (check --read-data-subset=5%)"
-                                    } else {
-                                        "prune 失败: ${pruneResult.exceptionOrNull()?.message}"
-                                    },
-                                pruneButtonEnabled = true,
-                            ),
-                    )
-                }
-                if (pruneResult.isSuccess) {
-                    _operationEvents.emit(OperationEvent.PruneCompleted)
-                } else {
-                    _operationEvents.emit(OperationEvent.PruneFailed)
-                }
-            } finally {
-                _uiState.update { it.copy(resticStatus = it.resticStatus.copy(pruneButtonEnabled = true)) }
-            }
-        }
-    }
+    fun pruneResticSnapshots(form: ResticForm) = resticOperationsCoordinator.pruneResticSnapshots(form)
 }
