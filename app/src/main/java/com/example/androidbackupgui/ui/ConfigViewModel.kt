@@ -4,11 +4,11 @@ import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.androidbackupgui.backup.BackupConfig
+import com.example.androidbackupgui.backup.core.RepoUrlBuilder
+import com.example.androidbackupgui.backup.restic.DefaultResticSessionFactory
+import com.example.androidbackupgui.backup.restic.ResticSessionFactory
 import com.example.androidbackupgui.backup.security.LegacyCredentialMigrator
 import com.example.androidbackupgui.backup.security.PasswordManager
-import com.example.androidbackupgui.backup.restic.ResticSessionFactory
-import com.example.androidbackupgui.backup.restic.DefaultResticSessionFactory
-import com.example.androidbackupgui.backup.core.RepoUrlBuilder
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -100,10 +100,14 @@ class ConfigViewModel(
     private val resticSessionFactory: ResticSessionFactory = DefaultResticSessionFactory(),
 ) : AndroidViewModel(application) {
     /**
-     * 供 Android [ViewModelProvider] 使用的无参注入构造函数。
-     * 主构造函数保留默认参数以便测试注入 mock；运行时框架只识别此构造函数。
+     * 供 Android [ViewModelProvider] 反射调用的零参（仅 [Application]）构造函数。
+     *
+     * 审查报告 L6警示：主构造函数带默认参数是为了测试注入 mock，但 [androidx.lifecycle.AndroidViewModelFactory]
+     * 只查找签名恰为 `(Application)` 的构造函数 —— *不会*消费默认参数。因此本次构造函数必须保留，
+     * 删除会导致运行时 `viewModel()` 无法实例化、直接崩溃。主构造与本次构造不可互删其一。
      */
     constructor(application: Application) : this(application, DefaultResticSessionFactory())
+
     companion object {
         private const val TAG = "ConfigViewModel"
         private const val CONFIG_FILE_NAME = "backup_settings.conf"
@@ -146,54 +150,66 @@ class ConfigViewModel(
     val uiState: StateFlow<ConfigUiState> = _uiState.asStateFlow()
 
     /** 协调 restic 操作（初始化/状态/解锁/统计/清理）。 */
-    private val resticOperationsCoordinator = ResticOperationsCoordinator(
-        viewModelScope = viewModelScope,
-        resticSessionFactory = resticSessionFactory,
-        application = getApplication(),
-        updateResticStatus = { transform ->
-            _uiState.update { it.copy(resticStatus = transform(it.resticStatus)) }
-        },
-        emitEvent = { event -> _operationEvents.emit(event) },
-    )
+    private val resticOperationsCoordinator =
+        ResticOperationsCoordinator(
+            viewModelScope = viewModelScope,
+            resticSessionFactory = resticSessionFactory,
+            application = getApplication(),
+            updateResticStatus = { transform ->
+                _uiState.update { it.copy(resticStatus = transform(it.resticStatus)) }
+            },
+            emitEvent = { event -> _operationEvents.emit(event) },
+        )
 
     init {
         load()
     }
 
-    /** Read config from file and refresh restic status. */
+    /**
+     * Read config from file and refresh restic status.
+     *
+     * 审查报告 M3：磁盘读 + 凭据迁移移到 IO 调度器，避免在主线程做 I/O；
+     * 公共签名保持不变（内部启动协程）。
+     */
     fun load() {
-        val migrationResult = LegacyCredentialMigrator.migrate(configFile)
-        val config = BackupConfig.fromFile(configFile)
-        val backendDisplay = deriveBackendDisplay(config.resticBackend, config.resticRepo, config.resticBackendUrl)
-        _uiState.update {
-            it.copy(config = config, backendDisplay = backendDisplay)
-        }
-        if (migrationResult.migratedResticPassword || migrationResult.migratedBackendPass) {
+        viewModelScope.launch {
+            val (migrationResult, config) =
+                withContext(Dispatchers.IO) {
+                    val m = LegacyCredentialMigrator.migrate(configFile)
+                    val c = BackupConfig.fromFile(configFile)
+                    m to c
+                }
+            val backendDisplay = deriveBackendDisplay(config.resticBackend, config.resticRepo, config.resticBackendUrl)
             _uiState.update {
-                it.copy(resticStatus = it.resticStatus.copy(
-                    message = "已迁移旧版明文密码到加密存储"
-                ))
+                it.copy(config = config, backendDisplay = backendDisplay)
             }
+            if (migrationResult.migratedResticPassword || migrationResult.migratedBackendPass) {
+                _uiState.update {
+                    it.copy(
+                        resticStatus =
+                            it.resticStatus.copy(
+                                message = "已迁移旧版明文密码到加密存储",
+                            ),
+                    )
+                }
+            }
+            withContext(Dispatchers.IO) { readResticForm() }.let { refreshResticStatus(it) }
         }
-        refreshResticStatus(readResticForm())
     }
 
     /**
      * Build a [ResticForm] snapshot from the current state's config values.
      * 密码从 PasswordManager（加密存储）获取，不从配置文件读取。
+     *
+     * 审查报告 L1：已删除这里的重复密码迁移分支。凭据迁移由 [LegacyCredentialMigrator]
+     * （在 [load]）与 [save] 各自负责，此处仅做读取 + 表单字段回填。
+     * `c.resticPassword` 回退仅用于 [save] 表单路径（PasswordManager 初始化失败时
+     * 仍能拿到用户刚输入的明文密码），属防御性回退。
      */
     private fun readResticForm() =
         _uiState.value.config.let { c ->
-            // 从加密存储获取密码，如尚未设置则尝试从旧配置迁移
             val password = PasswordManager.getResticPassword() ?: c.resticPassword.takeIf { it.isNotEmpty() }
             val backendPass = PasswordManager.getBackendPass() ?: c.resticBackendPass.takeIf { it.isNotEmpty() }
-            // 如果发现旧配置中有密码但 PasswordManager 还没有，迁移过去
-            if (password != null && !PasswordManager.hasResticPassword() && password != "stored-in-keystore") {
-                PasswordManager.setResticPassword(password)
-            }
-            if (backendPass != null && backendPass != "stored-in-keystore" && PasswordManager.getBackendPass() == null) {
-                PasswordManager.setBackendPass(backendPass)
-            }
             ResticForm(
                 repo = c.resticRepo,
                 password = password ?: "",

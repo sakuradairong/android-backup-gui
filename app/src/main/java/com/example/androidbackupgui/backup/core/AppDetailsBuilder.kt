@@ -5,11 +5,11 @@ import com.example.androidbackupgui.backup.AppInfoCache
 import com.example.androidbackupgui.backup.scan.AppScanner
 import com.example.androidbackupgui.root.RootShell
 import com.example.androidbackupgui.root.shellEscape
+import org.json.JSONArray
+import org.json.JSONObject
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
-import org.json.JSONArray
-import org.json.JSONObject
 
 /**
  * app_details.json 构建器。
@@ -27,7 +27,6 @@ import org.json.JSONObject
  *  - 接受必要的运行时依赖（RootShell / AppScanner / AppInfoCache），但集中在 core 包
  */
 object AppDetailsBuilder {
-
     /**
      * 构建 [app_details.json] 内容。
      *
@@ -52,22 +51,32 @@ object AppDetailsBuilder {
             entry.put("PackageName", app.packageName.value)
 
             // APK versionCode for incremental skip - 使用缓存
-            val apkVersion = cache?.getVersionCode(app.packageName.value) ?: run {
-                // 回退到直接查询
-                val versionResult = RootShell.exec(
-                    "dumpsys package '${app.packageName.value.shellEscape()}' | grep versionCode | head -1",
-                )
-                versionResult.output
-                    .substringAfter("versionCode=")
-                    .substringBefore(" ")
-                    .filter { it.isDigit() }
-                    .takeIf { it.isNotEmpty() }
-            }
+            val apkVersion =
+                cache?.getVersionCode(app.packageName.value) ?: run {
+                    // 回退到直接查询
+                    val versionResult =
+                        RootShell.exec(
+                            "dumpsys package '${app.packageName.value.shellEscape()}' | grep versionCode | head -1",
+                        )
+                    // 审查报告 L5：仅当输出确实含 versionCode= 时才解析，
+                    // 否则 substringAfter 会返回原串，后续 filter(isDigit) 可能抓到无关数字。
+                    val raw = versionResult.output
+                    if ("versionCode=" in raw) {
+                        raw
+                            .substringAfter("versionCode=")
+                            .substringBefore(" ")
+                            .filter { it.isDigit() }
+                            .takeIf { it.isNotEmpty() }
+                    } else {
+                        null
+                    }
+                }
             if (apkVersion != null) entry.put("apk_version", apkVersion)
 
             // APK file sizes - 使用缓存
-            val paths = cache?.getApkPaths(app.packageName.value)
-                ?: AppScanner.getApkPaths(app.packageName.value)
+            val paths =
+                cache?.getApkPaths(app.packageName.value)
+                    ?: AppScanner.getApkPaths(app.packageName.value)
             val sizes =
                 paths.map { path ->
                     val result = RootShell.exec("stat -c%s '${path.shellEscape()}'")

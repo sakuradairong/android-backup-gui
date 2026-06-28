@@ -14,6 +14,7 @@ import androidx.compose.material.icons.filled.FileDownload
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
@@ -31,35 +32,52 @@ fun LogScreen(viewModel: LogViewModel = viewModel()) {
     val uiState = viewModel.uiState.collectAsStateWithLifecycle()
 
     // SAF export launcher
-    val exportLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.CreateDocument("text/plain")
-    ) { uri: Uri? ->
-        val file = uiState.value.selectedFile
-        if (uri != null && file != null) {
-            viewModel.exportToUri(uri, file)
+    val exportLauncher =
+        rememberLauncherForActivityResult(
+            contract = ActivityResultContracts.CreateDocument("text/plain"),
+        ) { uri: Uri? ->
+            val file = uiState.value.selectedFile
+            if (uri != null && file != null) {
+                viewModel.exportToUri(uri, file)
+            }
         }
-    }
 
     Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(horizontal = Spacing.pageHorizontal, vertical = Spacing.pageVertical)
+        modifier =
+            Modifier
+                .fillMaxSize()
+                .padding(horizontal = Spacing.pageHorizontal, vertical = Spacing.pageVertical),
     ) {
         // ── Header ──
         Row(
             verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier.fillMaxWidth()
+            modifier = Modifier.fillMaxWidth(),
         ) {
             Text(
                 text = stringResource(R.string.log_title),
                 style = MaterialTheme.typography.titleMedium,
-                modifier = Modifier.weight(1f)
+                modifier = Modifier.weight(1f),
             )
             IconButton(onClick = { viewModel.refresh() }) {
                 Icon(
                     imageVector = Icons.Filled.Refresh,
-                    contentDescription = stringResource(R.string.log_refresh)
+                    contentDescription = stringResource(R.string.log_refresh),
                 )
+            }
+        }
+
+        // 审查报告 L7：导出成功/失败提示
+        val exportMessage = uiState.value.exportMessage
+        if (exportMessage != null) {
+            Text(
+                text = exportMessage,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(vertical = Spacing.sm),
+            )
+            LaunchedEffect(exportMessage) {
+                kotlinx.coroutines.delay(4000)
+                viewModel.clearExportMessage()
             }
         }
 
@@ -68,45 +86,49 @@ fun LogScreen(viewModel: LogViewModel = viewModel()) {
                 text = stringResource(R.string.log_no_files),
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(vertical = Spacing.xl)
+                modifier = Modifier.padding(vertical = Spacing.xl),
             )
         }
 
         // ── Log file list ──
         Text(
             text = stringResource(R.string.log_files),
-            style = MaterialTheme.typography.labelLarge
+            style = MaterialTheme.typography.labelLarge,
         )
         LazyColumn(
             modifier = Modifier.heightIn(max = 160.dp),
-            verticalArrangement = Arrangement.spacedBy(Spacing.xs)
+            verticalArrangement = Arrangement.spacedBy(Spacing.xs),
         ) {
             items(uiState.value.logFiles, key = { it.absolutePath }) { file ->
                 val isSelected = file == uiState.value.selectedFile
                 Card(
                     onClick = { viewModel.selectFile(file) },
-                    colors = CardDefaults.cardColors(
-                        containerColor = if (isSelected)
-                            MaterialTheme.colorScheme.primaryContainer
-                        else
-                            MaterialTheme.colorScheme.surfaceVariant
-                    )
+                    colors =
+                        CardDefaults.cardColors(
+                            containerColor =
+                                if (isSelected) {
+                                    MaterialTheme.colorScheme.primaryContainer
+                                } else {
+                                    MaterialTheme.colorScheme.surfaceVariant
+                                },
+                        ),
                 ) {
                     Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = Spacing.md, vertical = Spacing.sm),
-                        verticalAlignment = Alignment.CenterVertically
+                        modifier =
+                            Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = Spacing.md, vertical = Spacing.sm),
+                        verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Text(
                             text = file.name,
                             style = MaterialTheme.typography.bodySmall,
-                            modifier = Modifier.weight(1f)
+                            modifier = Modifier.weight(1f),
                         )
                         Text(
                             text = "${file.length() / 1024}KB",
                             style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
                 }
@@ -121,27 +143,28 @@ fun LogScreen(viewModel: LogViewModel = viewModel()) {
             Row(horizontalArrangement = Arrangement.spacedBy(Spacing.sm)) {
                 OutlinedButton(
                     onClick = { exportLauncher.launch(selectedFile.name) },
-                    modifier = Modifier.weight(1f)
+                    modifier = Modifier.weight(1f),
                 ) {
                     Icon(
                         imageVector = Icons.Filled.FileDownload,
                         contentDescription = stringResource(R.string.action_export),
-                        modifier = Modifier.size(18.dp)
+                        modifier = Modifier.size(18.dp),
                     )
                     Spacer(Modifier.width(Spacing.xs))
                     Text(text = stringResource(R.string.action_export))
                 }
                 OutlinedButton(
                     onClick = { viewModel.deleteSelected() },
-                    colors = ButtonDefaults.outlinedButtonColors(
-                        contentColor = MaterialTheme.colorScheme.error
-                    ),
-                    modifier = Modifier.weight(1f)
+                    colors =
+                        ButtonDefaults.outlinedButtonColors(
+                            contentColor = MaterialTheme.colorScheme.error,
+                        ),
+                    modifier = Modifier.weight(1f),
                 ) {
                     Icon(
                         imageVector = Icons.Filled.Delete,
                         contentDescription = stringResource(R.string.action_delete),
-                        modifier = Modifier.size(18.dp)
+                        modifier = Modifier.size(18.dp),
                     )
                     Spacer(Modifier.width(Spacing.xs))
                     Text(text = stringResource(R.string.action_delete))
@@ -152,40 +175,42 @@ fun LogScreen(viewModel: LogViewModel = viewModel()) {
             // ── Log content ──
             Text(
                 text = stringResource(R.string.log_content_title, selectedFile.name),
-                style = MaterialTheme.typography.labelLarge
+                style = MaterialTheme.typography.labelLarge,
             )
             Surface(
                 modifier = Modifier.fillMaxWidth().weight(1f),
                 color = MaterialTheme.colorScheme.surfaceVariant,
-                shape = MaterialTheme.shapes.small
+                shape = MaterialTheme.shapes.small,
             ) {
                 if (uiState.value.logContent.isEmpty()) {
                     Box(
                         modifier = Modifier.fillMaxSize(),
-                        contentAlignment = Alignment.Center
+                        contentAlignment = Alignment.Center,
                     ) {
                         Text(
                             text = stringResource(R.string.log_empty),
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
                 } else {
                     val scrollState = rememberScrollState()
                     Column(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .verticalScroll(scrollState)
-                            .padding(Spacing.sm)
+                        modifier =
+                            Modifier
+                                .fillMaxSize()
+                                .verticalScroll(scrollState)
+                                .padding(Spacing.sm),
                     ) {
                         // Show last 500 lines (newest at bottom)
                         val displayLines = uiState.value.logContent.takeLast(500)
                         for (line in displayLines) {
                             Text(
                                 text = line,
-                                style = MaterialTheme.typography.bodySmall.copy(
-                                    fontFamily = FontFamily.Monospace
-                                ),
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                style =
+                                    MaterialTheme.typography.bodySmall.copy(
+                                        fontFamily = FontFamily.Monospace,
+                                    ),
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         }
                     }
