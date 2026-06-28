@@ -277,11 +277,10 @@ object BackupOperation {
 
         // ── Incremental check: compare APK version ──
         val oldEntry = oldMetaJson.optJSONObject(pkgName)
-        val oldApkVersion = oldEntry?.optString("apk_version", null)
-        var installedVersion: String? = null
+        val oldApkVersion = oldEntry?.optString("apk_version")
         var apkChanged = true
         if (oldApkVersion != null) {
-            installedVersion = appInfoCache.getVersionCode(pkgName)
+            val installedVersion = appInfoCache.getVersionCode(pkgName)
             if (installedVersion != null && oldApkVersion == installedVersion) {
                 apkChanged = false
                 Log.d(TAG, "backupApps: $pkgName APK $oldApkVersion unchanged, skipping")
