@@ -6,9 +6,10 @@ import androidx.lifecycle.viewModelScope
 import com.example.androidbackupgui.backup.BackupConfig
 import com.example.androidbackupgui.backup.security.LegacyCredentialMigrator
 import com.example.androidbackupgui.backup.security.PasswordManager
-import com.example.androidbackupgui.backup.security.ResticBinary
+import com.example.androidbackupgui.backup.restic.ResticSessionFactory
+import com.example.androidbackupgui.backup.restic.DefaultResticSessionFactory
 import com.example.androidbackupgui.backup.restic.ResticWrapper
-import com.example.androidbackupgui.backup.restic.defaultResticWrapper
+import com.example.androidbackupgui.backup.core.RepoUrlBuilder
 import com.example.androidbackupgui.backup.core.formatSize
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -97,6 +98,11 @@ sealed interface OperationEvent {
 
 class ConfigViewModel(
     application: Application,
+    /**
+     * 封装 restic 会话的配置。隐藏 [defaultResticWrapper] 的可变属性。
+     * 默认 [DefaultResticSessionFactory] 保持现状。
+     */
+    private val resticSessionFactory: ResticSessionFactory = DefaultResticSessionFactory(),
 ) : AndroidViewModel(application) {
     companion object {
         private const val TAG = "ConfigViewModel"
@@ -117,7 +123,7 @@ class ConfigViewModel(
                     "rest-server" -> "rest-server 地址 (http://host:port)"
                     else -> ""
                 }
-            val computedUrl = defaultResticWrapper.buildRepoUrl(backend, repo, backendUrl)
+            val computedUrl = RepoUrlBuilder.build(backend, repo, backendUrl)
             return BackendDisplay(
                 isRemote = isRemote,
                 needsAuth = needsAuth,
@@ -376,15 +382,12 @@ class ConfigViewModel(
         }
     }
 
-    /** Prepare ResticWrapper (binary, temp dir, domain) from application context. */
-    private fun prepareRestic(): Boolean {
-        val ctx = getApplication<Application>()
-        val binaryPath = ResticBinary.prepare(ctx)
-        if (binaryPath == null) return false
-        defaultResticWrapper.binaryPath = binaryPath
-        defaultResticWrapper.cacheDir = ctx.cacheDir.absolutePath
-        return true
-    }
+    /**
+     * 通过 [resticSessionFactory] 准备配置就绪的 restic 会话。
+     * @return 可用的 [ResticWrapper]，若 restic 二进制不可用则返回 `null`
+     */
+    private fun prepareRestic(backendDomain: String): ResticWrapper? =
+        resticSessionFactory.prepare(getApplication(), backendDomain)
 
     // ── Async restic operations ──────────────────────────────────────
 
@@ -395,7 +398,8 @@ class ConfigViewModel(
         }
         Log.i(TAG, "initResticRepo called: repo=${form.repo} backend=${form.backend}")
 
-        if (!prepareRestic()) {
+        val restic = prepareRestic(form.backendDomain)
+        if (restic == null) {
             _uiState.update {
                 it.copy(
                     resticStatus =
@@ -406,7 +410,6 @@ class ConfigViewModel(
             }
             return
         }
-        defaultResticWrapper.backendDomain = form.backendDomain
         Log.i(TAG, "initResticRepo: repo=${form.repo} backend=${form.backend} url=${form.backendUrl}")
 
         if (form.repo.isEmpty() || form.password.isEmpty()) {
@@ -428,7 +431,7 @@ class ConfigViewModel(
             try {
                 _operationEvents.emit(OperationEvent.InitStarted)
                 val result =
-                    defaultResticWrapper.init(
+                    restic.init(
                         form.repo,
                         form.password,
                         backend = form.backend,
@@ -483,7 +486,7 @@ class ConfigViewModel(
             return
         }
 
-        if (!prepareRestic()) {
+        if (prepareRestic(form.backendDomain) == null) {
             _uiState.update {
                 it.copy(
                     resticStatus =
@@ -497,7 +500,7 @@ class ConfigViewModel(
             }
             return
         }
-        defaultResticWrapper.backendDomain = form.backendDomain
+        val restic = prepareRestic(form.backendDomain)!!
 
         _uiState.update { it.copy(resticStatus = it.resticStatus.copy(message = "正在检测仓库状态…")) }
 
@@ -506,7 +509,7 @@ class ConfigViewModel(
         refreshJob =
             viewModelScope.launch {
                 val snapshotsResult =
-                    defaultResticWrapper.listSnapshots(
+                    restic.listSnapshots(
                         form.repo,
                         form.password,
                         backend = form.backend,
@@ -550,7 +553,7 @@ class ConfigViewModel(
                     } else {
                         // snapshots 失败时自动尝试 init（处理已初始化的旧仓库）
                         val initResult =
-                            defaultResticWrapper.init(
+                            restic.init(
                                 form.repo,
                                 form.password,
                                 backend = form.backend,
@@ -561,7 +564,7 @@ class ConfigViewModel(
                             )
                         if (initResult.isSuccess) {
                             val snaps =
-                                defaultResticWrapper
+                                restic
                                     .listSnapshots(
                                         form.repo,
                                         form.password,
@@ -614,9 +617,20 @@ class ConfigViewModel(
             )
         }
         viewModelScope.launch {
-            defaultResticWrapper.backendDomain = form.backendDomain
+            val restic = prepareRestic(form.backendDomain) ?: run {
+                _uiState.update {
+                    it.copy(
+                        resticStatus =
+                            it.resticStatus.copy(
+                                message = "restic 不可用",
+                                unlockButtonEnabled = true,
+                            ),
+                    )
+                }
+                return@launch
+            }
             val result =
-                defaultResticWrapper.unlock(
+                restic.unlock(
                     form.repo,
                     form.password,
                     backend = form.backend,
@@ -652,8 +666,9 @@ class ConfigViewModel(
         viewModelScope.launch {
             try {
                 _operationEvents.emit(OperationEvent.StatsStarted)
+                val restic = prepareRestic(form.backendDomain) ?: return@launch
                 val statsResult =
-                    defaultResticWrapper.stats(
+                    restic.stats(
                         form.repo,
                         form.password,
                         backend = form.backend,
@@ -663,7 +678,7 @@ class ConfigViewModel(
                         backendShare = form.backendShare,
                     )
                 val snapshotsResult =
-                    defaultResticWrapper.listSnapshots(
+                    restic.listSnapshots(
                         form.repo,
                         form.password,
                         backend = form.backend,
@@ -715,8 +730,8 @@ class ConfigViewModel(
                 _operationEvents.emit(OperationEvent.PruneStarted)
 
                 // Remove stale locks before forget/prune
-                defaultResticWrapper.backendDomain = form.backendDomain
-                defaultResticWrapper.unlock(
+                val restic = prepareRestic(form.backendDomain) ?: return@launch
+                restic.unlock(
                     form.repo,
                     form.password,
                     backend = form.backend,
@@ -727,7 +742,7 @@ class ConfigViewModel(
                 )
 
                 val forgetResult =
-                    defaultResticWrapper.forget(
+                    restic.forget(
                         form.repo,
                         form.password,
                         keepDaily = 7,
@@ -756,7 +771,7 @@ class ConfigViewModel(
                 _uiState.update { it.copy(resticStatus = it.resticStatus.copy(message = "正在回收空间…")) }
 
                 val pruneResult =
-                    defaultResticWrapper.prune(
+                    restic.prune(
                         form.repo,
                         form.password,
                         backend = form.backend,

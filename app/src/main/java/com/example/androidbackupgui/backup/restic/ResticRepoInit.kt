@@ -151,5 +151,5 @@ class ResticRepoInit(
         backend: String,
         repoPath: String,
         backendUrl: String,
-    ): String = envResolver.buildRepoUrl(backend, repoPath, backendUrl)
+    ): String = com.example.androidbackupgui.backup.core.RepoUrlBuilder.build(backend, repoPath, backendUrl)
 }

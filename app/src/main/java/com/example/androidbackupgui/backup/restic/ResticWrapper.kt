@@ -2,8 +2,10 @@ package com.example.androidbackupgui.backup.restic
 
 import android.util.Log
 import com.example.androidbackupgui.backup.AppInfo
+import com.example.androidbackupgui.backup.core.AppDetailsParser
 import com.example.androidbackupgui.backup.core.AppError
 import com.example.androidbackupgui.backup.core.AppResult
+import com.example.androidbackupgui.backup.core.SnapshotAppInfo
 import com.example.androidbackupgui.backup.core.err
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.isActive
@@ -110,13 +112,6 @@ class ResticWrapper(
         val paths: List<String>,
         val tags: List<String>,
         val hostname: String = "",
-    )
-
-    /** App metadata read from a restic snapshot for change detection. */
-    data class SnapshotAppInfo(
-        val label: String,
-        val isSystem: Boolean,
-        val apkSizes: List<Long> = emptyList(),
     )
 
     // ── Repository lifecycle ─────────────────────────
@@ -399,35 +394,8 @@ class ResticWrapper(
                     is AppResult.Success -> dumpResult.data
                 }
 
-            return@withContext parseAppDetailsJson(jsonStr)
+            return@withContext AppDetailsParser.parse(jsonStr)
         }
-
-    /** Parse [app_details.json] content into a package-name → [SnapshotAppInfo] map. */
-    internal fun parseAppDetailsJson(jsonStr: String): Map<String, SnapshotAppInfo> {
-        val map = mutableMapOf<String, SnapshotAppInfo>()
-        try {
-            val root = JSONObject(jsonStr)
-            for (key in root.keys()) {
-                val entry = root.optJSONObject(key) ?: continue
-                val sizes = mutableListOf<Long>()
-                val sizesArr = entry.optJSONArray("apkSizes")
-                if (sizesArr != null) {
-                    for (i in 0 until sizesArr.length()) {
-                        sizes.add(sizesArr.optLong(i, 0L))
-                    }
-                }
-                map[key] =
-                    SnapshotAppInfo(
-                        label = entry.optString("label", key),
-                        isSystem = entry.optBoolean("isSystem", false),
-                        apkSizes = sizes,
-                    )
-            }
-        } catch (e: org.json.JSONException) {
-            Log.w(TAG, "parseAppDetailsJson: failed to parse JSON")
-        }
-        return map
-    }
 
     // ── Maintenance ────────────────────────────────────
 
@@ -508,11 +476,4 @@ class ResticWrapper(
         )
 
     // ── Public URL helper ──────────────────────────────
-
-    /** Build a display-friendly repository URL for UI. */
-    fun buildRepoUrl(
-        backend: String,
-        repoPath: String,
-        backendUrl: String,
-    ): String = repoInit.buildRepoUrl(backend, repoPath, backendUrl)
 }

@@ -134,4 +134,7 @@ dependencies {
     testImplementation "io.kotest:kotest-property:5.9.1"
     testImplementation "io.mockk:mockk:1.13.12"
     testImplementation "org.jetbrains.kotlinx:kotlinx-coroutines-test:1.7.3"
+    // testImplementation 仅用于单元测试：提供真实的 org.json.JSONObject 实现，
+    // 替代 Android stub（pure JVM 测试中 Android JSONObject 方法返回 null）
+    testImplementation "org.json:json:20231013"
 }

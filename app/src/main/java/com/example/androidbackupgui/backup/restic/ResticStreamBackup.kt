@@ -2,10 +2,12 @@ package com.example.androidbackupgui.backup.restic
 
 import android.util.Log
 import com.example.androidbackupgui.backup.AppInfo
-import com.example.androidbackupgui.backup.BackupOperation
+import com.example.androidbackupgui.backup.BackupFileIO
+import com.example.androidbackupgui.backup.core.AppDetailsBuilder
 import com.example.androidbackupgui.backup.core.AppError
 import com.example.androidbackupgui.backup.core.AppResult
 import com.example.androidbackupgui.backup.core.LogUtil
+import com.example.androidbackupgui.backup.core.SnapshotAppInfo
 import com.example.androidbackupgui.backup.core.err
 import com.example.androidbackupgui.backup.scan.AppScanner
 import com.example.androidbackupgui.root.RootShell
@@ -47,7 +49,7 @@ object ResticStreamBackup {
         ownPackageName: String,
         apps: List<AppInfo>,
         noDataBackup: Set<String>,
-        legacyApps: Map<String, ResticWrapper.SnapshotAppInfo>?,
+        legacyApps: Map<String, SnapshotAppInfo>?,
         userId: String,
         restic: ResticWrapper,
         repoPath: String,
@@ -74,13 +76,13 @@ object ResticStreamBackup {
                 // ── 2. Write metadata ─────────────────────
                 // 文件直接放在 workDir 根下，与普通备份结构一致
                 emit("正在准备元数据…")
-                BackupOperation.writeFileForBackup(
+                BackupFileIO.writeFileForBackup(
                     File(workDir, "appList.txt"),
                     apps.joinToString("\n") { it.packageName.value },
                 )
-                BackupOperation.writeFileForBackup(
+                BackupFileIO.writeFileForBackup(
                     File(workDir, "app_details.json"),
-                    BackupOperation.buildAppDetailsJson(apps, legacyApps),
+                    AppDetailsBuilder.buildAppDetailsJson(apps, legacyApps),
                 )
                 val manifestJson = buildString {
                     append("{")
@@ -93,7 +95,7 @@ object ResticStreamBackup {
                     append("\"createdAtEpochSeconds\":${System.currentTimeMillis() / 1000}")
                     append("}")
                 }
-                BackupOperation.writeFileForBackup(
+                BackupFileIO.writeFileForBackup(
                     File(workDir, "streaming_manifest.json"),
                     manifestJson,
                 )

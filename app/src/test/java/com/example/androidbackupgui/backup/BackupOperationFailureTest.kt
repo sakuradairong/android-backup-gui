@@ -1,6 +1,7 @@
 package com.example.androidbackupgui.backup
 
 import android.content.Context
+import com.example.androidbackupgui.backup.core.AppDetailsBuilder
 import com.example.androidbackupgui.backup.security.BinaryResolver
 import com.example.androidbackupgui.root.RootShell
 import io.kotest.core.spec.style.FunSpec
@@ -32,9 +33,9 @@ class BackupOperationFailureTest : FunSpec({
         mockkObject(BinaryResolver)
         mockkObject(ConcurrencyController)
         mockkObject(BackupAppDataOps)
-        mockkObject(BackupOperation)
+        mockkObject(AppDetailsBuilder)
         mockkObject(BackupFileIO)
-        coEvery { BackupOperation.buildAppDetailsJson(any(), any(), any(), any()) } returns "{}"
+        coEvery { AppDetailsBuilder.buildAppDetailsJson(any(), any(), any(), any()) } returns "{}"
         coEvery { BackupFileIO.backupPathExists(any()) } returns true
         coEvery { BackupFileIO.backupFileSize(any()) } returns 1024L
 
@@ -55,7 +56,7 @@ class BackupOperationFailureTest : FunSpec({
         unmockkObject(BinaryResolver)
         unmockkObject(ConcurrencyController)
         unmockkObject(BackupAppDataOps)
-        unmockkObject(BackupOperation)
+        unmockkObject(AppDetailsBuilder)
         unmockkObject(BackupFileIO)
         tempDir.deleteRecursively()
     }

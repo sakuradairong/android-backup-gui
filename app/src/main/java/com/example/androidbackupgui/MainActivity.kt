@@ -8,10 +8,10 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.ui.Modifier
 import com.example.androidbackupgui.backup.core.LogUtil
+import com.example.androidbackupgui.backup.restic.DefaultResticSessionFactory
+import com.example.androidbackupgui.backup.restic.ResticSessionFactory
 import com.example.androidbackupgui.backup.security.MissingAlgoProvider
 import com.example.androidbackupgui.backup.security.PasswordManager
-import com.example.androidbackupgui.backup.security.ResticBinary
-import com.example.androidbackupgui.backup.restic.defaultResticWrapper
 import com.example.androidbackupgui.root.RootShell
 import com.example.androidbackupgui.ui.AppScaffold
 import com.example.androidbackupgui.ui.theme.AppTheme
@@ -26,8 +26,11 @@ class MainActivity : ComponentActivity() {
         DynamicColors.applyToActivitiesIfAvailable(application)
         RootShell.configure()
 
-        // Initialize restic binary path
-        ResticBinary.prepare(this)?.let { defaultResticWrapper.binaryPath = it }
+        // 初始化 restic 会话：通过工厂统一处理 binaryPath / cacheDir / backendDomain。
+        // backendDomain 在此使用空字符串占位，后续备份/恢复操作会通过
+        // ResticSessionFactory.prepare(context, config.resticBackendDomain) 覆盖。
+        val resticSessionFactory: ResticSessionFactory = DefaultResticSessionFactory()
+        resticSessionFactory.prepare(this, backendDomain = "")
 
         // Initialize file-based logging and secure credential storage
         LogUtil.init(filesDir)

@@ -2,28 +2,25 @@ package com.example.androidbackupgui.ui
 
 import android.app.Application
 import android.content.Context
-import android.content.Intent
 import android.net.Uri
-import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
-import com.example.androidbackupgui.backup.*
+import com.example.androidbackupgui.backup.AppInfo
+import com.example.androidbackupgui.backup.BackupConfig
+import com.example.androidbackupgui.backup.BackupFileIO
+import com.example.androidbackupgui.backup.BackupOperation
+import com.example.androidbackupgui.backup.BackupServiceBridge
+import com.example.androidbackupgui.backup.AndroidBackupServiceBridge
+import com.example.androidbackupgui.backup.PackageName
+import com.example.androidbackupgui.backup.RestoreOperation
+import com.example.androidbackupgui.backup.TaskCancellationRegistry
+import com.example.androidbackupgui.backup.WifiManager
+import com.example.androidbackupgui.backup.core.AppDetailsParser
+import com.example.androidbackupgui.backup.restic.ResticSessionFactory
+import com.example.androidbackupgui.backup.restic.DefaultResticSessionFactory
 import com.example.androidbackupgui.backup.restic.ResticWrapper
-import com.example.androidbackupgui.backup.restic.defaultResticWrapper
 import com.example.androidbackupgui.backup.scan.AppScanner
 import com.example.androidbackupgui.backup.security.PasswordManager
-import com.example.androidbackupgui.backup.security.ResticBinary
-import com.example.androidbackupgui.backup.BackupService.Companion.ACTION_START_TASK
-import com.example.androidbackupgui.backup.BackupService.Companion.ACTION_STOP_TASK
-import com.example.androidbackupgui.backup.BackupService.Companion.ACTION_UPDATE_TASK
-import com.example.androidbackupgui.backup.BackupService.Companion.EXTRA_STATUS_TEXT
-import com.example.androidbackupgui.backup.BackupService.Companion.EXTRA_TASK_ID
-import com.example.androidbackupgui.backup.BackupService.Companion.EXTRA_TASK_TYPE
-import com.example.androidbackupgui.backup.BackupService.Companion.EXTRA_PROGRESS_CURRENT
-import com.example.androidbackupgui.backup.BackupService.Companion.EXTRA_PROGRESS_TOTAL
-import com.example.androidbackupgui.backup.BackupService.Companion.EXTRA_PROGRESS_PERCENT
-import com.example.androidbackupgui.backup.BackupService.Companion.TASK_TYPE_RESTORE
-import com.example.androidbackupgui.backup.BackupService.Companion.TASK_TYPE_RESTIC
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -61,6 +58,17 @@ data class RestoreUiState(
 
 class RestoreViewModel(
     application: Application,
+    /**
+     * 与 [com.example.androidbackupgui.backup.BackupService] 通信的桥接器。
+     * 与 [BackupViewModel] 共用同一接口，便于测试时统一替换 mock。
+     * 默认值 [AndroidBackupServiceBridge] 保持现有调用语义不变。
+     */
+    private val serviceBridge: BackupServiceBridge = AndroidBackupServiceBridge(),
+    /**
+     * 封装 restic 会话的配置。隐藏 [defaultResticWrapper] 的可变属性。
+     * 默认 [DefaultResticSessionFactory] 保持现状。
+     */
+    private val resticSessionFactory: ResticSessionFactory = DefaultResticSessionFactory(),
 ) : AndroidViewModel(application) {
 
     private val _state = MutableStateFlow(RestoreUiState())
@@ -124,20 +132,20 @@ class RestoreViewModel(
 
     private suspend fun loadFromDirSync(context: Context, dir: File) {
         val appListFile = File(dir, "appList.txt")
-        val pkgs = BackupOperation.readTextFile(appListFile)?.let { content ->
+        val pkgs = BackupFileIO.readTextFile(appListFile)?.let { content ->
             content.lines()
                 .map { it.trim() }
                 .filter { it.isNotEmpty() && !it.startsWith("#") }
                 .mapNotNull { PackageName.safe(it)?.value }
         } ?: run {
-            BackupOperation.listBackupFiles(dir)
+            BackupFileIO.listBackupFiles(dir)
                 ?.mapNotNull { PackageName.safe(it)?.value }
                 ?: emptyList()
         }
 
         val validPkgs = pkgs.filter { pkg ->
             val apkFile = File(File(dir, pkg), "$pkg.apk")
-            BackupOperation.backupPathExists(apkFile)
+            BackupFileIO.backupPathExists(apkFile)
         }
 
         val infos = withContext(Dispatchers.IO) {
@@ -174,14 +182,15 @@ class RestoreViewModel(
         viewModelScope.launch {
             _state.update { it.copy(isRunning = true, statusText = "正在读取快照…") }
             try {
-                defaultResticWrapper.cacheDir = context.cacheDir.absolutePath
-                defaultResticWrapper.backendDomain = rc.resticBackendDomain
-                ResticBinary.prepare(context)?.let { defaultResticWrapper.binaryPath = it }
+                val restic = resticSessionFactory.prepare(context, rc.resticBackendDomain) ?: run {
+                    _state.update { it.copy(statusText = "restic 不可用", isRunning = false) }
+                    return@launch
+                }
 
                 val realPassword = configPw(PasswordManager.getResticPassword(), rc.resticPassword)
                 val realBackendPass = configPw(PasswordManager.getBackendPass(), rc.resticBackendPass)
                 val result = withContext(Dispatchers.IO) {
-                    defaultResticWrapper.listSnapshots(
+                    restic.listSnapshots(
                         rc.resticRepo, realPassword,
                         backend = rc.resticBackend, backendUrl = rc.resticBackendUrl,
                         backendUser = rc.resticBackendUser, backendPass = realBackendPass,
@@ -231,7 +240,12 @@ class RestoreViewModel(
                 val realPassword = configPw(PasswordManager.getResticPassword(), rc.resticPassword)
                 val realBackendPass = configPw(PasswordManager.getBackendPass(), rc.resticBackendPass)
 
-                suspend fun tryDump(path: String) = defaultResticWrapper.dump(
+                val restic = resticSessionFactory.prepare(context, rc.resticBackendDomain) ?: run {
+                    _state.update { it.copy(statusText = "restic 不可用", isRunning = false) }
+                    return@launch
+                }
+
+                suspend fun tryDump(path: String) = restic.dump(
                     rc.resticRepo, realPassword, snapshot.id, path,
                     backend = rc.resticBackend, backendUrl = rc.resticBackendUrl,
                     backendUser = rc.resticBackendUser, backendPass = realBackendPass,
@@ -248,7 +262,7 @@ class RestoreViewModel(
                     .filter { it.isNotEmpty() && !it.startsWith("#") }
                     .mapNotNull { PackageName.safe(it)?.value }
 
-                val cachedLabels = loadResticAppDetails(rc, snapshot.id, backupPath)
+                val cachedLabels = loadResticAppDetails(context, rc, snapshot.id, backupPath)
                 val preLabeled = pkgs.map { AppInfo(packageName = PackageName(it), label = cachedLabels[it] ?: "") }
                 val resolved = AppScanner.resolveLabels(context, preLabeled)
                 val infos = resolved.map { app ->
@@ -338,13 +352,12 @@ class RestoreViewModel(
 
         currentJob = viewModelScope.launch {
             try {
-                val serviceIntent = Intent(context, BackupService::class.java).apply {
-                    action = ACTION_START_TASK
-                    putExtra(EXTRA_STATUS_TEXT, "正在恢复 ${toRestore.size} 个应用…")
-                    putExtra(EXTRA_TASK_ID, taskId)
-                    putExtra(EXTRA_TASK_TYPE, TASK_TYPE_RESTORE)
-                }
-                try { ContextCompat.startForegroundService(context, serviceIntent) } catch (_: Exception) {}
+                serviceBridge.startTask(
+                    context = context,
+                    taskId = taskId,
+                    taskType = BackupServiceBridge.TASK_TYPE_RESTORE,
+                    statusText = "正在恢复 ${toRestore.size} 个应用…",
+                )
 
                 if (s.selectedSnapshot != null && s.resticConfig != null) {
                     executeResticRestore(context, s, taskId, registration)
@@ -371,9 +384,7 @@ class RestoreViewModel(
             } finally {
                 _state.update { it.copy(isRunning = false, progressPercent = null) }
                 TaskCancellationRegistry.unregister(taskId)
-                try {
-                    context.startService(Intent(context, BackupService::class.java).apply { action = ACTION_STOP_TASK })
-                } catch (_: Exception) {}
+                serviceBridge.stopTask(context)
             }
         }
     }
@@ -394,12 +405,31 @@ class RestoreViewModel(
             _state.update {
                 it.copy(statusText = "正在从 restic 快照恢复…", progressStage = "restic", progressMessage = "正在拉取快照…", progressPercent = null)
             }
-            updateServiceNotification(context, taskId, TASK_TYPE_RESTIC, "正在拉取快照…", 0, 0, null)
+            updateServiceNotification(
+                context = context,
+                taskId = taskId,
+                taskType = BackupServiceBridge.TASK_TYPE_RESTIC,
+                statusText = "正在拉取快照…",
+                current = 0,
+                total = 0,
+                percent = null,
+            )
+
+            val restic = resticSessionFactory.prepare(context, config.resticBackendDomain) ?: run {
+                _state.update {
+                    it.copy(
+                        statusText = "restic 不可用",
+                        progressMessage = "restic 不可用",
+                        progressStage = "partial",
+                    )
+                }
+                return
+            }
 
             val restoreResult = withContext(Dispatchers.IO) {
                 val rPw = PasswordManager.getResticPassword()?.takeIf { it != "stored-in-keystore" } ?: config.resticPassword
                 val rBpw = PasswordManager.getBackendPass()?.takeIf { it != "stored-in-keystore" } ?: config.resticBackendPass
-                defaultResticWrapper.restore(
+                restic.restore(
                     repoPath = config.resticRepo, password = rPw,
                     snapshotId = snapshot.id, targetPath = staging.absolutePath,
                     backend = config.resticBackend, backendUrl = config.resticBackendUrl,
@@ -411,7 +441,15 @@ class RestoreViewModel(
                         val pct = Regex("""(\d{1,3})(?:\.\d+)?%""").find(msg)
                             ?.groupValues?.get(1)?.toFloatOrNull()?.div(100f)?.coerceIn(0f, 1f)
                         _state.update { it.copy(progressPercent = pct) }
-                        updateServiceNotification(context, taskId, TASK_TYPE_RESTIC, msg, 0, 0, pct)
+                        updateServiceNotification(
+                            context = context,
+                            taskId = taskId,
+                            taskType = BackupServiceBridge.TASK_TYPE_RESTIC,
+                            statusText = msg,
+                            current = 0,
+                            total = 0,
+                            percent = pct,
+                        )
                     },
                 )
             }
@@ -443,9 +481,15 @@ class RestoreViewModel(
                                 progressMessage = progress.message,
                             )
                         }
-                        updateServiceNotification(context, taskId, TASK_TYPE_RESTORE,
-                            "[${progress.current}/${progress.total}] ${progress.packageName}",
-                            progress.current, progress.total, null)
+                        updateServiceNotification(
+                            context = context,
+                            taskId = taskId,
+                            taskType = BackupServiceBridge.TASK_TYPE_RESTORE,
+                            statusText = "[${progress.current}/${progress.total}] ${progress.packageName}",
+                            current = progress.current,
+                            total = progress.total,
+                            percent = null,
+                        )
                     },
                 )
             }
@@ -491,9 +535,15 @@ class RestoreViewModel(
                             progressMessage = progress.message,
                         )
                     }
-                    updateServiceNotification(context, taskId, TASK_TYPE_RESTORE,
-                        "[${progress.current}/${progress.total}] ${progress.packageName}",
-                        progress.current, progress.total, null)
+                    updateServiceNotification(
+                        context = context,
+                        taskId = taskId,
+                        taskType = BackupServiceBridge.TASK_TYPE_RESTORE,
+                        statusText = "[${progress.current}/${progress.total}] ${progress.packageName}",
+                        current = progress.current,
+                        total = progress.total,
+                        percent = null,
+                    )
                 },
             )
         }
@@ -526,18 +576,15 @@ class RestoreViewModel(
         context: Context, taskId: String, taskType: String,
         statusText: String, current: Int, total: Int, percent: Float?,
     ) {
-        try {
-            val intent = Intent(context, BackupService::class.java).apply {
-                action = ACTION_UPDATE_TASK
-                putExtra(EXTRA_STATUS_TEXT, statusText)
-                putExtra(EXTRA_TASK_ID, taskId)
-                putExtra(EXTRA_TASK_TYPE, taskType)
-                putExtra(EXTRA_PROGRESS_CURRENT, current)
-                putExtra(EXTRA_PROGRESS_TOTAL, total)
-                percent?.let { putExtra(EXTRA_PROGRESS_PERCENT, it) }
-            }
-            ContextCompat.startForegroundService(context, intent)
-        } catch (_: Exception) {}
+        serviceBridge.updateProgress(
+            context = context,
+            taskId = taskId,
+            taskType = taskType,
+            statusText = statusText,
+            current = current,
+            total = total,
+            percent = percent,
+        )
     }
 
     private fun configPw(key: String?, fallback: String): String =
@@ -546,21 +593,25 @@ class RestoreViewModel(
     private suspend fun readLocalAppDetails(dir: File): Map<String, String> =
         withContext(Dispatchers.IO) {
             val metaFile = File(dir, "app_details.json")
-            val json = BackupOperation.readTextFile(metaFile) ?: return@withContext emptyMap()
+            val json = BackupFileIO.readTextFile(metaFile) ?: return@withContext emptyMap()
             try {
-                defaultResticWrapper.parseAppDetailsJson(json).mapValues { it.value.label }
+                AppDetailsParser.parse(json).mapValues { it.value.label }
             } catch (_: Exception) {
                 emptyMap()
             }
         }
 
     private suspend fun loadResticAppDetails(
-        config: BackupConfig, snapshotId: String, backupPath: String,
+        context: Context,
+        config: BackupConfig,
+        snapshotId: String,
+        backupPath: String,
     ): Map<String, String> {
+        val restic = resticSessionFactory.prepare(context, config.resticBackendDomain) ?: return emptyMap()
         val realPassword = configPw(PasswordManager.getResticPassword(), config.resticPassword)
         val realBackendPass = configPw(PasswordManager.getBackendPass(), config.resticBackendPass)
 
-        suspend fun tryDump(path: String) = defaultResticWrapper.dump(
+        suspend fun tryDump(path: String) = restic.dump(
             config.resticRepo, realPassword, snapshotId, path,
             backend = config.resticBackend, backendUrl = config.resticBackendUrl,
             backendUser = config.resticBackendUser, backendPass = realBackendPass,
@@ -569,7 +620,7 @@ class RestoreViewModel(
 
         val json = tryDump("$backupPath/app_details.json") ?: tryDump("$backupPath/meta/app_details.json") ?: return emptyMap()
         return try {
-            defaultResticWrapper.parseAppDetailsJson(json).mapValues { it.value.label }
+            AppDetailsParser.parse(json).mapValues { it.value.label }
         } catch (_: Exception) {
             emptyMap()
         }
