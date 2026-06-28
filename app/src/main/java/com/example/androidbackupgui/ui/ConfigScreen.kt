@@ -1,27 +1,30 @@
 package com.example.androidbackupgui.ui
 
+import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.selection.selectable
-import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.FileUpload
 import androidx.compose.material.icons.filled.Save
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.semantics.Role
-import androidx.compose.ui.unit.dp
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.example.androidbackupgui.R
 import com.example.androidbackupgui.backup.scan.AppScanner
 import com.example.androidbackupgui.backup.BackupConfig
+import com.example.androidbackupgui.ui.config.BackupSettingsSection
+import com.example.androidbackupgui.ui.config.ResticSection
+import com.example.androidbackupgui.ui.theme.Spacing
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import java.net.URLDecoder
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -91,20 +94,21 @@ fun ConfigScreen(
     }
 
     // Observe one-shot events → show Snackbar feedback
+    val context = LocalContext.current
     LaunchedEffect(snackbarHostState) {
         viewModel.operationEvents.collect { event ->
             val msg =
                 when (event) {
-                    is OperationEvent.InitCompleted -> "仓库初始化完成"
-                    is OperationEvent.InitFailed -> "仓库初始化失败"
-                    is OperationEvent.StatsCompleted -> "统计读取完成"
-                    is OperationEvent.PruneStarted -> "正在清理快照…"
-                    is OperationEvent.PruneCompleted -> "清理完成"
-                    is OperationEvent.PruneFailed -> "清理失败"
-                    is OperationEvent.ConfigExported -> "配置已导出"
-                    is OperationEvent.ConfigExportFailed -> "配置导出失败"
-                    is OperationEvent.ConfigImported -> "配置已导入"
-                    is OperationEvent.ConfigImportFailed -> "配置导入失败"
+                    is OperationEvent.InitCompleted -> context.getString(R.string.event_init_completed)
+                    is OperationEvent.InitFailed -> context.getString(R.string.event_init_failed)
+                    is OperationEvent.StatsCompleted -> context.getString(R.string.event_stats_completed)
+                    is OperationEvent.PruneStarted -> context.getString(R.string.event_prune_started)
+                    is OperationEvent.PruneCompleted -> context.getString(R.string.event_prune_completed)
+                    is OperationEvent.PruneFailed -> context.getString(R.string.event_prune_failed)
+                    is OperationEvent.ConfigExported -> context.getString(R.string.event_config_exported)
+                    is OperationEvent.ConfigExportFailed -> context.getString(R.string.event_config_export_failed)
+                    is OperationEvent.ConfigImported -> context.getString(R.string.event_config_imported)
+                    is OperationEvent.ConfigImportFailed -> context.getString(R.string.event_config_import_failed)
                     else -> null
                 }
             if (msg != null) {
@@ -149,335 +153,124 @@ fun ConfigScreen(
             Modifier
                 .fillMaxSize()
                 .verticalScroll(scrollState)
-                .padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp),
+                .padding(Spacing.pageHorizontal),
+        verticalArrangement = Arrangement.spacedBy(Spacing.sectionGap),
     ) {
-        // ── Backup settings section ──
-        Text("备份设置", style = MaterialTheme.typography.titleMedium)
-        Card(modifier = Modifier.fillMaxWidth()) {
-            Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("备份模式", modifier = Modifier.weight(1f))
-                    Switch(checked = backupMode, onCheckedChange = { backupMode = it })
-                }
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("备份用户数据", modifier = Modifier.weight(1f))
-                    Switch(checked = backupUserData, onCheckedChange = { backupUserData = it })
-                }
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("备份 OBB 数据", modifier = Modifier.weight(1f))
-                    Switch(checked = backupObb, onCheckedChange = { backupObb = it })
-                }
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("备份 WiFi 配置", modifier = Modifier.weight(1f))
-                    Switch(checked = backupWifi, onCheckedChange = { backupWifi = it })
-                }
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("忽略运行中的应用", modifier = Modifier.weight(1f))
-                    Switch(checked = ignoreRunning, onCheckedChange = { ignoreRunning = it })
-                }
-                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-                    OutlinedTextField(
-                        value = outputPath,
-                        onValueChange = { outputPath = it },
-                        label = { Text("输出目录") },
-                        modifier = Modifier.weight(1f),
-                        singleLine = true,
-                    )
-                    Spacer(Modifier.width(8.dp))
-                    Button(
-                        onClick = { dirPickerLauncher.launch(null) },
-                        modifier = Modifier.height(56.dp),
-                    ) {
-                        Text("选择")
-                    }
-                }
-                OutlinedTextField(
-                    value = compressionMethod,
-                    onValueChange = { compressionMethod = it },
-                    label = { Text("压缩方式 (tar / zstd)") },
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true,
-                )
+        BackupSettingsSection(
+            backupMode = backupMode,
+            onBackupModeChange = { backupMode = it },
+            backupUserData = backupUserData,
+            onBackupUserDataChange = { backupUserData = it },
+            backupObb = backupObb,
+            onBackupObbChange = { backupObb = it },
+            backupWifi = backupWifi,
+            onBackupWifiChange = { backupWifi = it },
+            ignoreRunning = ignoreRunning,
+            onIgnoreRunningChange = { ignoreRunning = it },
+            outputPath = outputPath,
+            onOutputPathChange = { outputPath = it },
+            onChooseOutputDir = { dirPickerLauncher.launch(null) },
+            compressionMethod = compressionMethod,
+            onCompressionMethodChange = { compressionMethod = it },
+            backupUserId = backupUserId,
+            userList = userList,
+            onBackupUserIdChange = { backupUserId = it },
+        )
 
-                // Backup user selector
-                UserSelector(
-                    userList = userList,
-                    selectedUserId = backupUserId,
-                    onUserSelected = { backupUserId = it },
-                )
-            }
-        }
+        HorizontalDivider()
 
         // ── Restic section ──
-        HorizontalDivider()
-        Text("Restic 备份", style = MaterialTheme.typography.titleMedium)
-        Card(modifier = Modifier.fillMaxWidth()) {
-            Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("启用 Restic", modifier = Modifier.weight(1f))
-                    Switch(checked = resticEnabled, onCheckedChange = { resticEnabled = it })
-                }
+        ResticSection(
+            resticEnabled = resticEnabled,
+            onResticEnabledChange = { resticEnabled = it },
+            resticRepo = resticRepo,
+            onResticRepoChange = {
+                resticRepo = it
+                viewModel.onFormChanged(resticBackend, it, resticBackendUrl)
+            },
+            resticPassword = resticPassword,
+            onResticPasswordChange = { resticPassword = it },
+            resticBackend = resticBackend,
+            onResticBackendChange = {
+                resticBackend = it
+                viewModel.onFormChanged(it, resticRepo, resticBackendUrl)
+            },
+            resticBackendUrl = resticBackendUrl,
+            onResticBackendUrlChange = {
+                resticBackendUrl = it
+                viewModel.onFormChanged(resticBackend, resticRepo, it)
+            },
+            resticBackendUser = resticBackendUser,
+            onResticBackendUserChange = { resticBackendUser = it },
+            resticBackendPass = resticBackendPass,
+            onResticBackendPassChange = { resticBackendPass = it },
+            resticBackendShare = resticBackendShare,
+            onResticBackendShareChange = { resticBackendShare = it },
+            resticBackendDomain = resticBackendDomain,
+            onResticBackendDomainChange = { resticBackendDomain = it },
+            streamingEnabled = streamingEnabled,
+            onStreamingEnabledChange = { streamingEnabled = it },
+            backendDisplay = backendDisplay,
+            resticStatus = status,
+            onInitRepo = {
+                viewModel.initResticRepo(
+                    buildResticForm(
+                        resticRepo,
+                        resticPassword,
+                        resticBackend,
+                        resticBackendUrl,
+                        resticBackendUser,
+                        resticBackendPass,
+                        resticBackendShare,
+                        resticBackendDomain,
+                    ),
+                )
+            },
+            onShowStats = {
+                viewModel.showResticStats(
+                    buildResticForm(
+                        resticRepo,
+                        resticPassword,
+                        resticBackend,
+                        resticBackendUrl,
+                        resticBackendUser,
+                        resticBackendPass,
+                        resticBackendShare,
+                        resticBackendDomain,
+                    ),
+                )
+            },
+            onPruneSnapshots = {
+                viewModel.pruneResticSnapshots(
+                    buildResticForm(
+                        resticRepo,
+                        resticPassword,
+                        resticBackend,
+                        resticBackendUrl,
+                        resticBackendUser,
+                        resticBackendPass,
+                        resticBackendShare,
+                        resticBackendDomain,
+                    ),
+                )
+            },
+            onUnlockRepo = {
+                viewModel.unlockResticRepo(
+                    buildResticForm(
+                        resticRepo,
+                        resticPassword,
+                        resticBackend,
+                        resticBackendUrl,
+                        resticBackendUser,
+                        resticBackendPass,
+                        resticBackendShare,
+                        resticBackendDomain,
+                    ),
+                )
+            },
+        )
 
-                if (resticEnabled) {
-                    OutlinedTextField(
-                        value = resticRepo,
-                        onValueChange = {
-                            resticRepo = it
-                            viewModel.onFormChanged(resticBackend, it, resticBackendUrl)
-                        },
-                        label = { Text("仓库路径") },
-                        modifier = Modifier.fillMaxWidth(),
-                        singleLine = true,
-                    )
-                    OutlinedTextField(
-                        value = resticPassword,
-                        onValueChange = { resticPassword = it },
-                        label = { Text("仓库密码") },
-                        modifier = Modifier.fillMaxWidth(),
-                        singleLine = true,
-                        visualTransformation =
-                            androidx.compose.ui.text.input
-                                .PasswordVisualTransformation(),
-                    )
-
-                    // Backend selection radio group
-                    Text("后端类型", style = MaterialTheme.typography.labelLarge)
-                    val backends = listOf("local" to "本地", "webdav" to "WebDAV", "smb" to "SMB", "rest-server" to "rest-server")
-                    Column(modifier = Modifier.selectableGroup()) {
-                        backends.forEach { (value, label) ->
-                            Row(
-                                modifier =
-                                    Modifier
-                                        .fillMaxWidth()
-                                        .selectable(
-                                            selected = resticBackend == value,
-                                            onClick = {
-                                                resticBackend = value
-                                                viewModel.onFormChanged(value, resticRepo, resticBackendUrl)
-                                            },
-                                            role = Role.RadioButton,
-                                        ).padding(vertical = 4.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                            ) {
-                                RadioButton(
-                                    selected = resticBackend == value,
-                                    onClick = null,
-                                )
-                                Spacer(Modifier.width(8.dp))
-                                Text(label)
-                            }
-                        }
-                    }
-
-                    // Computed URL
-                    if (resticRepo.isNotEmpty()) {
-                        Text(
-                            text = "实际仓库: ${backendDisplay.computedUrl}",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                    // Remote-specific fields
-                    if (resticBackend != "local") {
-                        OutlinedTextField(
-                            value = resticBackendUrl,
-                            onValueChange = {
-                                resticBackendUrl = it
-                                viewModel.onFormChanged(resticBackend, resticRepo, it)
-                            },
-                            label = { Text(backendDisplay.urlHint.ifEmpty { "后端地址" }) },
-                            modifier = Modifier.fillMaxWidth(),
-                            singleLine = true,
-                            isError = resticBackend == "webdav" && resticBackendUrl.startsWith("http://") && resticBackendUser.isNotEmpty(),
-                            supportingText = {
-                                if (resticBackend == "webdav" && resticBackendUrl.startsWith("http://") && resticBackendUser.isNotEmpty()) {
-                                    Text("Basic auth over HTTP 不允许，请使用 HTTPS", color = MaterialTheme.colorScheme.error)
-                                } else if (resticBackend == "webdav" && resticBackendUrl.startsWith("http://")) {
-                                    Text("HTTP 不安全，建议使用 HTTPS", color = MaterialTheme.colorScheme.error)
-                                }
-                            },
-                        )
-                    }
-                    if (resticBackend == "webdav" || resticBackend == "smb") {
-                        OutlinedTextField(
-                            value = resticBackendUser,
-                            onValueChange = { resticBackendUser = it },
-                            label = { Text("用户名") },
-                            modifier = Modifier.fillMaxWidth(),
-                            singleLine = true,
-                        )
-                        OutlinedTextField(
-                            value = resticBackendPass,
-                            onValueChange = { resticBackendPass = it },
-                            label = { Text("密码") },
-                            modifier = Modifier.fillMaxWidth(),
-                            singleLine = true,
-                            visualTransformation =
-                                androidx.compose.ui.text.input
-                                    .PasswordVisualTransformation(),
-                        )
-                    }
-                    if (resticBackend == "smb") {
-                        OutlinedTextField(
-                            value = resticBackendShare,
-                            onValueChange = { resticBackendShare = it },
-                            label = { Text("SMB 共享名称") },
-                            modifier = Modifier.fillMaxWidth(),
-                            singleLine = true,
-                        )
-                        OutlinedTextField(
-                            value = resticBackendDomain,
-                            onValueChange = { resticBackendDomain = it },
-                            label = { Text("SMB 域 (可选)") },
-                            modifier = Modifier.fillMaxWidth(),
-                            singleLine = true,
-                        )
-                    }
-
-                    // ── Streaming backup toggle ──
-                    Column(modifier = Modifier.fillMaxWidth()) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Text(
-                                "实验性 Restic 临时目录备份",
-                                modifier = Modifier.weight(1f),
-                                style = MaterialTheme.typography.bodyMedium,
-                            )
-                            Switch(
-                                checked = streamingEnabled,
-                                onCheckedChange = { streamingEnabled = it },
-                            )
-                        }
-                        Text(
-                            "不等同完整备份：不包含 OBB、外部数据、权限、SSAID、Wi-Fi；大应用数据可能被跳过。",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.error,
-                        )
-                    }
-
-                    Spacer(Modifier.height(8.dp))
-
-                    // Status & action buttons
-                    Card(
-                        colors =
-                            CardDefaults.cardColors(
-                                containerColor = MaterialTheme.colorScheme.surfaceVariant,
-                            ),
-                        modifier = Modifier.fillMaxWidth(),
-                    ) {
-                        Column(modifier = Modifier.padding(12.dp)) {
-                            Text(
-                                text = status.message,
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-
-                            Spacer(Modifier.height(8.dp))
-
-                            if (status.initButtonVisible) {
-                                Button(
-                                    onClick = {
-                                        viewModel.initResticRepo(
-                                            buildResticForm(
-                                                resticRepo,
-                                                resticPassword,
-                                                resticBackend,
-                                                resticBackendUrl,
-                                                resticBackendUser,
-                                                resticBackendPass,
-                                                resticBackendShare,
-                                                resticBackendDomain,
-                                            ),
-                                        )
-                                    },
-                                    enabled = status.initButtonEnabled,
-                                    modifier = Modifier.fillMaxWidth(),
-                                ) {
-                                    Text("初始化仓库")
-                                }
-                            }
-
-                            if (status.statsButtonVisible) {
-                                Button(
-                                    onClick = {
-                                        viewModel.showResticStats(
-                                            buildResticForm(
-                                                resticRepo,
-                                                resticPassword,
-                                                resticBackend,
-                                                resticBackendUrl,
-                                                resticBackendUser,
-                                                resticBackendPass,
-                                                resticBackendShare,
-                                                resticBackendDomain,
-                                            ),
-                                        )
-                                    },
-                                    enabled = status.statsButtonEnabled,
-                                    modifier = Modifier.fillMaxWidth(),
-                                ) {
-                                    Text("仓库统计")
-                                }
-                            }
-
-                            if (status.pruneButtonVisible) {
-                                OutlinedButton(
-                                    onClick = {
-                                        viewModel.pruneResticSnapshots(
-                                            buildResticForm(
-                                                resticRepo,
-                                                resticPassword,
-                                                resticBackend,
-                                                resticBackendUrl,
-                                                resticBackendUser,
-                                                resticBackendPass,
-                                                resticBackendShare,
-                                                resticBackendDomain,
-                                            ),
-                                        )
-                                    },
-                                    enabled = status.pruneButtonEnabled,
-                                    modifier = Modifier.fillMaxWidth(),
-                                ) {
-                                    Text("清理旧快照")
-                                }
-                            }
-
-                            if (status.unlockButtonVisible) {
-                                Button(
-                                    onClick = {
-                                        viewModel.unlockResticRepo(
-                                            buildResticForm(
-                                                resticRepo,
-                                                resticPassword,
-                                                resticBackend,
-                                                resticBackendUrl,
-                                                resticBackendUser,
-                                                resticBackendPass,
-                                                resticBackendShare,
-                                                resticBackendDomain,
-                                            ),
-                                        )
-                                    },
-                                    enabled = status.unlockButtonEnabled,
-                                    modifier = Modifier.fillMaxWidth(),
-                                    colors =
-                                        ButtonDefaults.buttonColors(
-                                            containerColor = MaterialTheme.colorScheme.tertiary,
-                                        ),
-                                ) {
-                                    Text("解锁仓库")
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        Spacer(Modifier.height(8.dp))
+        Spacer(Modifier.height(Spacing.sm))
 
         // ── Save button ──
         Button(
@@ -508,78 +301,39 @@ fun ConfigScreen(
             modifier = Modifier.fillMaxWidth(),
         ) {
             Icon(Icons.Filled.Save, contentDescription = null)
-            Spacer(Modifier.width(8.dp))
-            Text("保存配置")
+            Spacer(Modifier.width(Spacing.sm))
+            Text(stringResource(R.string.config_save))
         }
 
         // ── Import / Export config buttons ──
         Row(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            horizontalArrangement = Arrangement.spacedBy(Spacing.sm),
         ) {
             OutlinedButton(
                 onClick = { importLauncher.launch(arrayOf("text/plain", "*/*")) },
                 modifier = Modifier.weight(1f),
             ) {
-                Text("导入配置")
+                Text(stringResource(R.string.config_import))
             }
             OutlinedButton(
                 onClick = { exportLauncher.launch("backup_settings.conf") },
                 modifier = Modifier.weight(1f),
             ) {
                 Icon(Icons.Filled.FileUpload, contentDescription = null)
-                Spacer(Modifier.width(8.dp))
-                Text("导出配置")
+                Spacer(Modifier.width(Spacing.sm))
+                Text(stringResource(R.string.config_export))
             }
         }
         if (resticEnabled && resticPassword.isNotEmpty()) {
             Text(
-                text = "注意：导出的配置包含明文 Restic 密码，请妥善保管导出的文件。",
+                text = stringResource(R.string.config_export_password_warning),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.error,
             )
         }
 
-        Spacer(Modifier.height(32.dp))
-    }
-}
-
-// ── User selector ──
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun UserSelector(
-    userList: List<Pair<Int, String>>,
-    selectedUserId: Int,
-    onUserSelected: (Int) -> Unit,
-) {
-    var expanded by remember { mutableStateOf(false) }
-    val selectedName =
-        userList.find { it.first == selectedUserId }?.let {
-            "${it.second} (ID: ${it.first})"
-        } ?: "Owner (ID: 0)"
-
-    ExposedDropdownMenuBox(expanded = expanded, onExpandedChange = { expanded = it }) {
-        OutlinedTextField(
-            value = selectedName,
-            onValueChange = {},
-            readOnly = true,
-            label = { Text("备份用户") },
-            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
-            modifier = Modifier.menuAnchor().fillMaxWidth(),
-            singleLine = true,
-        )
-        ExposedDropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
-            userList.forEach { (id, name) ->
-                DropdownMenuItem(
-                    text = { Text("$name (ID: $id)") },
-                    onClick = {
-                        onUserSelected(id)
-                        expanded = false
-                    },
-                )
-            }
-        }
+        Spacer(Modifier.height(Spacing.xxl))
     }
 }
 
@@ -609,11 +363,11 @@ private fun buildResticForm(
  * SAF URI 示例: content://com.android.externalstorage.documents/tree/primary%3ADownload%2FBackup
  * 返回: /storage/emulated/0/Download/Backup
  */
-private fun resolveSafTreeUri(uri: android.net.Uri): String? {
+private fun resolveSafTreeUri(uri: Uri): String? {
     // SAF tree URI 格式:
     //   content://com.android.externalstorage.documents/tree/primary%3ADownload%2FBackup
     // lastPathSegment = primary%3ADownload%2FBackup 或 XXXX-XXXX%3Apath
-    val docId = uri.lastPathSegment?.let { java.net.URLDecoder.decode(it, "UTF-8") } ?: return null
+    val docId = uri.lastPathSegment?.let { URLDecoder.decode(it, "UTF-8") } ?: return null
 
     // docId 格式: primary:path/to/dir 或 XXXX-XXXX:path/to/dir
     val colonIdx = docId.indexOf(':')

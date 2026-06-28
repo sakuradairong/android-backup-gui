@@ -42,6 +42,16 @@
 # --- WifiManager (called from UI, kept for safety) ---
 -keep class com.example.androidbackupgui.backup.WifiManager { *; }
 
+# --- ViewModels ---
+# R8 removes synthetic constructors with default arguments used by ViewModelProvider.
+# Keep all ViewModel classes, their names, and all members so the framework can instantiate them.
+-keep class * extends androidx.lifecycle.ViewModel {
+    *;
+}
+-keepclassmembers class * extends androidx.lifecycle.ViewModel {
+    *;
+}
+
 # --- Keep data models used by kotlinx.serialization ---
 -keep class com.example.androidbackupgui.model.** { *; }
 

@@ -46,18 +46,4 @@ class ResticEnvResolver {
         }
         return env
     }
-
-    /** Build a display-friendly repository URL for UI. */
-    fun buildRepoUrl(
-        backend: String,
-        repoPath: String,
-        backendUrl: String,
-    ): String =
-        when (backend) {
-            "local" -> repoPath
-            "rest-server" -> "rest:${backendUrl.trimEnd('/')}/$repoPath"
-            "webdav" -> "${backendUrl.trimEnd('/')}/$repoPath"
-            "smb" -> "smb:${backendUrl.trimEnd('/')}/$repoPath"
-            else -> repoPath
-        }
 }

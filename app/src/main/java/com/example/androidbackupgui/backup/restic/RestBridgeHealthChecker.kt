@@ -1,5 +1,6 @@
 package com.example.androidbackupgui.backup.restic
 
+import android.util.Base64
 import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -29,11 +30,13 @@ class RestBridgeHealthChecker {
      *
      * @param port 桥接器监听端口
      * @param timeoutMs 超时时间（毫秒）
+     * @param authToken 桥的认证令牌；为空时不发送认证头
      * @return HealthCheckResult 包含健康状态和延迟
      */
     suspend fun checkHealth(
         port: Int,
         timeoutMs: Long = 5000,
+        authToken: String = "",
     ): HealthCheckResult = withContext(Dispatchers.IO) {
         val startTime = System.currentTimeMillis()
 
@@ -44,13 +47,22 @@ class RestBridgeHealthChecker {
             connection.readTimeout = timeoutMs.toInt()
             connection.requestMethod = "GET"
             connection.setRequestProperty("User-Agent", "AndroidBackupGUI/1.0")
+            if (authToken.isNotEmpty()) {
+                val expected =
+                    "Basic " +
+                        Base64.encodeToString(
+                            "$authToken:$authToken".toByteArray(Charsets.UTF_8),
+                            Base64.NO_WRAP,
+                        )
+                connection.setRequestProperty("Authorization", expected)
+            }
 
             val responseCode = connection.responseCode
             val latency = System.currentTimeMillis() - startTime
 
             connection.disconnect()
 
-            if (responseCode in 200..299) {
+            if (responseCode in 200..299 || responseCode == 404) {
                 Log.d(TAG, "checkHealth: healthy, latency=${latency}ms")
                 HealthCheckResult(
                     isHealthy = true,
@@ -81,17 +93,19 @@ class RestBridgeHealthChecker {
      * @param port 桥接器监听端口
      * @param maxWaitMs 最大等待时间（毫秒）
      * @param checkIntervalMs 检查间隔（毫秒）
+     * @param authToken 桥的认证令牌；为空时不发送认证头
      * @return 是否就绪
      */
     suspend fun waitForReady(
         port: Int,
         maxWaitMs: Long = 30000,
         checkIntervalMs: Long = 1000,
+        authToken: String = "",
     ): Boolean {
         val startTime = System.currentTimeMillis()
 
         while (System.currentTimeMillis() - startTime < maxWaitMs) {
-            val result = checkHealth(port)
+            val result = checkHealth(port, authToken = authToken)
             if (result.isHealthy) {
                 Log.i(TAG, "waitForReady: bridge ready after ${System.currentTimeMillis() - startTime}ms")
                 return true
@@ -110,18 +124,19 @@ class RestBridgeHealthChecker {
      * @param port 桥接器监听端口
      * @return 是否可用
      */
-    suspend fun isAvailable(port: Int): Boolean {
-        return checkHealth(port, 2000).isHealthy
+    suspend fun isAvailable(port: Int, authToken: String = ""): Boolean {
+        return checkHealth(port, 2000, authToken).isHealthy
     }
 
     /**
      * 获取桥接器延迟。
      *
      * @param port 桥接器监听端口
+     * @param authToken 桥的认证令牌；为空时不发送认证头
      * @return 延迟（毫秒），如果不可用则返回 -1
      */
-    suspend fun getLatency(port: Int): Long {
-        val result = checkHealth(port, 3000)
+    suspend fun getLatency(port: Int, authToken: String = ""): Long {
+        val result = checkHealth(port, 3000, authToken)
         return if (result.isHealthy) result.latencyMs else -1
     }
 }

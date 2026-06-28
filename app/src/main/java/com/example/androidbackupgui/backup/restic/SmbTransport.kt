@@ -1,8 +1,8 @@
 package com.example.androidbackupgui.backup.restic
 
-import android.util.Log
 import com.example.androidbackupgui.backup.core.AppError
 import com.example.androidbackupgui.backup.core.AppResult
+import com.example.androidbackupgui.backup.core.LogSanitizer
 import com.example.androidbackupgui.backup.core.LogUtil
 import com.example.androidbackupgui.backup.core.err
 import com.example.androidbackupgui.backup.core.retryWithBackoff
@@ -110,9 +110,9 @@ class SmbTransport(
                 }
                 val freshRemote = SmbFile(buildUrl(remotePath), context)
                     val actualSize = freshRemote.length()
-                    Log.i(TAG, "upload done: $fileSize bytes local, $actualSize bytes on SMB")
+                    LogUtil.i(TAG, "upload done: $fileSize bytes local, $actualSize bytes on SMB")
                     if (actualSize != fileSize) {
-                        Log.e(TAG, "upload size mismatch: local=$fileSize smb=$actualSize")
+                        LogUtil.e(TAG, "upload size mismatch: local=$fileSize smb=$actualSize")
                         return@withContext err(AppError.Remote("SMB 上传大小不匹配", "upload"))
                     }
                     onProgress(RemoteTransport.TransferProgress("completed", 1, 1, remotePath))
@@ -120,7 +120,7 @@ class SmbTransport(
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
-                    Log.e(TAG, "upload failed: ${buildUrl(remotePath)}", e)
+                    LogUtil.e(TAG, "upload failed: ${LogSanitizer.redact(buildUrl(remotePath))}", e)
                     err(AppError.Remote("SMB 上传失败", "upload", cause = e))
                 }
             }
@@ -151,12 +151,12 @@ class SmbTransport(
                     }
                 }
                 onProgress(RemoteTransport.TransferProgress("completed", 1, 1, remotePath))
-                Log.d(TAG, "download ${buildUrl(remotePath)} -> $localPath (${localFile.length()} bytes)")
+                LogUtil.d(TAG, "download ${LogSanitizer.redact(buildUrl(remotePath))} -> ${LogSanitizer.redact(localPath)} (${localFile.length()} bytes)")
                 AppResult.Success(Unit)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                Log.e(TAG, "download failed: $remotePath", e)
+                LogUtil.e(TAG, "download failed: ${LogSanitizer.redact(remotePath)}", e)
                 err(AppError.Remote("SMB 下载失败", "download", cause = e))
             }
         }
@@ -194,18 +194,18 @@ class SmbTransport(
                         )
                     }
                     ?: emptyList()
-                Log.d(TAG, "listFiles $remoteDir -> ${entries.size} entries: ${entries.joinToString { "${it.name}(${if (it.isDirectory) "d" else "f"},${it.size})" }}")
+                LogUtil.d(TAG, "listFiles ${LogSanitizer.redact(remoteDir)} -> ${entries.size} entries")
                 AppResult.Success(entries)
             } catch (e: SmbException) {
                 if (e.ntStatus == 0xC0000034.toInt()) {
                     return@withContext err(AppError.Remote("远端路径不存在", "list", isNotFound = true))
                 }
-                Log.e(TAG, "listFiles failed: $remoteDir", e)
+                LogUtil.e(TAG, "listFiles failed: ${LogSanitizer.redact(remoteDir)}", e)
                 err(AppError.Remote("SMB 列表失败", "list", cause = e))
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                Log.e(TAG, "listFiles failed: $remoteDir", e)
+                LogUtil.e(TAG, "listFiles failed: ${LogSanitizer.redact(remoteDir)}", e)
                 err(AppError.Remote("SMB 列表失败", "list", cause = e))
             }
         }
@@ -222,13 +222,13 @@ class SmbTransport(
                 if (e.ntStatus == 0xC0000035.toInt()) {
                     AppResult.Success(Unit)
                 } else {
-                    Log.e(TAG, "mkdirs failed: $remotePath — ntStatus=0x${e.ntStatus.toString(16)} msg=${e.message} cause=${e.cause}")
+                    LogUtil.e(TAG, "mkdirs failed: ${LogSanitizer.redact(remotePath)} — ntStatus=0x${e.ntStatus.toString(16)} msg=${e.message} cause=${e.cause}")
                     err(AppError.Remote("SMB 创建目录失败", "mkdirs", cause = e))
                 }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                Log.e(TAG, "mkdirs failed: $remotePath — ${e::class.java.name}: ${e.message} cause=${e.cause?.message}")
+                LogUtil.e(TAG, "mkdirs failed: ${LogSanitizer.redact(remotePath)} — ${e::class.java.name}: ${e.message} cause=${e.cause?.message}")
                 err(AppError.Remote("SMB 创建目录失败", "mkdirs", cause = e))
             }
         }
@@ -244,13 +244,13 @@ class SmbTransport(
                 if (e.ntStatus == 0xC0000034.toInt()) {
                 AppResult.Success(Unit)
                 } else {
-                    Log.w(TAG, "delete failed: $remotePath — ${e.message}")
+                    LogUtil.w(TAG, "delete failed: ${LogSanitizer.redact(remotePath)} — ${e.message}")
                     err(AppError.Remote("SMB 删除失败", "delete", cause = e))
                 }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                Log.w(TAG, "delete failed: $remotePath — ${e.message}")
+                LogUtil.w(TAG, "delete failed: ${LogSanitizer.redact(remotePath)} — ${e.message}")
                 err(AppError.Remote("SMB 删除失败", "delete", cause = e))
             }
         }
