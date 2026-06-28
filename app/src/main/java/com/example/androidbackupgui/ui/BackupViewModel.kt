@@ -4,20 +4,20 @@ import android.app.Application
 import android.content.Context
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.androidbackupgui.backup.AndroidBackupServiceBridge
 import com.example.androidbackupgui.backup.AppInfo
 import com.example.androidbackupgui.backup.BackupConfig
 import com.example.androidbackupgui.backup.BackupOperation
 import com.example.androidbackupgui.backup.BackupProgressTracker
 import com.example.androidbackupgui.backup.BackupServiceBridge
-import com.example.androidbackupgui.backup.AndroidBackupServiceBridge
 import com.example.androidbackupgui.backup.PackageName
 import com.example.androidbackupgui.backup.TaskCancellationRegistry
 import com.example.androidbackupgui.backup.WifiManager
 import com.example.androidbackupgui.backup.core.AppError
 import com.example.androidbackupgui.backup.core.AppResult
 import com.example.androidbackupgui.backup.core.ErrorSuggestionFactory
-import com.example.androidbackupgui.backup.restic.ResticSessionFactory
 import com.example.androidbackupgui.backup.restic.DefaultResticSessionFactory
+import com.example.androidbackupgui.backup.restic.ResticSessionFactory
 import com.example.androidbackupgui.backup.scan.AppScanner
 import com.example.androidbackupgui.backup.security.CredentialProvider
 import kotlinx.coroutines.Dispatchers
@@ -83,8 +83,11 @@ class BackupViewModel(
     private val resticSessionFactory: ResticSessionFactory = DefaultResticSessionFactory(),
 ) : AndroidViewModel(application) {
     /**
-     * 供 Android [ViewModelProvider] 使用的无参注入构造函数。
-     * 主构造函数保留默认参数以便测试注入 mock；运行时框架只识别此构造函数。
+     * 供 Android [ViewModelProvider] 反射调用的零参（仅 [Application]）构造函数。
+     *
+     * 审查报告 L6警示：主构造函数带默认参数是为了测试注入 mock，但 [androidx.lifecycle.AndroidViewModelFactory]
+     * 只查找签名恰为 `(Application)` 的构造函数 —— *不会*消费默认参数。因此本次构造函数必须保留，
+     * 删除会导致运行时 `viewModel()` 无法实例化、直接崩溃。主构造与本次构造不可互删其一。
      */
     constructor(application: Application) : this(
         application,
@@ -223,9 +226,10 @@ class BackupViewModel(
             )
         }
 
-        val registration = TaskCancellationRegistry.register(taskId) {
-            currentJob?.cancel()
-        }
+        val registration =
+            TaskCancellationRegistry.register(taskId) {
+                currentJob?.cancel()
+            }
 
         currentJob =
             viewModelScope.launch {
@@ -312,23 +316,32 @@ class BackupViewModel(
                     }
                     throw e
                 } catch (e: Exception) {
-                    val error = when {
-                        e.message?.contains("EPERM", ignoreCase = true) == true ->
-                            AppError.LocalIO("写入备份目录被拒绝", s.config.outputPath)
-                        e.message?.contains("EACCES", ignoreCase = true) == true ->
-                            AppError.LocalIO("权限不足", s.config.outputPath)
-                        e.message?.contains("timeout", ignoreCase = true) == true ->
-                            AppError.Network("网络超时", cause = e)
-                        else ->
-                            AppError.LocalIO("备份异常: ${e.message}", s.config.outputPath, cause = e)
-                    }
-                    val errorInfo = ErrorSuggestionFactory.createSuggestion(error, "备份操作")
-                    val errorMessage = buildString {
-                        append(errorInfo.message)
-                        if (errorInfo.suggestion.isNotEmpty()) {
-                            append("\n建议: ${errorInfo.suggestion}")
+                    val error =
+                        when {
+                            e.message?.contains("EPERM", ignoreCase = true) == true -> {
+                                AppError.LocalIO("写入备份目录被拒绝", s.config.outputPath)
+                            }
+
+                            e.message?.contains("EACCES", ignoreCase = true) == true -> {
+                                AppError.LocalIO("权限不足", s.config.outputPath)
+                            }
+
+                            e.message?.contains("timeout", ignoreCase = true) == true -> {
+                                AppError.Network("网络超时", cause = e)
+                            }
+
+                            else -> {
+                                AppError.LocalIO("备份异常: ${e.message}", s.config.outputPath, cause = e)
+                            }
                         }
-                    }
+                    val errorInfo = ErrorSuggestionFactory.createSuggestion(error, "备份操作")
+                    val errorMessage =
+                        buildString {
+                            append(errorInfo.message)
+                            if (errorInfo.suggestion.isNotEmpty()) {
+                                append("\n建议: ${errorInfo.suggestion}")
+                            }
+                        }
                     _state.update {
                         it.copy(
                             statusText = errorMessage,

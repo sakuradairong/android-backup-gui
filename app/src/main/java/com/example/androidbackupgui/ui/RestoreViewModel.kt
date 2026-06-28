@@ -5,19 +5,19 @@ import android.content.Context
 import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.androidbackupgui.backup.AndroidBackupServiceBridge
 import com.example.androidbackupgui.backup.AppInfo
 import com.example.androidbackupgui.backup.BackupConfig
 import com.example.androidbackupgui.backup.BackupFileIO
 import com.example.androidbackupgui.backup.BackupOperation
 import com.example.androidbackupgui.backup.BackupServiceBridge
-import com.example.androidbackupgui.backup.AndroidBackupServiceBridge
 import com.example.androidbackupgui.backup.PackageName
 import com.example.androidbackupgui.backup.RestoreOperation
 import com.example.androidbackupgui.backup.TaskCancellationRegistry
 import com.example.androidbackupgui.backup.WifiManager
 import com.example.androidbackupgui.backup.core.AppDetailsParser
-import com.example.androidbackupgui.backup.restic.ResticSessionFactory
 import com.example.androidbackupgui.backup.restic.DefaultResticSessionFactory
+import com.example.androidbackupgui.backup.restic.ResticSessionFactory
 import com.example.androidbackupgui.backup.restic.ResticWrapper
 import com.example.androidbackupgui.backup.scan.AppScanner
 import com.example.androidbackupgui.backup.security.PasswordManager
@@ -73,8 +73,11 @@ class RestoreViewModel(
     private val resticSessionFactory: ResticSessionFactory = DefaultResticSessionFactory(),
 ) : AndroidViewModel(application) {
     /**
-     * 供 Android [ViewModelProvider] 使用的无参注入构造函数。
-     * 主构造函数保留默认参数以便测试注入 mock；运行时框架只识别此构造函数。
+     * 供 Android [ViewModelProvider] 反射调用的零参（仅 [Application]）构造函数。
+     *
+     * 审查报告 L6警示：主构造函数带默认参数是为了测试注入 mock，但 [androidx.lifecycle.AndroidViewModelFactory]
+     * 只查找签名恰为 `(Application)` 的构造函数 —— *不会*消费默认参数。因此本次构造函数必须保留，
+     * 删除会导致运行时 `viewModel()` 无法实例化、直接崩溃。主构造与本次构造不可互删其一。
      */
     constructor(application: Application) : this(
         application,
@@ -100,11 +103,13 @@ class RestoreViewModel(
         viewModelScope.launch {
             try {
                 val defaultDir = context.filesDir
-                val backupDirs = withContext(Dispatchers.IO) {
-                    defaultDir.listFiles()
-                        ?.filter { it.isDirectory && it.name.startsWith("Backup_") }
-                        ?: emptyList()
-                }
+                val backupDirs =
+                    withContext(Dispatchers.IO) {
+                        defaultDir
+                            .listFiles()
+                            ?.filter { it.isDirectory && it.name.startsWith("Backup_") }
+                            ?: emptyList()
+                    }
                 if (backupDirs.isNotEmpty()) {
                     val dir = backupDirs.first()
                     loadFromDir(context, dir)
@@ -117,13 +122,19 @@ class RestoreViewModel(
         }
     }
 
-    fun loadFromSafUri(context: Context, uri: Uri) {
+    fun loadFromSafUri(
+        context: Context,
+        uri: Uri,
+    ) {
         val resolvedPath = resolveSafTreeUri(uri) ?: return
         val dir = File(resolvedPath)
         loadFromDir(context, dir)
     }
 
-    private fun loadFromDir(context: Context, dir: File) {
+    private fun loadFromDir(
+        context: Context,
+        dir: File,
+    ) {
         viewModelScope.launch {
             _state.update {
                 it.copy(
@@ -143,41 +154,50 @@ class RestoreViewModel(
         }
     }
 
-    private suspend fun loadFromDirSync(context: Context, dir: File) {
+    private suspend fun loadFromDirSync(
+        context: Context,
+        dir: File,
+    ) {
         val appListFile = File(dir, "appList.txt")
-        val pkgs = BackupFileIO.readTextFile(appListFile)?.let { content ->
-            content.lines()
-                .map { it.trim() }
-                .filter { it.isNotEmpty() && !it.startsWith("#") }
-                .mapNotNull { PackageName.safe(it)?.value }
-        } ?: run {
-            BackupFileIO.listBackupFiles(dir)
-                ?.mapNotNull { PackageName.safe(it)?.value }
-                ?: emptyList()
-        }
+        val pkgs =
+            BackupFileIO.readTextFile(appListFile)?.let { content ->
+                content
+                    .lines()
+                    .map { it.trim() }
+                    .filter { it.isNotEmpty() && !it.startsWith("#") }
+                    .mapNotNull { PackageName.safe(it)?.value }
+            } ?: run {
+                BackupFileIO
+                    .listBackupFiles(dir)
+                    ?.mapNotNull { PackageName.safe(it)?.value }
+                    ?: emptyList()
+            }
 
-        val validPkgs = pkgs.filter { pkg ->
-            val apkFile = File(File(dir, pkg), "$pkg.apk")
-            BackupFileIO.backupPathExists(apkFile)
-        }
+        val validPkgs =
+            pkgs.filter { pkg ->
+                val apkFile = File(File(dir, pkg), "$pkg.apk")
+                BackupFileIO.backupPathExists(apkFile)
+            }
 
-        val streamingBackupComplete = readStreamingManifestComplete(
-            BackupFileIO.readTextFile(File(dir, "streaming_manifest.json")),
-        )
+        val streamingBackupComplete =
+            readStreamingManifestComplete(
+                BackupFileIO.readTextFile(File(dir, "streaming_manifest.json")),
+            )
 
-        val infos = withContext(Dispatchers.IO) {
-            val cached = readLocalAppDetails(dir)
-            val preLabeled = validPkgs.map { AppInfo(packageName = PackageName(it), label = cached[it] ?: "") }
-            val resolved = AppScanner.resolveLabels(context, preLabeled)
-            resolved.map { app ->
-                val cachedLabel = cached[app.packageName.value]
-                if (cachedLabel != null && app.label == app.packageName.value) {
-                    app.copy(label = cachedLabel)
-                } else {
-                    app
+        val infos =
+            withContext(Dispatchers.IO) {
+                val cached = readLocalAppDetails(dir)
+                val preLabeled = validPkgs.map { AppInfo(packageName = PackageName(it), label = cached[it] ?: "") }
+                val resolved = AppScanner.resolveLabels(context, preLabeled)
+                resolved.map { app ->
+                    val cachedLabel = cached[app.packageName.value]
+                    if (cachedLabel != null && app.label == app.packageName.value) {
+                        app.copy(label = cachedLabel)
+                    } else {
+                        app
+                    }
                 }
             }
-        }
 
         _state.update {
             it.copy(
@@ -185,12 +205,13 @@ class RestoreViewModel(
                 appInfos = infos,
                 selectedPackages = emptySet(),
                 restoreWifi = false,
-                statusText = buildString {
-                    append("共 ${validPkgs.size} 个备份应用")
-                    if (streamingBackupComplete == false) {
-                        append("（流式不完整备份，仅部分数据）")
-                    }
-                },
+                statusText =
+                    buildString {
+                        append("共 ${validPkgs.size} 个备份应用")
+                        if (streamingBackupComplete == false) {
+                            append("（流式不完整备份，仅部分数据）")
+                        }
+                    },
                 isStreamingBackup = streamingBackupComplete != null,
                 streamingBackupComplete = streamingBackupComplete != false,
             )
@@ -198,28 +219,34 @@ class RestoreViewModel(
     }
 
     fun listResticSnapshots(context: Context) {
-        val rc = _state.value.resticConfig ?: run {
-            _state.update { it.copy(statusText = "未配置 Restic，请先在设置中配置") }
-            return
-        }
+        val rc =
+            _state.value.resticConfig ?: run {
+                _state.update { it.copy(statusText = "未配置 Restic，请先在设置中配置") }
+                return
+            }
         viewModelScope.launch {
             _state.update { it.copy(isRunning = true, statusText = "正在读取快照…") }
             try {
-                val restic = resticSessionFactory.prepare(context, rc.resticBackendDomain) ?: run {
-                    _state.update { it.copy(statusText = "restic 不可用", isRunning = false) }
-                    return@launch
-                }
+                val restic =
+                    resticSessionFactory.prepare(context, rc.resticBackendDomain) ?: run {
+                        _state.update { it.copy(statusText = "restic 不可用", isRunning = false) }
+                        return@launch
+                    }
 
                 val realPassword = configPw(PasswordManager.getResticPassword(), rc.resticPassword)
                 val realBackendPass = configPw(PasswordManager.getBackendPass(), rc.resticBackendPass)
-                val result = withContext(Dispatchers.IO) {
-                    restic.listSnapshots(
-                        rc.resticRepo, realPassword,
-                        backend = rc.resticBackend, backendUrl = rc.resticBackendUrl,
-                        backendUser = rc.resticBackendUser, backendPass = realBackendPass,
-                        backendShare = rc.resticBackendShare,
-                    )
-                }
+                val result =
+                    withContext(Dispatchers.IO) {
+                        restic.listSnapshots(
+                            rc.resticRepo,
+                            realPassword,
+                            backend = rc.resticBackend,
+                            backendUrl = rc.resticBackendUrl,
+                            backendUser = rc.resticBackendUser,
+                            backendPass = realBackendPass,
+                            backendShare = rc.resticBackendShare,
+                        )
+                    }
                 if (result.isFailure) {
                     _state.update { it.copy(statusText = "读取快照失败: ${result.exceptionOrNull()?.message}", isRunning = false) }
                     return@launch
@@ -242,7 +269,10 @@ class RestoreViewModel(
         }
     }
 
-    fun selectSnapshot(context: Context, snapshot: ResticWrapper.ResticSnapshot) {
+    fun selectSnapshot(
+        context: Context,
+        snapshot: ResticWrapper.ResticSnapshot,
+    ) {
         _state.update { it.copy(showSnapshotPicker = false, isRunning = true) }
         loadResticSnapshot(context, snapshot)
     }
@@ -251,55 +281,71 @@ class RestoreViewModel(
         _state.update { it.copy(showSnapshotPicker = false) }
     }
 
-    private fun loadResticSnapshot(context: Context, snapshot: ResticWrapper.ResticSnapshot) {
+    private fun loadResticSnapshot(
+        context: Context,
+        snapshot: ResticWrapper.ResticSnapshot,
+    ) {
         viewModelScope.launch {
             try {
                 val rc = _state.value.resticConfig ?: return@launch
-                val backupPath = snapshot.paths.firstOrNull() ?: run {
-                    _state.update { it.copy(statusText = "快照中找不到备份路径", isRunning = false) }
-                    return@launch
-                }
+                val backupPath =
+                    snapshot.paths.firstOrNull() ?: run {
+                        _state.update { it.copy(statusText = "快照中找不到备份路径", isRunning = false) }
+                        return@launch
+                    }
 
                 val realPassword = configPw(PasswordManager.getResticPassword(), rc.resticPassword)
                 val realBackendPass = configPw(PasswordManager.getBackendPass(), rc.resticBackendPass)
 
-                val restic = resticSessionFactory.prepare(context, rc.resticBackendDomain) ?: run {
-                    _state.update { it.copy(statusText = "restic 不可用", isRunning = false) }
-                    return@launch
-                }
+                val restic =
+                    resticSessionFactory.prepare(context, rc.resticBackendDomain) ?: run {
+                        _state.update { it.copy(statusText = "restic 不可用", isRunning = false) }
+                        return@launch
+                    }
 
-                suspend fun tryDump(path: String) = restic.dump(
-                    rc.resticRepo, realPassword, snapshot.id, path,
-                    backend = rc.resticBackend, backendUrl = rc.resticBackendUrl,
-                    backendUser = rc.resticBackendUser, backendPass = realBackendPass,
-                    backendShare = rc.resticBackendShare,
-                ).getOrNull()
+                suspend fun tryDump(path: String) =
+                    restic
+                        .dump(
+                            rc.resticRepo,
+                            realPassword,
+                            snapshot.id,
+                            path,
+                            backend = rc.resticBackend,
+                            backendUrl = rc.resticBackendUrl,
+                            backendUser = rc.resticBackendUser,
+                            backendPass = realBackendPass,
+                            backendShare = rc.resticBackendShare,
+                        ).getOrNull()
 
-                val streamingBackupComplete = readStreamingManifestComplete(
-                    tryDump("$backupPath/streaming_manifest.json"),
-                )
+                val streamingBackupComplete =
+                    readStreamingManifestComplete(
+                        tryDump("$backupPath/streaming_manifest.json"),
+                    )
 
                 val content = tryDump("$backupPath/appList.txt") ?: tryDump("$backupPath/meta/appList.txt")
                 if (content == null) {
                     _state.update { it.copy(statusText = "无法从快照读取应用列表", isRunning = false) }
                     return@launch
                 }
-                val pkgs = content.lines()
-                    .map { it.trim() }
-                    .filter { it.isNotEmpty() && !it.startsWith("#") }
-                    .mapNotNull { PackageName.safe(it)?.value }
+                val pkgs =
+                    content
+                        .lines()
+                        .map { it.trim() }
+                        .filter { it.isNotEmpty() && !it.startsWith("#") }
+                        .mapNotNull { PackageName.safe(it)?.value }
 
                 val cachedLabels = loadResticAppDetails(context, rc, snapshot.id, backupPath)
                 val preLabeled = pkgs.map { AppInfo(packageName = PackageName(it), label = cachedLabels[it] ?: "") }
                 val resolved = AppScanner.resolveLabels(context, preLabeled)
-                val infos = resolved.map { app ->
-                    val cachedLabel = cachedLabels[app.packageName.value]
-                    if (cachedLabel != null && app.label == app.packageName.value) {
-                        app.copy(label = cachedLabel)
-                    } else {
-                        app
+                val infos =
+                    resolved.map { app ->
+                        val cachedLabel = cachedLabels[app.packageName.value]
+                        if (cachedLabel != null && app.label == app.packageName.value) {
+                            app.copy(label = cachedLabel)
+                        } else {
+                            app
+                        }
                     }
-                }
 
                 _state.update {
                     it.copy(
@@ -309,12 +355,13 @@ class RestoreViewModel(
                         appInfos = infos,
                         selectedPackages = emptySet(),
                         restoreWifi = false,
-                        statusText = buildString {
-                            append("restic 快照共 ${pkgs.size} 个应用")
-                            if (streamingBackupComplete == false) {
-                                append("（流式不完整备份，仅部分数据）")
-                            }
-                        },
+                        statusText =
+                            buildString {
+                                append("restic 快照共 ${pkgs.size} 个应用")
+                                if (streamingBackupComplete == false) {
+                                    append("（流式不完整备份，仅部分数据）")
+                                }
+                            },
                         isRunning = false,
                         isStreamingBackup = streamingBackupComplete != null,
                         streamingBackupComplete = streamingBackupComplete != false,
@@ -326,7 +373,10 @@ class RestoreViewModel(
         }
     }
 
-    fun toggleApp(packageName: String, checked: Boolean) {
+    fun toggleApp(
+        packageName: String,
+        checked: Boolean,
+    ) {
         _state.update { s ->
             s.copy(selectedPackages = if (checked) s.selectedPackages + packageName else s.selectedPackages - packageName)
         }
@@ -386,47 +436,49 @@ class RestoreViewModel(
             )
         }
 
-        val registration = TaskCancellationRegistry.register(taskId) {
-            currentJob?.cancel()
-        }
-
-        currentJob = viewModelScope.launch {
-            try {
-                serviceBridge.startTask(
-                    context = context,
-                    taskId = taskId,
-                    taskType = BackupServiceBridge.TASK_TYPE_RESTORE,
-                    statusText = "正在恢复 ${toRestore.size} 个应用…",
-                )
-
-                if (s.selectedSnapshot != null && s.resticConfig != null) {
-                    executeResticRestore(context, s, taskId, registration)
-                } else if (s.backupDir != null) {
-                    executeLocalRestore(context, s, taskId, registration)
-                }
-            } catch (e: TaskCancellationRegistry.CancellationException) {
-                _state.update {
-                    it.copy(statusText = "恢复已取消", progressStage = "cancelled", progressMessage = "已取消")
-                }
-            } catch (e: kotlinx.coroutines.CancellationException) {
-                _state.update {
-                    it.copy(statusText = "恢复已取消", progressStage = "cancelled", progressMessage = "已取消")
-                }
-                throw e
-            } catch (e: Exception) {
-                _state.update {
-                    it.copy(
-                        statusText = "恢复异常: ${e.message}",
-                        progressMessage = e.message ?: "异常",
-                        progressStage = "partial",
-                    )
-                }
-            } finally {
-                _state.update { it.copy(isRunning = false, progressPercent = null) }
-                TaskCancellationRegistry.unregister(taskId)
-                serviceBridge.stopTask(context)
+        val registration =
+            TaskCancellationRegistry.register(taskId) {
+                currentJob?.cancel()
             }
-        }
+
+        currentJob =
+            viewModelScope.launch {
+                try {
+                    serviceBridge.startTask(
+                        context = context,
+                        taskId = taskId,
+                        taskType = BackupServiceBridge.TASK_TYPE_RESTORE,
+                        statusText = "正在恢复 ${toRestore.size} 个应用…",
+                    )
+
+                    if (s.selectedSnapshot != null && s.resticConfig != null) {
+                        executeResticRestore(context, s, taskId, registration)
+                    } else if (s.backupDir != null) {
+                        executeLocalRestore(context, s, taskId, registration)
+                    }
+                } catch (e: TaskCancellationRegistry.CancellationException) {
+                    _state.update {
+                        it.copy(statusText = "恢复已取消", progressStage = "cancelled", progressMessage = "已取消")
+                    }
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    _state.update {
+                        it.copy(statusText = "恢复已取消", progressStage = "cancelled", progressMessage = "已取消")
+                    }
+                    throw e
+                } catch (e: Exception) {
+                    _state.update {
+                        it.copy(
+                            statusText = "恢复异常: ${e.message}",
+                            progressMessage = e.message ?: "异常",
+                            progressStage = "partial",
+                        )
+                    }
+                } finally {
+                    _state.update { it.copy(isRunning = false, progressPercent = null) }
+                    TaskCancellationRegistry.unregister(taskId)
+                    serviceBridge.stopTask(context)
+                }
+            }
     }
 
     private suspend fun executeResticRestore(
@@ -455,50 +507,65 @@ class RestoreViewModel(
                 percent = null,
             )
 
-            val restic = resticSessionFactory.prepare(context, config.resticBackendDomain) ?: run {
-                _state.update {
-                    it.copy(
-                        statusText = "restic 不可用",
-                        progressMessage = "restic 不可用",
-                        progressStage = "partial",
+            val restic =
+                resticSessionFactory.prepare(context, config.resticBackendDomain) ?: run {
+                    _state.update {
+                        it.copy(
+                            statusText = "restic 不可用",
+                            progressMessage = "restic 不可用",
+                            progressStage = "partial",
+                        )
+                    }
+                    return
+                }
+
+            val restoreResult =
+                withContext(Dispatchers.IO) {
+                    val rPw = PasswordManager.getResticPassword()?.takeIf { it != "stored-in-keystore" } ?: config.resticPassword
+                    val rBpw = PasswordManager.getBackendPass()?.takeIf { it != "stored-in-keystore" } ?: config.resticBackendPass
+                    restic.restore(
+                        repoPath = config.resticRepo,
+                        password = rPw,
+                        snapshotId = snapshot.id,
+                        targetPath = staging.absolutePath,
+                        backend = config.resticBackend,
+                        backendUrl = config.resticBackendUrl,
+                        backendUser = config.resticBackendUser,
+                        backendPass = rBpw,
+                        backendShare = config.resticBackendShare,
+                        onProgress = { msg ->
+                            if (registration.cancelled.get()) throw TaskCancellationRegistry.CancellationException(taskId)
+                            _state.update { it.copy(statusText = msg, progressMessage = msg) }
+                            val pct =
+                                Regex("""(\d{1,3})(?:\.\d+)?%""")
+                                    .find(msg)
+                                    ?.groupValues
+                                    ?.get(1)
+                                    ?.toFloatOrNull()
+                                    ?.div(100f)
+                                    ?.coerceIn(0f, 1f)
+                            _state.update { it.copy(progressPercent = pct) }
+                            updateServiceNotification(
+                                context = context,
+                                taskId = taskId,
+                                taskType = BackupServiceBridge.TASK_TYPE_RESTIC,
+                                statusText = msg,
+                                current = 0,
+                                total = 0,
+                                percent = pct,
+                            )
+                        },
                     )
                 }
-                return
-            }
-
-            val restoreResult = withContext(Dispatchers.IO) {
-                val rPw = PasswordManager.getResticPassword()?.takeIf { it != "stored-in-keystore" } ?: config.resticPassword
-                val rBpw = PasswordManager.getBackendPass()?.takeIf { it != "stored-in-keystore" } ?: config.resticBackendPass
-                restic.restore(
-                    repoPath = config.resticRepo, password = rPw,
-                    snapshotId = snapshot.id, targetPath = staging.absolutePath,
-                    backend = config.resticBackend, backendUrl = config.resticBackendUrl,
-                    backendUser = config.resticBackendUser, backendPass = rBpw,
-                    backendShare = config.resticBackendShare,
-                    onProgress = { msg ->
-                        if (registration.cancelled.get()) throw TaskCancellationRegistry.CancellationException(taskId)
-                        _state.update { it.copy(statusText = msg, progressMessage = msg) }
-                        val pct = Regex("""(\d{1,3})(?:\.\d+)?%""").find(msg)
-                            ?.groupValues?.get(1)?.toFloatOrNull()?.div(100f)?.coerceIn(0f, 1f)
-                        _state.update { it.copy(progressPercent = pct) }
-                        updateServiceNotification(
-                            context = context,
-                            taskId = taskId,
-                            taskType = BackupServiceBridge.TASK_TYPE_RESTIC,
-                            statusText = msg,
-                            current = 0,
-                            total = 0,
-                            percent = pct,
-                        )
-                    },
-                )
-            }
             if (restoreResult.isFailure) {
                 _state.update {
                     it.copy(
                         statusText = "restic 恢复失败: ${restoreResult.exceptionOrNull()?.message}",
                         progressMessage = "restic 恢复失败",
-                        selectedSnapshot = null, packages = emptyList(), appInfos = emptyList(), selectedPackages = emptySet(),
+                        selectedSnapshot = null,
+                        packages = emptyList(),
+                        appInfos = emptyList(),
+                        selectedPackages = emptySet(),
                     )
                 }
                 return
@@ -507,17 +574,85 @@ class RestoreViewModel(
             val restoredDir = File(staging, backupPath.removePrefix("/"))
             _state.update { it.copy(statusText = "正在从恢复的备份安装应用…", progressPercent = null) }
 
-            val result = withContext(Dispatchers.IO) {
+            val result =
+                withContext(Dispatchers.IO) {
+                    RestoreOperation.restoreApps(
+                        context = context,
+                        backupDir = restoredDir,
+                        userId = config.backupUserId.toString(),
+                        filterPkgs = s.selectedPackages,
+                        onProgress = { progress ->
+                            if (registration.cancelled.get()) throw TaskCancellationRegistry.CancellationException(taskId)
+                            _state.update {
+                                it.copy(
+                                    statusText = "[${progress.current}/${progress.total}] ${progress.packageName}: ${progress.message}",
+                                    progressCurrent = progress.current,
+                                    progressTotal = progress.total,
+                                    progressStage = progress.stage,
+                                    progressPackageName = progress.packageName,
+                                    progressMessage = progress.message,
+                                )
+                            }
+                            updateServiceNotification(
+                                context = context,
+                                taskId = taskId,
+                                taskType = BackupServiceBridge.TASK_TYPE_RESTORE,
+                                statusText = "[${progress.current}/${progress.total}] ${progress.packageName}",
+                                current = progress.current,
+                                total = progress.total,
+                                percent = null,
+                            )
+                        },
+                    )
+                }
+            val wifiOk = if (s.restoreWifi) WifiManager.restore(restoredDir) else true
+            val failed = result.failCount
+            _state.update {
+                it.copy(
+                    statusText =
+                        buildString {
+                            appendLine("恢复${if (failed > 0) "完成（部分失败）" else "完成！"}")
+                            appendLine("成功: ${result.successCount} 失败: $failed")
+                            if (s.restoreWifi && !wifiOk) appendLine("Wi-Fi 恢复失败")
+                            append("耗时: ${result.elapsedMs / 1000}秒")
+                        },
+                    progressCurrent = result.successCount,
+                    progressStage = if (failed > 0) "partial" else "done",
+                    progressMessage = if (failed > 0) "失败 $failed 个" else "完成",
+                    progressPercent = null,
+                )
+            }
+        } finally {
+            try {
+                staging.deleteRecursively()
+            } catch (_: Exception) {
+            }
+        }
+    }
+
+    private suspend fun executeLocalRestore(
+        context: Context,
+        s: RestoreUiState,
+        taskId: String,
+        registration: TaskCancellationRegistry.Registration,
+    ) {
+        val dir = s.backupDir!!
+        val result =
+            withContext(Dispatchers.IO) {
                 RestoreOperation.restoreApps(
-                    context = context, backupDir = restoredDir,
-                    userId = config.backupUserId.toString(), filterPkgs = s.selectedPackages,
+                    context = context,
+                    backupDir = dir,
+                    userId = s.config.backupUserId.toString(),
+                    filterPkgs = s.selectedPackages,
                     onProgress = { progress ->
                         if (registration.cancelled.get()) throw TaskCancellationRegistry.CancellationException(taskId)
                         _state.update {
                             it.copy(
                                 statusText = "[${progress.current}/${progress.total}] ${progress.packageName}: ${progress.message}",
-                                progressCurrent = progress.current, progressTotal = progress.total,
-                                progressStage = progress.stage, progressPackageName = progress.packageName,
+                                progressCurrent = progress.current,
+                                progressTotal = progress.total,
+                                progressStage = progress.stage,
+                                progressPackageName = progress.packageName,
                                 progressMessage = progress.message,
                             )
                         }
@@ -533,70 +668,17 @@ class RestoreViewModel(
                     },
                 )
             }
-            val wifiOk = if (s.restoreWifi) WifiManager.restore(restoredDir) else true
-            val failed = result.failCount
-            _state.update {
-                it.copy(
-                    statusText = buildString {
+        val wifiOk = if (s.restoreWifi) WifiManager.restore(dir) else true
+        val failed = result.failCount
+        _state.update {
+            it.copy(
+                statusText =
+                    buildString {
                         appendLine("恢复${if (failed > 0) "完成（部分失败）" else "完成！"}")
                         appendLine("成功: ${result.successCount} 失败: $failed")
                         if (s.restoreWifi && !wifiOk) appendLine("Wi-Fi 恢复失败")
                         append("耗时: ${result.elapsedMs / 1000}秒")
                     },
-                    progressCurrent = result.successCount,
-                    progressStage = if (failed > 0) "partial" else "done",
-                    progressMessage = if (failed > 0) "失败 $failed 个" else "完成",
-                    progressPercent = null,
-                )
-            }
-        } finally {
-            try { staging.deleteRecursively() } catch (_: Exception) {}
-        }
-    }
-
-    private suspend fun executeLocalRestore(
-        context: Context,
-        s: RestoreUiState,
-        taskId: String,
-        registration: TaskCancellationRegistry.Registration,
-    ) {
-        val dir = s.backupDir!!
-        val result = withContext(Dispatchers.IO) {
-            RestoreOperation.restoreApps(
-                context = context, backupDir = dir,
-                userId = s.config.backupUserId.toString(), filterPkgs = s.selectedPackages,
-                onProgress = { progress ->
-                    if (registration.cancelled.get()) throw TaskCancellationRegistry.CancellationException(taskId)
-                    _state.update {
-                        it.copy(
-                            statusText = "[${progress.current}/${progress.total}] ${progress.packageName}: ${progress.message}",
-                            progressCurrent = progress.current, progressTotal = progress.total,
-                            progressStage = progress.stage, progressPackageName = progress.packageName,
-                            progressMessage = progress.message,
-                        )
-                    }
-                    updateServiceNotification(
-                        context = context,
-                        taskId = taskId,
-                        taskType = BackupServiceBridge.TASK_TYPE_RESTORE,
-                        statusText = "[${progress.current}/${progress.total}] ${progress.packageName}",
-                        current = progress.current,
-                        total = progress.total,
-                        percent = null,
-                    )
-                },
-            )
-        }
-        val wifiOk = if (s.restoreWifi) WifiManager.restore(dir) else true
-        val failed = result.failCount
-        _state.update {
-            it.copy(
-                statusText = buildString {
-                    appendLine("恢复${if (failed > 0) "完成（部分失败）" else "完成！"}")
-                    appendLine("成功: ${result.successCount} 失败: $failed")
-                    if (s.restoreWifi && !wifiOk) appendLine("Wi-Fi 恢复失败")
-                    append("耗时: ${result.elapsedMs / 1000}秒")
-                },
                 progressCurrent = result.successCount,
                 progressStage = if (failed > 0) "partial" else "done",
                 progressMessage = if (failed > 0) "失败 $failed 个" else "完成",
@@ -613,8 +695,13 @@ class RestoreViewModel(
     }
 
     private fun updateServiceNotification(
-        context: Context, taskId: String, taskType: String,
-        statusText: String, current: Int, total: Int, percent: Float?,
+        context: Context,
+        taskId: String,
+        taskType: String,
+        statusText: String,
+        current: Int,
+        total: Int,
+        percent: Float?,
     ) {
         serviceBridge.updateProgress(
             context = context,
@@ -627,8 +714,10 @@ class RestoreViewModel(
         )
     }
 
-    private fun configPw(key: String?, fallback: String): String =
-        key?.takeIf { it.isNotEmpty() && it != "stored-in-keystore" } ?: fallback
+    private fun configPw(
+        key: String?,
+        fallback: String,
+    ): String = key?.takeIf { it.isNotEmpty() && it != "stored-in-keystore" } ?: fallback
 
     private fun readStreamingManifestComplete(json: String?): Boolean? {
         if (json.isNullOrBlank()) return null
@@ -660,12 +749,19 @@ class RestoreViewModel(
         val realPassword = configPw(PasswordManager.getResticPassword(), config.resticPassword)
         val realBackendPass = configPw(PasswordManager.getBackendPass(), config.resticBackendPass)
 
-        suspend fun tryDump(path: String) = restic.dump(
-            config.resticRepo, realPassword, snapshotId, path,
-            backend = config.resticBackend, backendUrl = config.resticBackendUrl,
-            backendUser = config.resticBackendUser, backendPass = realBackendPass,
-            backendShare = config.resticBackendShare,
-        ).getOrNull()
+        suspend fun tryDump(path: String) =
+            restic
+                .dump(
+                    config.resticRepo,
+                    realPassword,
+                    snapshotId,
+                    path,
+                    backend = config.resticBackend,
+                    backendUrl = config.resticBackendUrl,
+                    backendUser = config.resticBackendUser,
+                    backendPass = realBackendPass,
+                    backendShare = config.resticBackendShare,
+                ).getOrNull()
 
         val json = tryDump("$backupPath/app_details.json") ?: tryDump("$backupPath/meta/app_details.json") ?: return emptyMap()
         return try {
