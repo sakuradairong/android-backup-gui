@@ -200,18 +200,13 @@ object BackupOperation {
 
             val elapsed = System.currentTimeMillis() - startTime
             RootShell.exec("chmod -R go-rwx '${backupRoot.absolutePath.shellEscape()}'")
-            val successCount = successAtomic.get()
-            val failCount = failAtomic.get()
-            val skippedCount = skippedAtomic.get()
-
-            LogUtil.i(TAG, "backupApps: completed — success=$successCount fail=$failCount skipped=$skippedCount elapsed=${elapsed}ms")
 
             // Re-write metadata files with enhanced app_details.json (includes per-app extas)
             val metaJson = AppDetailsBuilder.buildAppDetailsJson(apps, legacyApps, perAppExtraMap.ifEmpty { null })
             BackupFileIO.writeFileForBackup(File(backupRoot, "app_details.json"), metaJson)
 
             // 备份完整性校验（可选）
-            if (successCount > 0) {
+            if (successAtomic.get() > 0) {
                 LogUtil.i(TAG, "backupApps: starting integrity check...")
                 val integrityReport = BackupIntegrityChecker.checkBackupIntegrity(
                     backupDir = backupRoot,
@@ -236,6 +231,12 @@ object BackupOperation {
                     failAtomic.incrementAndGet()
                 }
             }
+
+            val successCount = successAtomic.get()
+            val failCount = failAtomic.get()
+            val skippedCount = skippedAtomic.get()
+
+            LogUtil.i(TAG, "backupApps: completed — success=$successCount fail=$failCount skipped=$skippedCount elapsed=${elapsed}ms")
 
             BackupResult(
                 successCount = successCount,
@@ -276,11 +277,10 @@ object BackupOperation {
 
         // ── Incremental check: compare APK version ──
         val oldEntry = oldMetaJson.optJSONObject(pkgName)
-        val oldApkVersion = oldEntry?.optString("apk_version", null)
-        var installedVersion: String? = null
+        val oldApkVersion = oldEntry?.optString("apk_version")
         var apkChanged = true
         if (oldApkVersion != null) {
-            installedVersion = appInfoCache.getVersionCode(pkgName)
+            val installedVersion = appInfoCache.getVersionCode(pkgName)
             if (installedVersion != null && oldApkVersion == installedVersion) {
                 apkChanged = false
                 Log.d(TAG, "backupApps: $pkgName APK $oldApkVersion unchanged, skipping")

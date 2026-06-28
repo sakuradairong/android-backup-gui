@@ -3,6 +3,7 @@ package com.example.androidbackupgui.backup
 import android.content.Context
 import com.example.androidbackupgui.backup.core.AppDetailsBuilder
 import com.example.androidbackupgui.backup.security.BinaryResolver
+import com.example.androidbackupgui.backup.scan.AppScanner
 import com.example.androidbackupgui.root.RootShell
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.shouldBe
@@ -35,9 +36,12 @@ class BackupOperationFailureTest : FunSpec({
         mockkObject(BackupAppDataOps)
         mockkObject(AppDetailsBuilder)
         mockkObject(BackupFileIO)
+        mockkObject(BackupIntegrityChecker)
+        mockkObject(AppScanner)
         coEvery { AppDetailsBuilder.buildAppDetailsJson(any(), any(), any(), any()) } returns "{}"
         coEvery { BackupFileIO.backupPathExists(any()) } returns true
         coEvery { BackupFileIO.backupFileSize(any()) } returns 1024L
+        coEvery { BackupFileIO.readTextFile(any()) } returns null
 
         coEvery { RootShell.exec(any()) } returns RootShell.ShellResult("", "", 0)
         every { ConcurrencyController.calculateOptimalConcurrency(any(), any()) } returns
@@ -49,6 +53,18 @@ class BackupOperationFailureTest : FunSpec({
         coEvery { BackupAppDataOps.backupExternalData(any(), any(), any(), any()) } returns 256L
         coEvery { BackupAppDataOps.backupSsaid(any(), any(), any(), any()) } returns Unit
         coEvery { BackupAppDataOps.backupPermissions(any(), any()) } returns Unit
+        coEvery { AppScanner.hasObbData(any()) } returns false
+        coEvery { AppScanner.extractIcon(any(), any(), any()) } returns null
+        coEvery { BackupIntegrityChecker.checkBackupIntegrity(any(), any(), any()) } returns
+            BackupIntegrityChecker.IntegrityReport(
+                totalPackages = 1,
+                checkedPackages = 1,
+                passedPackages = 1,
+                failedPackages = 0,
+                results = emptyList(),
+                elapsedTimeMs = 0,
+            )
+        coEvery { BackupIntegrityChecker.generateChecksumFile(any(), any(), any()) } returns true
     }
 
     afterTest {
@@ -58,6 +74,8 @@ class BackupOperationFailureTest : FunSpec({
         unmockkObject(BackupAppDataOps)
         unmockkObject(AppDetailsBuilder)
         unmockkObject(BackupFileIO)
+        unmockkObject(BackupIntegrityChecker)
+        unmockkObject(AppScanner)
         tempDir.deleteRecursively()
     }
 
@@ -126,6 +144,60 @@ class BackupOperationFailureTest : FunSpec({
             result.failCount shouldBe 1
             result.successCount shouldBe 0
             progress.any { it.stage == "appdone" && it.message.contains("数据备份失败") } shouldBe true
+        }
+    }
+
+    context("post-backup verification failures") {
+        test("完整性校验失败时返回最终 failCount 增加") {
+            val pkg = "com.example.app"
+            val infoCache = mockk<AppInfoCache>(relaxed = true)
+            coEvery { infoCache.getApkPaths(pkg) } returns listOf("/data/app/$pkg/base.apk")
+            coEvery { infoCache.getVersionCode(pkg) } returns null
+            coEvery { infoCache.hasKeystore(pkg) } returns false
+            coEvery { infoCache.warmAll(any()) } returns Unit
+            every { infoCache.size() } returns 1
+            coEvery { BackupIntegrityChecker.checkBackupIntegrity(any(), any(), any()) } returns
+                BackupIntegrityChecker.IntegrityReport(
+                    totalPackages = 1,
+                    checkedPackages = 1,
+                    passedPackages = 0,
+                    failedPackages = 1,
+                    results = emptyList(),
+                    elapsedTimeMs = 0,
+                )
+
+            val result = BackupOperation.backupApps(
+                context = context,
+                apps = listOf(appInfo(pkg)),
+                config = BackupConfig(backupMode = 1, backupUserData = 1, backupObbData = 0),
+                outputDir = tempDir,
+                appInfoCache = infoCache,
+            )
+
+            result.successCount shouldBe 1
+            result.failCount shouldBe 1
+        }
+
+        test("checksum 生成失败时返回最终 failCount 增加") {
+            val pkg = "com.example.app"
+            val infoCache = mockk<AppInfoCache>(relaxed = true)
+            coEvery { infoCache.getApkPaths(pkg) } returns listOf("/data/app/$pkg/base.apk")
+            coEvery { infoCache.getVersionCode(pkg) } returns null
+            coEvery { infoCache.hasKeystore(pkg) } returns false
+            coEvery { infoCache.warmAll(any()) } returns Unit
+            every { infoCache.size() } returns 1
+            coEvery { BackupIntegrityChecker.generateChecksumFile(any(), any(), any()) } returns false
+
+            val result = BackupOperation.backupApps(
+                context = context,
+                apps = listOf(appInfo(pkg)),
+                config = BackupConfig(backupMode = 1, backupUserData = 1, backupObbData = 0),
+                outputDir = tempDir,
+                appInfoCache = infoCache,
+            )
+
+            result.successCount shouldBe 1
+            result.failCount shouldBe 1
         }
     }
 })

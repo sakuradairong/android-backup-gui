@@ -29,6 +29,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.json.JSONObject
 import java.io.File
 import java.util.UUID
 
@@ -54,6 +55,7 @@ data class RestoreUiState(
     val showRestoreConfirm: Boolean = false,
     val taskId: String = "",
     val isStreamingBackup: Boolean = false,
+    val streamingBackupComplete: Boolean = true,
 )
 
 class RestoreViewModel(
@@ -70,6 +72,15 @@ class RestoreViewModel(
      */
     private val resticSessionFactory: ResticSessionFactory = DefaultResticSessionFactory(),
 ) : AndroidViewModel(application) {
+    /**
+     * 供 Android [ViewModelProvider] 使用的无参注入构造函数。
+     * 主构造函数保留默认参数以便测试注入 mock；运行时框架只识别此构造函数。
+     */
+    constructor(application: Application) : this(
+        application,
+        AndroidBackupServiceBridge(),
+        DefaultResticSessionFactory(),
+    )
 
     private val _state = MutableStateFlow(RestoreUiState())
     val state: StateFlow<RestoreUiState> = _state.asStateFlow()
@@ -122,6 +133,8 @@ class RestoreViewModel(
                     appInfos = emptyList(),
                     selectedPackages = emptySet(),
                     restoreWifi = false,
+                    isStreamingBackup = false,
+                    streamingBackupComplete = true,
                 )
             }
             withContext(Dispatchers.IO) {
@@ -148,6 +161,10 @@ class RestoreViewModel(
             BackupFileIO.backupPathExists(apkFile)
         }
 
+        val streamingBackupComplete = readStreamingManifestComplete(
+            BackupFileIO.readTextFile(File(dir, "streaming_manifest.json")),
+        )
+
         val infos = withContext(Dispatchers.IO) {
             val cached = readLocalAppDetails(dir)
             val preLabeled = validPkgs.map { AppInfo(packageName = PackageName(it), label = cached[it] ?: "") }
@@ -168,8 +185,14 @@ class RestoreViewModel(
                 appInfos = infos,
                 selectedPackages = emptySet(),
                 restoreWifi = false,
-                statusText = "共 ${validPkgs.size} 个备份应用",
-                isStreamingBackup = File(dir, "streaming_manifest.json").exists(),
+                statusText = buildString {
+                    append("共 ${validPkgs.size} 个备份应用")
+                    if (streamingBackupComplete == false) {
+                        append("（流式不完整备份，仅部分数据）")
+                    }
+                },
+                isStreamingBackup = streamingBackupComplete != null,
+                streamingBackupComplete = streamingBackupComplete != false,
             )
         }
     }
@@ -252,6 +275,10 @@ class RestoreViewModel(
                     backendShare = rc.resticBackendShare,
                 ).getOrNull()
 
+                val streamingBackupComplete = readStreamingManifestComplete(
+                    tryDump("$backupPath/streaming_manifest.json"),
+                )
+
                 val content = tryDump("$backupPath/appList.txt") ?: tryDump("$backupPath/meta/appList.txt")
                 if (content == null) {
                     _state.update { it.copy(statusText = "无法从快照读取应用列表", isRunning = false) }
@@ -282,9 +309,15 @@ class RestoreViewModel(
                         appInfos = infos,
                         selectedPackages = emptySet(),
                         restoreWifi = false,
-                        statusText = "restic 快照共 ${pkgs.size} 个应用",
+                        statusText = buildString {
+                            append("restic 快照共 ${pkgs.size} 个应用")
+                            if (streamingBackupComplete == false) {
+                                append("（流式不完整备份，仅部分数据）")
+                            }
+                        },
                         isRunning = false,
-                        isStreamingBackup = false,
+                        isStreamingBackup = streamingBackupComplete != null,
+                        streamingBackupComplete = streamingBackupComplete != false,
                     )
                 }
             } catch (e: Exception) {
@@ -327,6 +360,13 @@ class RestoreViewModel(
         val s = _state.value
         val toRestore = s.packages.filter { it in s.selectedPackages }
         if (toRestore.isEmpty()) return
+        if (s.isStreamingBackup && !s.streamingBackupComplete) {
+            _state.update {
+                it.copy(
+                    statusText = "该流式备份标记为不完整，仅包含部分应用数据；请确认缺失 OBB、外部数据、权限、SSAID、Wi-Fi 等内容后再恢复。",
+                )
+            }
+        }
 
         _state.update { it.copy(showRestoreConfirm = false) }
 
@@ -589,6 +629,15 @@ class RestoreViewModel(
 
     private fun configPw(key: String?, fallback: String): String =
         key?.takeIf { it.isNotEmpty() && it != "stored-in-keystore" } ?: fallback
+
+    private fun readStreamingManifestComplete(json: String?): Boolean? {
+        if (json.isNullOrBlank()) return null
+        return try {
+            JSONObject(json).optBoolean("completeBackup", true)
+        } catch (_: Exception) {
+            true
+        }
+    }
 
     private suspend fun readLocalAppDetails(dir: File): Map<String, String> =
         withContext(Dispatchers.IO) {

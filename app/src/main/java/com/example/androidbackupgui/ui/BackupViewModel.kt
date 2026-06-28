@@ -82,6 +82,16 @@ class BackupViewModel(
      */
     private val resticSessionFactory: ResticSessionFactory = DefaultResticSessionFactory(),
 ) : AndroidViewModel(application) {
+    /**
+     * 供 Android [ViewModelProvider] 使用的无参注入构造函数。
+     * 主构造函数保留默认参数以便测试注入 mock；运行时框架只识别此构造函数。
+     */
+    constructor(application: Application) : this(
+        application,
+        AndroidBackupServiceBridge(),
+        DefaultResticSessionFactory(),
+    )
+
     companion object {
         private const val TAG = "BackupViewModel"
     }
@@ -409,7 +419,7 @@ class BackupViewModel(
                             val summary = result.getOrNull()
                             _state.update {
                                 it.copy(
-                                    statusText = "流式备份完成！ID: ${summary?.snapshotId?.take(
+                                    statusText = "流式备份完成（不完整备份，仅包含部分数据）！ID: ${summary?.snapshotId?.take(
                                         8,
                                     )}… 新增: ${(summary?.dataAdded ?: 0) / 1024 / 1024} MB",
                                 )
