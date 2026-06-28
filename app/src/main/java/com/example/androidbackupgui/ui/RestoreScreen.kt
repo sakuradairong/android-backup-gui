@@ -213,7 +213,7 @@ private fun RestoreConfirmDialog(
                         color = MaterialTheme.colorScheme.error,
                     )
                 }
-                if (state.isStreamingBackup) {
+                if (state.isStreamingBackup && !state.streamingBackupComplete) {
                     Text(
                         stringResource(R.string.restore_streaming_warning),
                         color = MaterialTheme.colorScheme.error,

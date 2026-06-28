@@ -54,7 +54,7 @@
     <string name="restore_source">备份源: %1$s</string>
     <string name="restore_target_user">目标用户: %1$s</string>
     <string name="restore_wifi_warning">将恢复 Wi-Fi 配置</string>
-    <string name="restore_streaming_warning">这是实验性不完整备份，不会恢复 OBB、外部数据、权限、SSAID、Wi-Fi</string>
+    <string name="restore_streaming_warning">这是实验性不完整备份/仅部分数据：不会恢复 OBB、外部数据、权限、SSAID、Wi-Fi，大应用数据也可能曾被跳过。</string>
     <string name="restore_irreversible_warning">警告：这将覆盖现有应用数据，操作不可撤销。</string>
     <string name="dialog_title_select_snapshot">选择快照</string>
 
@@ -85,7 +85,7 @@
     <string name="config_smb_share">SMB 共享名称</string>
     <string name="config_smb_domain">SMB 域 (可选)</string>
     <string name="config_streaming_backup">实验性 Restic 临时目录备份</string>
-    <string name="config_streaming_backup_desc">不等同完整备份：不包含 OBB、外部数据、权限、SSAID、Wi-Fi；大应用数据可能被跳过。</string>
+    <string name="config_streaming_backup_desc">实验功能，不等同完整备份：会排除 OBB、外部数据、权限、SSAID、Wi-Fi；超过阈值的大应用数据也可能被跳过。</string>
     <string name="config_init_repo">初始化仓库</string>
     <string name="config_repo_stats">仓库统计</string>
     <string name="config_prune_snapshots">清理旧快照</string>

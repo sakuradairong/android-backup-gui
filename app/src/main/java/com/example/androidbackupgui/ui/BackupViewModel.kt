@@ -419,7 +419,7 @@ class BackupViewModel(
                             val summary = result.getOrNull()
                             _state.update {
                                 it.copy(
-                                    statusText = "流式备份完成！ID: ${summary?.snapshotId?.take(
+                                    statusText = "流式备份完成（不完整备份，仅包含部分数据）！ID: ${summary?.snapshotId?.take(
                                         8,
                                     )}… 新增: ${(summary?.dataAdded ?: 0) / 1024 / 1024} MB",
                                 )
