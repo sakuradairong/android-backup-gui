@@ -1,24 +1,24 @@
 package com.example.androidbackupgui.backup.restic
 
+import android.util.Base64
 import com.example.androidbackupgui.backup.core.AppError
 import com.example.androidbackupgui.backup.core.AppResult
-import com.example.androidbackupgui.backup.core.err
 import com.example.androidbackupgui.backup.core.LogSanitizer
 import com.example.androidbackupgui.backup.core.LogUtil
+import com.example.androidbackupgui.backup.core.err
 import com.example.androidbackupgui.backup.core.retryWithBackoff
 import com.thegrizzlylabs.sardineandroid.Sardine
 import com.thegrizzlylabs.sardineandroid.impl.OkHttpSardine
 import com.thegrizzlylabs.sardineandroid.impl.SardineException
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
-import android.util.Base64
-import java.net.HttpURLConnection
-import java.net.URL
+import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.IOException
+import java.net.HttpURLConnection
+import java.net.URL
 import kotlin.coroutines.coroutineContext
 
 class WebdavTransport(
@@ -29,9 +29,10 @@ class WebdavTransport(
     private val connectTimeoutSeconds: Int = 15,
     private val readTimeoutSeconds: Int = 30,
     private val allowInsecure: Boolean = false,
-): RemoteTransport {
-
-    companion object { private const val TAG = "WebdavTransport" }
+) : RemoteTransport {
+    companion object {
+        private const val TAG = "WebdavTransport"
+    }
 
     init {
         val scheme = baseUrl.substringBefore("://", "").lowercase()
@@ -41,7 +42,9 @@ class WebdavTransport(
                 throw IllegalArgumentException("WebDAV Basic auth over HTTP is not allowed. Use HTTPS.")
             }
             if (!allowInsecure) {
-                throw IllegalArgumentException("WebDAV HTTP is not allowed by default. Enable 'allow insecure WebDAV' in settings or use HTTPS.")
+                throw IllegalArgumentException(
+                    "WebDAV HTTP is not allowed by default. Enable 'allow insecure WebDAV' in settings or use HTTPS.",
+                )
             }
         }
         if (baseUrl.contains("@") && (baseUrl.startsWith("http://") || baseUrl.startsWith("https://"))) {
@@ -53,10 +56,12 @@ class WebdavTransport(
     }
 
     private val sardine: Sardine by lazy {
-        val client = okhttp3.OkHttpClient.Builder()
-            .connectTimeout(connectTimeoutSeconds.toLong(), java.util.concurrent.TimeUnit.SECONDS)
-            .readTimeout(readTimeoutSeconds.toLong(), java.util.concurrent.TimeUnit.SECONDS)
-            .build()
+        val client =
+            okhttp3.OkHttpClient
+                .Builder()
+                .connectTimeout(connectTimeoutSeconds.toLong(), java.util.concurrent.TimeUnit.SECONDS)
+                .readTimeout(readTimeoutSeconds.toLong(), java.util.concurrent.TimeUnit.SECONDS)
+                .build()
         OkHttpSardine(client).apply {
             if (username.isNotEmpty()) {
                 setCredentials(username, password)
@@ -69,7 +74,12 @@ class WebdavTransport(
         return "$baseUrl/$cleanPath"
     }
 
-    override suspend fun upload(localPath: String, remotePath: String, onProgress: suspend (RemoteTransport.TransferProgress) -> Unit, onByteProgress: suspend (RemoteTransport.ByteProgress) -> Unit): AppResult<Unit> =
+    override suspend fun upload(
+        localPath: String,
+        remotePath: String,
+        onProgress: suspend (RemoteTransport.TransferProgress) -> Unit,
+        onByteProgress: suspend (RemoteTransport.ByteProgress) -> Unit,
+    ): AppResult<Unit> =
         retryWithBackoff(TAG, "WebDAV 上传") {
             withContext(Dispatchers.IO) {
                 try {
@@ -81,21 +91,22 @@ class WebdavTransport(
                     }
                     LogUtil.d(TAG, "upload ${LogSanitizer.redact(localPath)} -> ${LogSanitizer.redact(url)} ($fileSize bytes)")
                     onProgress(RemoteTransport.TransferProgress("connecting", 0, 1, remotePath))
-                    val data = file.inputStream().buffered(bufferSize).use { input ->
-                        onProgress(RemoteTransport.TransferProgress("transferring", 0, 1, remotePath))
-                        val out = ByteArrayOutputStream()
-                        val buffer = ByteArray(bufferSize)
-                        var totalRead = 0L
-                        var n = input.read(buffer)
-                        while (n != -1) {
-                            coroutineContext.ensureActive()
-                            out.write(buffer, 0, n)
-                            totalRead += n
-                            onByteProgress(RemoteTransport.ByteProgress(totalRead, fileSize, remotePath))
-                            n = input.read(buffer)
+                    val data =
+                        file.inputStream().buffered(bufferSize).use { input ->
+                            onProgress(RemoteTransport.TransferProgress("transferring", 0, 1, remotePath))
+                            val out = ByteArrayOutputStream()
+                            val buffer = ByteArray(bufferSize)
+                            var totalRead = 0L
+                            var n = input.read(buffer)
+                            while (n != -1) {
+                                coroutineContext.ensureActive()
+                                out.write(buffer, 0, n)
+                                totalRead += n
+                                onByteProgress(RemoteTransport.ByteProgress(totalRead, fileSize, remotePath))
+                                n = input.read(buffer)
+                            }
+                            out.toByteArray()
                         }
-                        out.toByteArray()
-                    }
                     sardine.put(url, data, "application/octet-stream")
                     onProgress(RemoteTransport.TransferProgress("completed", 1, 1, remotePath))
                     AppResult.Success(Unit)
@@ -108,7 +119,12 @@ class WebdavTransport(
             }
         }
 
-    override suspend fun download(remotePath: String, localPath: String, onProgress: suspend (RemoteTransport.TransferProgress) -> Unit, onByteProgress: suspend (RemoteTransport.ByteProgress) -> Unit): AppResult<Unit> =
+    override suspend fun download(
+        remotePath: String,
+        localPath: String,
+        onProgress: suspend (RemoteTransport.TransferProgress) -> Unit,
+        onByteProgress: suspend (RemoteTransport.ByteProgress) -> Unit,
+    ): AppResult<Unit> =
         retryWithBackoff(TAG, "WebDAV 下载") {
             withContext(Dispatchers.IO) {
                 try {
@@ -145,7 +161,10 @@ class WebdavTransport(
                         partFile.renameTo(localFile)
                     }
                     onProgress(RemoteTransport.TransferProgress("completed", 1, 1, remotePath))
-                    LogUtil.d(TAG, "download ${LogSanitizer.redact(url)} -> ${LogSanitizer.redact(localPath)} (${localFile.length()} bytes)")
+                    LogUtil.d(
+                        TAG,
+                        "download ${LogSanitizer.redact(url)} -> ${LogSanitizer.redact(localPath)} (${localFile.length()} bytes)",
+                    )
                     AppResult.Success(Unit)
                 } catch (e: CancellationException) {
                     throw e
@@ -161,16 +180,20 @@ class WebdavTransport(
         partFile: File,
         offset: Long,
         onByteProgress: suspend (RemoteTransport.ByteProgress) -> Unit,
-        remotePath: String
+        remotePath: String,
     ) {
         val conn = URL(url).openConnection() as HttpURLConnection
+        conn.connectTimeout = connectTimeoutSeconds * 1000
+        conn.readTimeout = readTimeoutSeconds * 1000
         try {
             conn.requestMethod = "GET"
             if (username.isNotEmpty()) {
-                val basicAuth = "Basic " + Base64.encodeToString(
-                    "$username:$password".toByteArray(Charsets.UTF_8),
-                    Base64.NO_WRAP
-                )
+                val basicAuth =
+                    "Basic " +
+                        Base64.encodeToString(
+                            "$username:$password".toByteArray(Charsets.UTF_8),
+                            Base64.NO_WRAP,
+                        )
                 conn.setRequestProperty("Authorization", basicAuth)
             }
             conn.setRequestProperty("Range", "bytes=$offset-")
@@ -181,11 +204,23 @@ class WebdavTransport(
                 throw IOException("WebDAV Range resume 失败: HTTP $statusCode (需要 206)")
             }
 
-            val totalSize = offset + conn.contentLength
-            java.io.FileOutputStream(partFile, true).use { output ->
+            // 审查报告 H2：服务器返回 200 说明忽略了 Range 请求，返回的是完整内容。
+            // 此时绝不能继续 append，否则会得到「旧残留 + 完整内容」的损坏文件。
+            // 改为截断重写，从头开始接收完整内容。
+            val resumeSupported = statusCode == 206
+            val totalSize: Long
+            val startOffset: Long
+            if (resumeSupported) {
+                totalSize = offset + conn.contentLength
+                startOffset = offset
+            } else {
+                totalSize = conn.contentLength.toLong().let { if (it <= 0) 0L else it }
+                startOffset = 0L
+            }
+            java.io.FileOutputStream(partFile, resumeSupported).use { output ->
                 conn.inputStream.use { input ->
                     val buffer = ByteArray(bufferSize)
-                    var totalRead = offset
+                    var totalRead = startOffset
                     var n = input.read(buffer)
                     while (n != -1) {
                         coroutineContext.ensureActive()
@@ -207,17 +242,19 @@ class WebdavTransport(
                 val url = buildUrl(remoteDir)
                 val resources = sardine.list(url)
                 val urlPath = url.replace(Regex("/+$"), "")
-                val entries = resources
-                    .filter { r ->
-                        val name = r.name
-                        val href = r.href?.toString()?.replace(Regex("/+$"), "") ?: ""
-                        name != "." && name != ".." && href != urlPath
-                    }
-                    .map { RemoteTransport.RemoteFileInfo(
-                        name = it.name,
-                        size = it.contentLength,
-                        isDirectory = it.isDirectory
-                    ) }
+                val entries =
+                    resources
+                        .filter { r ->
+                            val name = r.name
+                            val href = r.href?.toString()?.replace(Regex("/+$"), "") ?: ""
+                            name != "." && name != ".." && href != urlPath
+                        }.map {
+                            RemoteTransport.RemoteFileInfo(
+                                name = it.name,
+                                size = it.contentLength,
+                                isDirectory = it.isDirectory,
+                            )
+                        }
                 LogUtil.d(TAG, "listFiles ${LogSanitizer.redact(remoteDir)} -> ${entries.size} entries")
                 AppResult.Success(entries)
             } catch (e: CancellationException) {
@@ -285,7 +322,8 @@ class WebdavTransport(
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                LogUtil.w(TAG, "delete failed (ignoring): ${LogSanitizer.redact(remotePath)} — ${e.message}")
+                // 审查报告 L4：此分支实际返回 err，并非“忽略”。原日志措辞 "ignoring" 误导调用方。
+                LogUtil.w(TAG, "delete failed: ${LogSanitizer.redact(remotePath)} — ${e.message}")
                 err(AppError.Remote("WebDAV 删除失败", "delete", cause = e))
             }
         }

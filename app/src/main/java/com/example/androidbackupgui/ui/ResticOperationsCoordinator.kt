@@ -3,6 +3,7 @@ package com.example.androidbackupgui.ui
 import android.app.Application
 import android.util.Log
 import androidx.lifecycle.viewModelScope
+import com.example.androidbackupgui.backup.core.AppResult
 import com.example.androidbackupgui.backup.restic.ResticSessionFactory
 import com.example.androidbackupgui.backup.restic.ResticWrapper
 import kotlinx.coroutines.CoroutineScope
@@ -42,8 +43,7 @@ class ResticOperationsCoordinator(
      * 通过 [resticSessionFactory] 准备配置就绪的 restic 会话。
      * @return 可用的 [ResticWrapper]，若 restic 二进制不可用则返回 `null`
      */
-    private fun prepareRestic(backendDomain: String): ResticWrapper? =
-        resticSessionFactory.prepare(application, backendDomain)
+    private fun prepareRestic(backendDomain: String): ResticWrapper? = resticSessionFactory.prepare(application, backendDomain)
 
     fun initResticRepo(form: ResticForm) {
         if (!initGuard.compareAndSet(false, true)) {
@@ -51,7 +51,6 @@ class ResticOperationsCoordinator(
             return
         }
         Log.i(TAG, "initResticRepo called: repo=${form.repo} backend=${form.backend}")
-
         val restic = prepareRestic(form.backendDomain)
         if (restic == null) {
             updateResticStatus {
@@ -59,12 +58,14 @@ class ResticOperationsCoordinator(
                     message = "restic 二进制未就绪，请确保已安装 restic 于 Termux 或 APK 内置版本可用",
                 )
             }
+            initGuard.set(false)
             return
         }
         Log.i(TAG, "initResticRepo: repo=${form.repo} backend=${form.backend} url=${form.backendUrl}")
 
         if (form.repo.isEmpty() || form.password.isEmpty()) {
             updateResticStatus { it.copy(message = "请填写仓库路径和密码") }
+            initGuard.set(false)
             return
         }
 
@@ -75,6 +76,8 @@ class ResticOperationsCoordinator(
             )
         }
 
+        // guard 由协程在完成时重置；此前的早退路径已在各自分支显式重置，
+        // 避免初始化按钮永久失效（审查报告 H1）。launch 非阻塞，故此处不再重置。
         viewModelScope.launch {
             try {
                 emitEvent(OperationEvent.InitStarted)
@@ -106,6 +109,8 @@ class ResticOperationsCoordinator(
                     }
                     refreshResticStatus(form)
                 }
+            } catch (e: Exception) {
+                updateResticStatus { it.copy(message = "初始化异常: ${e.message ?: "未知错误"}") }
             } finally {
                 initGuard.set(false)
             }
@@ -181,49 +186,17 @@ class ResticOperationsCoordinator(
                             )
                         }
                     } else {
-                        // snapshots 失败时自动尝试 init（处理已初始化的旧仓库）
-                        val initResult =
-                            restic.init(
-                                form.repo,
-                                form.password,
-                                backend = form.backend,
-                                backendUrl = form.backendUrl,
-                                backendUser = form.backendUser,
-                                backendPass = form.backendPass,
-                                backendShare = form.backendShare,
+                        // 审查报告 M1：不再自动 init。listSnapshots 失败可能是密码错误、
+                        // 网络故障或仓库确实未初始化，自动 init 对远端后端有覆盖风险。
+                        // 统一提示用户显式点「初始化仓库」按钮判断。
+                        updateResticStatus {
+                            ResticStatus(
+                                message = "仓库未初始化或认证失败，请点击「初始化仓库」",
+                                initButtonVisible = true,
+                                statsButtonVisible = false,
+                                pruneButtonVisible = false,
+                                unlockButtonVisible = false,
                             )
-                        if (initResult.isSuccess) {
-                            val snaps =
-                                restic
-                                    .listSnapshots(
-                                        form.repo,
-                                        form.password,
-                                        backend = form.backend,
-                                        backendUrl = form.backendUrl,
-                                        backendUser = form.backendUser,
-                                        backendPass = form.backendPass,
-                                        backendShare = form.backendShare,
-                                    ).getOrDefault(emptyList())
-                            updateResticStatus {
-                                ResticStatus(
-                                    message = "仓库就绪，${snaps.size} 个快照",
-                                    snapshotCount = snaps.size,
-                                    initButtonVisible = false,
-                                    statsButtonVisible = true,
-                                    pruneButtonVisible = true,
-                                    unlockButtonVisible = true,
-                                )
-                            }
-                        } else {
-                            updateResticStatus {
-                                ResticStatus(
-                                    message = "仓库未初始化或认证失败",
-                                    initButtonVisible = true,
-                                    statsButtonVisible = false,
-                                    pruneButtonVisible = false,
-                                    unlockButtonVisible = false,
-                                )
-                            }
                         }
                     }
                 }
@@ -238,15 +211,16 @@ class ResticOperationsCoordinator(
             )
         }
         viewModelScope.launch {
-            val restic = prepareRestic(form.backendDomain) ?: run {
-                updateResticStatus {
-                    it.copy(
-                        message = "restic 不可用",
-                        unlockButtonEnabled = true,
-                    )
+            val restic =
+                prepareRestic(form.backendDomain) ?: run {
+                    updateResticStatus {
+                        it.copy(
+                            message = "restic 不可用",
+                            unlockButtonEnabled = true,
+                        )
+                    }
+                    return@launch
                 }
-                return@launch
-            }
             val result =
                 restic.unlock(
                     form.repo,
@@ -278,7 +252,11 @@ class ResticOperationsCoordinator(
         viewModelScope.launch {
             try {
                 emitEvent(OperationEvent.StatsStarted)
-                val restic = prepareRestic(form.backendDomain) ?: return@launch
+                val restic =
+                    prepareRestic(form.backendDomain) ?: run {
+                        updateResticStatus { it.copy(message = "restic 不可用", statsButtonEnabled = true) }
+                        return@launch
+                    }
                 val statsResult =
                     restic.stats(
                         form.repo,
@@ -335,19 +313,15 @@ class ResticOperationsCoordinator(
             try {
                 emitEvent(OperationEvent.PruneStarted)
 
-                // Remove stale locks before forget/prune
-                val restic = prepareRestic(form.backendDomain) ?: return@launch
-                restic.unlock(
-                    form.repo,
-                    form.password,
-                    backend = form.backend,
-                    backendUrl = form.backendUrl,
-                    backendUser = form.backendUser,
-                    backendPass = form.backendPass,
-                    backendShare = form.backendShare,
-                )
+                // 审查报告 M2：不再无条件 unlock。无条件 clear lock 会清掉正在运行的备份任务的
+                // 活动锁导致损坏；仅当 forget 因锁失败时才主动解锁并重试一次。
+                val restic =
+                    prepareRestic(form.backendDomain) ?: run {
+                        updateResticStatus { it.copy(message = "restic 不可用", pruneButtonEnabled = true) }
+                        return@launch
+                    }
 
-                val forgetResult =
+                val forgetOnce: suspend () -> AppResult<String> = {
                     restic.forget(
                         form.repo,
                         form.password,
@@ -360,6 +334,29 @@ class ResticOperationsCoordinator(
                         backendPass = form.backendPass,
                         backendShare = form.backendShare,
                     )
+                }
+
+                var forgetResult = forgetOnce()
+                if (forgetResult.isFailure) {
+                    val errMsg = forgetResult.exceptionOrNull()?.message.orEmpty()
+                    val isLockError =
+                        errMsg.contains("lock", ignoreCase = true) ||
+                            errMsg.contains("already locked", ignoreCase = true)
+                    if (isLockError) {
+                        updateResticStatus { it.copy(message = "检测到锁，正在解锁后重试 forget…") }
+                        restic.unlock(
+                            form.repo,
+                            form.password,
+                            backend = form.backend,
+                            backendUrl = form.backendUrl,
+                            backendUser = form.backendUser,
+                            backendPass = form.backendPass,
+                            backendShare = form.backendShare,
+                        )
+                        forgetResult = forgetOnce()
+                    }
+                }
+
                 if (forgetResult.isFailure) {
                     emitEvent(OperationEvent.PruneFailed)
                     updateResticStatus {
