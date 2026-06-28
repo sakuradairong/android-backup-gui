@@ -77,13 +77,13 @@ class RestBridgeRunner {
                 throw IllegalStateException("REST bridge failed to bind a port")
             }
 
-            // 健康检查：等待桥接器就绪
+            // 健康检查：等待桥接器就绪（携带 authToken，避免 401 误判为未就绪）
             Log.i(TAG, "REST bridge started on port $port, waiting for health check...")
-            val isReady = healthChecker.waitForReady(port, maxWaitMs = 10000)
+            val isReady = healthChecker.waitForReady(port, maxWaitMs = 10000, authToken = authToken)
             if (!isReady) {
                 Log.w(TAG, "REST bridge health check failed, proceeding anyway...")
             } else {
-                val latency = healthChecker.getLatency(port)
+                val latency = healthChecker.getLatency(port, authToken)
                 Log.i(TAG, "REST bridge healthy, latency=${latency}ms")
             }
 

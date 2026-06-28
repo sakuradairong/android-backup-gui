@@ -82,6 +82,16 @@ class BackupViewModel(
      */
     private val resticSessionFactory: ResticSessionFactory = DefaultResticSessionFactory(),
 ) : AndroidViewModel(application) {
+    /**
+     * 供 Android [ViewModelProvider] 使用的无参注入构造函数。
+     * 主构造函数保留默认参数以便测试注入 mock；运行时框架只识别此构造函数。
+     */
+    constructor(application: Application) : this(
+        application,
+        AndroidBackupServiceBridge(),
+        DefaultResticSessionFactory(),
+    )
+
     companion object {
         private const val TAG = "BackupViewModel"
     }

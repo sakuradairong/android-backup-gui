@@ -48,8 +48,8 @@ android {
     }
     buildTypes {
         release {
-            minifyEnabled true
-            shrinkResources true
+            minifyEnabled false
+            shrinkResources false
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
             def ksFile = rootProject.file("app/release.keystore")
             def ksPass = System.getenv("KEYSTORE_PASSWORD")
