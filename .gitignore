@@ -17,9 +17,13 @@ Thumbs.db
 debug.keystore
 release.keystore
 
-# Memory files from agent harness
+# Agent harness / local tooling (not part of the repo)
 memory:*
-.omo/run-continuation/
+.omo/
+.omp/
+.pi/
+.codegraph/
+.gitnexus/
 
 # Restic test repository (contains encryption keys)
 /test/

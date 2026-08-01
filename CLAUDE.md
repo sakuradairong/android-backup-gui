@@ -93,8 +93,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | Root | `root/` | `RootShell.kt`（libsu Shell 封装，timeout=120s）、`BatchShellExecutor.kt`、`String.shellEscape()` | root shell 入口 |
 | 资源 | `app/src/main/res/` | `values/`、`drawable/`、`xml/`（FileProvider 配置等）、`mipmap-anydpi-v26/` | 标准 Android 资源 |
 | 原生 | `app/src/main/jniLibs/arm64-v8a/` | `librestic.so`（restic 0.17+ 编译进 .so）、`libtar_bin.so`、`libzstd_bin.so` | 原生二进制；`packagingOptions.jniLibs.useLegacyPackaging = true` |
-| 文档 | `docs/` | `plans/`、`reviews/`、`superpowers/`、`ROOT_BACKUP_RESTORE_*_PLAN.md` 等 | 阶段计划与安全/无障碍审查报告 |
-| 根报告 | `*.md` | `README.md`、`SECURITY.md`、`CONTRIBUTING.md`、`OPTIMIZATION_COMPLETE_SUMMARY.md`、`PHASE[1-4]_OPTIMIZATION_COMPLETE.md`、`accessibility-review-report.md`、`security-review-report.md`、`silent-failure-review.md`、`function-call-*.md`、`COMPILATION_TEST_REPORT.md`、`OPTIMIZATION_COMPLETE_SUMMARY.md`、`optimization-plan.md` | 版本演进与审查记录 |
+| 文档 | `docs/` | `archive/`（历史审查/优化/计划报告归档） | 阶段计划与安全/无障碍审查报告 |
+| 根文档 | `*.md` | `README.md`、`SECURITY.md`、`CONTRIBUTING.md`、`CODE_OF_CONDUCT.md` | 项目入口文档 |
 
 ## 数据流（一次备份）
 
@@ -127,7 +127,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `librestic.so` 找不到时检查 `app/src/main/jniLibs/arm64-v8a/` 是否有对应 ABI 的库。
 - Lint 基线在 `app/lint-baseline.xml`，新增 lint 警告需评估后再决定是否更新基线。
 - ktlint 风格检查包含在 `./gradlew lint` 中；本地可用 `ktlint.py` 配合 `kotlin-language-server` 做诊断。
-- WebDAV 默认强制 HTTPS，HTTP 会被拒；SMB 默认签名开启；这些安全默认值见 `security-review-report.md`。
+- WebDAV 默认强制 HTTPS，HTTP 会被拒；SMB 默认签名开启；这些安全默认值见 `docs/archive/security-review-report.md`。
 <!-- END_PROJECT_GUIDE -->
 
 <!-- USER_PREFERENCES -->
