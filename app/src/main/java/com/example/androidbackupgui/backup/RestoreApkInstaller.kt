@@ -76,10 +76,26 @@ object RestoreApkInstaller {
                 if (sessionId != null) {
                     for ((i, apk) in localApks.withIndex()) {
                         val sessionName = if (i == 0) "base.apk" else "split_$i.apk"
-                        RootShell.exec("pm install-write '${sessionId.shellEscape()}' '$sessionName' '${apk.absolutePath.shellEscape()}'")
+                        val writeResult = RootShell.exec("pm install-write '${sessionId.shellEscape()}' '$sessionName' '${apk.absolutePath.shellEscape()}'")
+                        if (!writeResult.isSuccess) {
+                            LogUtil.e(
+                                TAG,
+                                "installApk: $packageName install-write failed for ${apk.name} exitCode=${writeResult.exitCode} stderr=${writeResult.error.take(200)}",
+                            )
+                            RootShell.exec("pm install-abandon '${sessionId.shellEscape()}'")
+                            return false
+                        }
                     }
                     val commit = RootShell.exec("pm install-commit '${sessionId.shellEscape()}'")
-                    return commit.isSuccess
+                    if (!commit.isSuccess) {
+                        LogUtil.e(
+                            TAG,
+                            "installApk: $packageName install-commit failed exitCode=${commit.exitCode} stderr=${commit.error.take(200)}",
+                        )
+                        RootShell.exec("pm install-abandon '${sessionId.shellEscape()}'")
+                        return false
+                    }
+                    return true
                 }
             }
             val result = RootShell.exec("pm install -r -t $apkPaths")

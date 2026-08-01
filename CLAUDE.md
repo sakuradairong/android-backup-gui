@@ -84,17 +84,17 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 |---|---|---|---|
 | Activity | 根 | `MainActivity.kt` | 初始化 `RootShell`、`ResticBinary`、`LogUtil`、`PasswordManager`、`MissingAlgoProvider`；setContent `{ AppScaffold() }` |
 | UI | `ui/` | `AppScaffold.kt`、`AppNavigation.kt`（`Screen` 枚举：BACKUP/RESTORE/CONFIG/LOG）、`BackupScreen/ViewModel`、`RestoreScreen/ViewModel`、`ConfigScreen/ViewModel`、`LogScreen`、`ProgressBlock` | Compose + Material 3，StateFlow/SharedFlow 暴露状态 |
-| 业务-备份 | `backup/` | `BackupOperation.kt`（核心备份编排）、`BackupService.kt`（Foreground Service）、`BackupConfig.kt`（`backup_settings.conf` 的 immutable data class 镜像）、`BackupAppDataOps.kt`、`BackupFileIO.kt`、`BackupIntegrityChecker.kt`、`BackupProgressTracker.kt`、`ConcurrencyController.kt`（Semaphore：备份 3 / 恢复 2）、`TaskCancellationRegistry.kt`、`WifiManager.kt`、`AppInfo.kt`、`AppInfoCache.kt`、`DomainTypes.kt` | 备份全流程 |
+| 业务-备份 | `backup/` | `BackupOperation.kt`（核心备份编排，524 行）、`BackupService.kt`（Foreground Service）、`BackupServiceBridge.kt`（**Service Intent 通信抽象**，封装 30+ 行 Intent 构建代码）、`BackupConfig.kt`、`BackupAppDataOps.kt`、`BackupFileIO.kt`、`BackupIntegrityChecker.kt`、`BackupProgressTracker.kt`、`ConcurrencyController.kt`（Semaphore：备份 3 / 恢复 2）、`TaskCancellationRegistry.kt`、`WifiManager.kt`、`AppInfo.kt`、`AppInfoCache.kt`、`DomainTypes.kt` | 备份全流程 |
 | 业务-恢复 | `backup/` | `RestoreOperation.kt`、`RestoreApkInstaller.kt`、`RestoreAppDataOps.kt`、`RestoreArchiveSafety.kt` | 恢复全流程（路径穿越防护） |
-| 业务-restic | `backup/restic/` | `ResticWrapper.kt`（**facade**，对外统一入口，组合各子模块）、`ResticCommandRunner.kt`（ProcessBuilder）、`ResticEnvResolver.kt`（环境变量，避免命令行泄露密码）、`ResticBackup/Restore/SnapshotOps/Maintenance/RepoInit/StreamBackup.kt`、`BackendExecutor.kt`、`RestBridgeRunner.kt`、`ResticRestBridge.kt`（NanoHTTPD）、`RestBridgeHealthChecker.kt`、`RemoteTransport.kt`（file I/O 接口）、`WebdavTransport.kt`（sardine，8KB 分块）、`SmbTransport.kt`（jcifs-ng，8KB 分块）、`ResticJson.kt`、`ResticRetryExecutor.kt` | restic CLI 包装 + REST 桥 |
-| 业务-core | `backup/core/` | `AppError.kt`、`AppResult.kt`、`ErrorSuggestionFactory.kt`、`FormatUtil.kt`、`LogSanitizer.kt`（防敏感信息泄露到日志）、`LogUtil.kt`、`RetryUtils.kt` | 横切：日志、错误、格式化 |
+| 业务-restic | `backup/restic/` | `ResticWrapper.kt`（**facade**，对外统一入口，纯化后仅含 restic 业务方法）、`ResticSessionFactory.kt`（**restic session 封装**，独家掌控 `defaultResticWrapper` 可变属性）、`ResticCommandRunner.kt`（ProcessBuilder）、`ResticEnvResolver.kt`（环境变量）、`ResticBackup/Restore/SnapshotOps/Maintenance/RepoInit/StreamBackup.kt`、`BackendExecutor.kt`、`RestBridgeRunner.kt`、`ResticRestBridge.kt`（NanoHTTPD）、`RestBridgeHealthChecker.kt`、`RemoteTransport.kt`、`WebdavTransport.kt`、`SmbTransport.kt`、`ResticJson.kt`、`ResticRetryExecutor.kt` | restic CLI 包装 + REST 桥 |
+| 业务-core | `backup/core/` | `AppError.kt`、`AppResult.kt`、`ErrorSuggestionFactory.kt`、`FormatUtil.kt`、`LogSanitizer.kt`、`LogUtil.kt`、`RetryUtils.kt`、**`AppDetailsParser.kt`**（JSON 解析，独立于 restic）、**`RepoUrlBuilder.kt`**（URL 拼接工具）、**`SnapshotAppInfo.kt`**（数据类，零 restic 依赖） | 横切：日志、错误、格式化、纯工具 |
 | 业务-scan | `backup/scan/` | `AppScanner.kt`（`pm list packages` + `PackageManager` 解析应用名）、`SsaidCache.kt` | 应用扫描 |
 | 业务-security | `backup/security/` | `BinaryResolver.kt`、`CredentialProvider.kt`、`LegacyCredentialMigrator.kt`、`MissingAlgoProvider.kt`（注册 BouncyCastle MD4/AESCMAC，jcifs-ng 首次 SMB 需要）、`PasswordManager.kt`（EncryptedSharedPreferences）、`ResticBinary.kt`（定位 `librestic.so`） | 凭据 + 二进制 + 算法 |
 | Root | `root/` | `RootShell.kt`（libsu Shell 封装，timeout=120s）、`BatchShellExecutor.kt`、`String.shellEscape()` | root shell 入口 |
 | 资源 | `app/src/main/res/` | `values/`、`drawable/`、`xml/`（FileProvider 配置等）、`mipmap-anydpi-v26/` | 标准 Android 资源 |
 | 原生 | `app/src/main/jniLibs/arm64-v8a/` | `librestic.so`（restic 0.17+ 编译进 .so）、`libtar_bin.so`、`libzstd_bin.so` | 原生二进制；`packagingOptions.jniLibs.useLegacyPackaging = true` |
-| 文档 | `docs/` | `plans/`、`reviews/`、`superpowers/`、`ROOT_BACKUP_RESTORE_*_PLAN.md` 等 | 阶段计划与安全/无障碍审查报告 |
-| 根报告 | `*.md` | `README.md`、`SECURITY.md`、`CONTRIBUTING.md`、`OPTIMIZATION_COMPLETE_SUMMARY.md`、`PHASE[1-4]_OPTIMIZATION_COMPLETE.md`、`accessibility-review-report.md`、`security-review-report.md`、`silent-failure-review.md`、`function-call-*.md`、`COMPILATION_TEST_REPORT.md`、`OPTIMIZATION_COMPLETE_SUMMARY.md`、`optimization-plan.md` | 版本演进与审查记录 |
+| 文档 | `docs/` | `archive/`（历史审查/优化/计划报告归档） | 阶段计划与安全/无障碍审查报告 |
+| 根文档 | `*.md` | `README.md`、`SECURITY.md`、`CONTRIBUTING.md`、`CODE_OF_CONDUCT.md` | 项目入口文档 |
 
 ## 数据流（一次备份）
 
@@ -108,6 +108,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **REST 桥模式**：`ResticRestBridge`（NanoHTTPD，127.0.0.1:random 端口）+ `RemoteTransport`（SMB/WebDAV），让 restic 直接读写远端，无需本地 staging 仓库。
 - **取消**：`TaskCancellationRegistry` + `BackupService`（Foreground Service），UI 与通知栏都能取消。
 - **可注入 Restic**：`ResticWrapper` 是 class 而非 object，构造函数注入 `ResticCommandRunner/ResticEnvResolver/RestBridgeRunner/BackendExecutor`；`defaultResticWrapper` 单例在 `restic/ResticWrapper.kt:38` 导出。
+- **ViewModel 抽象层注入**（v1.18 迭代 1-8 重构）：3 个 ViewModel（`BackupViewModel`/`RestoreViewModel`/`ConfigViewModel`）通过可选构造参数注入抽象层，默认值保证向后兼容：
+  - `serviceBridge: BackupServiceBridge = AndroidBackupServiceBridge()`：封装 Service Intent 通信，消除 ViewModel 中 30+ 行 `Intent(...).apply { ... }` 模板代码
+  - `resticSessionFactory: ResticSessionFactory = DefaultResticSessionFactory()`：独家掌控 `defaultResticWrapper.{binaryPath,cacheDir,backendDomain}` 三个可变属性，ViewModel 不再直接持有单例引用
+  - 单元测试时可注入 mock 实现验证调用序列（无需启动 Android framework）
+- **core 包零 restic 依赖**（v1.18 迭代 6 设计原则）：`backup/core/` 包是纯工具层，**禁止 import `backup/restic/` 包**。`SnapshotAppInfo`/`AppDetailsParser`/`RepoUrlBuilder` 三个工具不应耦合 restic 业务对象。Kotlin 不支持嵌套 typealias（如需在 `ResticWrapper` 暴露 `SnapshotAppInfo`，直接 import core 类型即可）。
+- **低耦合验证纪律**：每次重构迭代后做 grep 全 main src 扫描——`backup.*` 通配符导入、`defaultResticWrapper.X` 单例赋值、`BackupService.Companion.X` 常量、`BackupOperation` 废弃 shim 引用。8 个迭代中累计发现 5 次遗漏（迭代 5/6/7/8 均找到前次迭代的遗留耦合）。
 
 ## 已知版本演进
 
@@ -121,7 +127,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `librestic.so` 找不到时检查 `app/src/main/jniLibs/arm64-v8a/` 是否有对应 ABI 的库。
 - Lint 基线在 `app/lint-baseline.xml`，新增 lint 警告需评估后再决定是否更新基线。
 - ktlint 风格检查包含在 `./gradlew lint` 中；本地可用 `ktlint.py` 配合 `kotlin-language-server` 做诊断。
-- WebDAV 默认强制 HTTPS，HTTP 会被拒；SMB 默认签名开启；这些安全默认值见 `security-review-report.md`。
+- WebDAV 默认强制 HTTPS，HTTP 会被拒；SMB 默认签名开启；这些安全默认值见 `docs/archive/security-review-report.md`。
 <!-- END_PROJECT_GUIDE -->
 
 <!-- USER_PREFERENCES -->

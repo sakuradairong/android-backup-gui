@@ -65,7 +65,7 @@ object RestoreOperation {
 
             // Read app list from backup
             val appListFile = File(backupDir, "appList.txt")
-            val appListContent = BackupOperation.readTextFile(appListFile)
+            val appListContent = BackupFileIO.readTextFile(appListFile)
             LogUtil.i(TAG, "restoreApps: appListContent=${appListContent?.substringBefore("\n")?.take(100)}")
             val allPackages =
                 appListContent?.let { content ->
@@ -75,11 +75,11 @@ object RestoreOperation {
                         .mapNotNull { PackageName.safe(it)?.value }
                 } ?: run {
                     LogUtil.i(TAG, "restoreApps: readTextFile returned null, trying listBackupFiles")
-                    val children = BackupOperation.listBackupFiles(backupDir)
+                    val children = BackupFileIO.listBackupFiles(backupDir)
                     LogUtil.i(TAG, "restoreApps: listBackupFiles returned ${children?.size} children")
                     children?.mapNotNull { name -> PackageName.safe(name)?.value }?.filter { name ->
                         val apkFile = File(File(backupDir, name), "$name.apk")
-                        val exists = BackupOperation.backupPathExists(apkFile)
+                        val exists = BackupFileIO.backupPathExists(apkFile)
                         LogUtil.i(TAG, "restoreApps: child $name apkExists=$exists")
                         exists
                     } ?: emptyList()

@@ -2,28 +2,24 @@ package com.example.androidbackupgui.ui
 
 import android.app.Application
 import android.content.Context
-import android.content.Intent
-import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
-import com.example.androidbackupgui.backup.*
+import com.example.androidbackupgui.backup.AndroidBackupServiceBridge
+import com.example.androidbackupgui.backup.AppInfo
+import com.example.androidbackupgui.backup.BackupConfig
+import com.example.androidbackupgui.backup.BackupOperation
+import com.example.androidbackupgui.backup.BackupProgressTracker
+import com.example.androidbackupgui.backup.BackupServiceBridge
+import com.example.androidbackupgui.backup.PackageName
+import com.example.androidbackupgui.backup.TaskCancellationRegistry
+import com.example.androidbackupgui.backup.WifiManager
 import com.example.androidbackupgui.backup.core.AppError
 import com.example.androidbackupgui.backup.core.AppResult
 import com.example.androidbackupgui.backup.core.ErrorSuggestionFactory
-import com.example.androidbackupgui.backup.restic.defaultResticWrapper
+import com.example.androidbackupgui.backup.restic.DefaultResticSessionFactory
+import com.example.androidbackupgui.backup.restic.ResticSessionFactory
 import com.example.androidbackupgui.backup.scan.AppScanner
 import com.example.androidbackupgui.backup.security.CredentialProvider
-import com.example.androidbackupgui.backup.security.ResticBinary
-import com.example.androidbackupgui.backup.BackupService.Companion.ACTION_START_TASK
-import com.example.androidbackupgui.backup.BackupService.Companion.ACTION_STOP_TASK
-import com.example.androidbackupgui.backup.BackupService.Companion.EXTRA_STATUS_TEXT
-import com.example.androidbackupgui.backup.BackupService.Companion.EXTRA_TASK_ID
-import com.example.androidbackupgui.backup.BackupService.Companion.EXTRA_TASK_TYPE
-import com.example.androidbackupgui.backup.BackupService.Companion.EXTRA_PROGRESS_CURRENT
-import com.example.androidbackupgui.backup.BackupService.Companion.EXTRA_PROGRESS_TOTAL
-import com.example.androidbackupgui.backup.BackupService.Companion.EXTRA_PROGRESS_PERCENT
-import com.example.androidbackupgui.backup.BackupService.Companion.TASK_TYPE_BACKUP
-import com.example.androidbackupgui.backup.BackupService.Companion.TASK_TYPE_RESTIC
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -70,7 +66,35 @@ sealed interface BackupEvent {
 
 class BackupViewModel(
     application: Application,
+    /**
+     * 与 [com.example.androidbackupgui.backup.BackupService] 通信的桥接器。
+     *
+     * 通过接口隔离 ViewModel 与 Service 实现细节：
+     * - 测试时可注入 mock 验证调用参数
+     * - 未来切换 Service 实现（如改用 WorkManager）无需改动 ViewModel
+     *
+     * 默认值 [AndroidBackupServiceBridge] 保持现有调用语义不变。
+     */
+    private val serviceBridge: BackupServiceBridge = AndroidBackupServiceBridge(),
+    /**
+     * 封装 restic 会话的配置。隐藏 [defaultResticWrapper] 的可变属性，
+     * 测试时可注入返回固定实例的 mock。默认 [DefaultResticSessionFactory] 保持现状。
+     */
+    private val resticSessionFactory: ResticSessionFactory = DefaultResticSessionFactory(),
 ) : AndroidViewModel(application) {
+    /**
+     * 供 Android [ViewModelProvider] 反射调用的零参（仅 [Application]）构造函数。
+     *
+     * 审查报告 L6警示：主构造函数带默认参数是为了测试注入 mock，但 [androidx.lifecycle.AndroidViewModelFactory]
+     * 只查找签名恰为 `(Application)` 的构造函数 —— *不会*消费默认参数。因此本次构造函数必须保留，
+     * 删除会导致运行时 `viewModel()` 无法实例化、直接崩溃。主构造与本次构造不可互删其一。
+     */
+    constructor(application: Application) : this(
+        application,
+        AndroidBackupServiceBridge(),
+        DefaultResticSessionFactory(),
+    )
+
     companion object {
         private const val TAG = "BackupViewModel"
     }
@@ -202,24 +226,20 @@ class BackupViewModel(
             )
         }
 
-        val registration = TaskCancellationRegistry.register(taskId) {
-            currentJob?.cancel()
-        }
+        val registration =
+            TaskCancellationRegistry.register(taskId) {
+                currentJob?.cancel()
+            }
 
         currentJob =
             viewModelScope.launch {
                 try {
-                    val serviceIntent =
-                        Intent(context, BackupService::class.java).apply {
-                            action = ACTION_START_TASK
-                            putExtra(EXTRA_STATUS_TEXT, "正在备份 ${toBackup.size} 个应用…")
-                            putExtra(EXTRA_TASK_ID, taskId)
-                            putExtra(EXTRA_TASK_TYPE, TASK_TYPE_BACKUP)
-                        }
-                    try {
-                        ContextCompat.startForegroundService(context, serviceIntent)
-                    } catch (_: Exception) {
-                    }
+                    serviceBridge.startTask(
+                        context = context,
+                        taskId = taskId,
+                        taskType = BackupServiceBridge.TASK_TYPE_BACKUP,
+                        statusText = "正在备份 ${toBackup.size} 个应用…",
+                    )
 
                     val outputDir = File(s.config.outputPath.ifEmpty { context.filesDir.absolutePath })
                     val backupResult =
@@ -246,9 +266,15 @@ class BackupViewModel(
                                             progressPercent = null,
                                         )
                                     }
-                                    updateServiceNotification(context, taskId, TASK_TYPE_BACKUP,
-                                        "[${progress.current}/${progress.total}] ${progress.packageName}",
-                                        progress.current, progress.total, null)
+                                    serviceBridge.updateProgress(
+                                        context = context,
+                                        taskId = taskId,
+                                        taskType = BackupServiceBridge.TASK_TYPE_BACKUP,
+                                        statusText = "[${progress.current}/${progress.total}] ${progress.packageName}",
+                                        current = progress.current,
+                                        total = progress.total,
+                                        percent = null,
+                                    )
                                 },
                             )
                         }
@@ -290,23 +316,32 @@ class BackupViewModel(
                     }
                     throw e
                 } catch (e: Exception) {
-                    val error = when {
-                        e.message?.contains("EPERM", ignoreCase = true) == true ->
-                            AppError.LocalIO("写入备份目录被拒绝", s.config.outputPath)
-                        e.message?.contains("EACCES", ignoreCase = true) == true ->
-                            AppError.LocalIO("权限不足", s.config.outputPath)
-                        e.message?.contains("timeout", ignoreCase = true) == true ->
-                            AppError.Network("网络超时", cause = e)
-                        else ->
-                            AppError.LocalIO("备份异常: ${e.message}", s.config.outputPath, cause = e)
-                    }
-                    val errorInfo = ErrorSuggestionFactory.createSuggestion(error, "备份操作")
-                    val errorMessage = buildString {
-                        append(errorInfo.message)
-                        if (errorInfo.suggestion.isNotEmpty()) {
-                            append("\n建议: ${errorInfo.suggestion}")
+                    val error =
+                        when {
+                            e.message?.contains("EPERM", ignoreCase = true) == true -> {
+                                AppError.LocalIO("写入备份目录被拒绝", s.config.outputPath)
+                            }
+
+                            e.message?.contains("EACCES", ignoreCase = true) == true -> {
+                                AppError.LocalIO("权限不足", s.config.outputPath)
+                            }
+
+                            e.message?.contains("timeout", ignoreCase = true) == true -> {
+                                AppError.Network("网络超时", cause = e)
+                            }
+
+                            else -> {
+                                AppError.LocalIO("备份异常: ${e.message}", s.config.outputPath, cause = e)
+                            }
                         }
-                    }
+                    val errorInfo = ErrorSuggestionFactory.createSuggestion(error, "备份操作")
+                    val errorMessage =
+                        buildString {
+                            append(errorInfo.message)
+                            if (errorInfo.suggestion.isNotEmpty()) {
+                                append("\n建议: ${errorInfo.suggestion}")
+                            }
+                        }
                     _state.update {
                         it.copy(
                             statusText = errorMessage,
@@ -323,10 +358,7 @@ class BackupViewModel(
                         )
                     }
                     TaskCancellationRegistry.unregister(taskId)
-                    try {
-                        context.startService(Intent(context, BackupService::class.java).apply { action = ACTION_STOP_TASK })
-                    } catch (_: Exception) {
-                    }
+                    serviceBridge.stopTask(context)
                 }
             }
     }
@@ -338,30 +370,6 @@ class BackupViewModel(
         }
     }
 
-    private fun updateServiceNotification(
-        context: Context,
-        taskId: String,
-        taskType: String,
-        statusText: String,
-        current: Int,
-        total: Int,
-        percent: Float?,
-    ) {
-        try {
-            val intent = Intent(context, BackupService::class.java).apply {
-                action = BackupService.ACTION_UPDATE_TASK
-                putExtra(EXTRA_STATUS_TEXT, statusText)
-                putExtra(EXTRA_TASK_ID, taskId)
-                putExtra(EXTRA_TASK_TYPE, taskType)
-                putExtra(EXTRA_PROGRESS_CURRENT, current)
-                putExtra(EXTRA_PROGRESS_TOTAL, total)
-                percent?.let { putExtra(EXTRA_PROGRESS_PERCENT, it) }
-            }
-            ContextCompat.startForegroundService(context, intent)
-        } catch (_: Exception) {
-        }
-    }
-
     private suspend fun executeResticBackup(
         context: Context,
         toBackup: List<AppInfo>,
@@ -369,16 +377,13 @@ class BackupViewModel(
         backupResult: BackupOperation.BackupResult,
         taskId: String,
     ) {
-        val binaryPath = ResticBinary.prepare(context) ?: return
-        defaultResticWrapper.binaryPath = binaryPath
-        defaultResticWrapper.cacheDir = context.cacheDir.absolutePath
-        defaultResticWrapper.backendDomain = s.config.resticBackendDomain
+        val restic = resticSessionFactory.prepare(context, s.config.resticBackendDomain) ?: return
         val credentials = CredentialProvider.resolve(s.config)
         val password = credentials.resticPassword
         val backendPass = credentials.backendPass
 
         if (s.config.useStreaming == 1) {
-            defaultResticWrapper
+            restic
                 .backupStreaming(
                     apps = toBackup,
                     noDataBackup = s.excludeDataFromBackup,
@@ -411,7 +416,15 @@ class BackupViewModel(
                                 progressPercent = pct,
                             )
                         }
-                        updateServiceNotification(context, taskId, TASK_TYPE_RESTIC, msg, 0, 0, pct)
+                        serviceBridge.updateProgress(
+                            context = context,
+                            taskId = taskId,
+                            taskType = BackupServiceBridge.TASK_TYPE_RESTIC,
+                            statusText = msg,
+                            current = 0,
+                            total = 0,
+                            percent = pct,
+                        )
                     },
                 ).let { result ->
                     when (result) {
@@ -419,7 +432,7 @@ class BackupViewModel(
                             val summary = result.getOrNull()
                             _state.update {
                                 it.copy(
-                                    statusText = "流式备份完成！ID: ${summary?.snapshotId?.take(
+                                    statusText = "流式备份完成（不完整备份，仅包含部分数据）！ID: ${summary?.snapshotId?.take(
                                         8,
                                     )}… 新增: ${(summary?.dataAdded ?: 0) / 1024 / 1024} MB",
                                 )
@@ -439,7 +452,7 @@ class BackupViewModel(
                     }
                 }
         } else {
-            defaultResticWrapper
+            restic
                 .backup(
                     repoPath = s.config.resticRepo,
                     password = password,
@@ -466,9 +479,15 @@ class BackupViewModel(
                                     progressPercent = progress.percentDone.toFloat(),
                                 )
                             }
-                            updateServiceNotification(context, taskId, TASK_TYPE_RESTIC,
-                                "上传中: %.0f%%".format(progress.percentDone * 100),
-                                progress.filesDone, progress.totalFiles, progress.percentDone.toFloat())
+                            serviceBridge.updateProgress(
+                                context = context,
+                                taskId = taskId,
+                                taskType = BackupServiceBridge.TASK_TYPE_RESTIC,
+                                statusText = "上传中: %.0f%%".format(progress.percentDone * 100),
+                                current = progress.filesDone,
+                                total = progress.totalFiles,
+                                percent = progress.percentDone.toFloat(),
+                            )
                         }
                     },
                 ).let { result ->

@@ -2,8 +2,9 @@ package com.example.androidbackupgui.backup
 
 import android.util.Log
 import com.example.androidbackupgui.backup.AppInfo
-import com.example.androidbackupgui.backup.restic.ResticWrapper.SnapshotAppInfo
+import com.example.androidbackupgui.backup.core.AppDetailsBuilder
 import com.example.androidbackupgui.backup.core.LogUtil
+import com.example.androidbackupgui.backup.core.SnapshotAppInfo
 import com.example.androidbackupgui.backup.restic.ResticWrapper
 import com.example.androidbackupgui.backup.scan.AppScanner
 import com.example.androidbackupgui.backup.scan.SsaidCache
@@ -70,6 +71,7 @@ object BackupOperation {
         noDataBackup: Set<String> = emptySet(),
         includePkgs: Set<String> = emptySet(),
         legacyApps: Map<String, SnapshotAppInfo>? = null,
+        appInfoCache: AppInfoCache = AppInfoCache(),
         onProgress: suspend (BackupProgress) -> Unit = {},
     ): BackupResult =
         withContext(Dispatchers.IO) {
@@ -92,14 +94,13 @@ object BackupOperation {
 
             // Create backup structure
             val backupRoot = File(outputDir, "Backup_${compressionMethod}_$userId")
-            if (!mkdirsForBackup(backupRoot)) {
+            if (!BackupFileIO.mkdirsForBackup(backupRoot)) {
                 LogUtil.e(TAG, "backupApps: cannot create output dir ${backupRoot.absolutePath}")
                 return@withContext BackupResult(0, 0, 0, outputDir.absolutePath, 0)
             }
             LogUtil.i(TAG, "backupApps: starting backup of ${apps.size} apps to ${backupRoot.absolutePath}")
 
             // Initialize caches for performance optimization
-            val appInfoCache = AppInfoCache()
             val ssaidCache = SsaidCache(userId)
             val progressTracker = BackupProgressTracker(apps.size)
 
@@ -113,7 +114,7 @@ object BackupOperation {
             val oldMetaJson =
                 if (oldMetaFile.exists()) {
                     try {
-                        JSONObject(readTextFile(oldMetaFile) ?: "{}")
+                        JSONObject(BackupFileIO.readTextFile(oldMetaFile) ?: "{}")
                     } catch (_: Exception) {
                         JSONObject()
                     }
@@ -123,14 +124,14 @@ object BackupOperation {
 
             // Write app list — includes ALL packages in [apps] (selected + legacy from snapshot)
             val appListFile = File(backupRoot, "appList.txt")
-            if (!writeFileForBackup(appListFile, apps.joinToString("\n") { it.packageName.value })) {
+            if (!BackupFileIO.writeFileForBackup(appListFile, apps.joinToString("\n") { it.packageName.value })) {
                 LogUtil.e(TAG, "backupApps: failed to write appList.txt")
                 return@withContext BackupResult(0, 0, 0, outputDir.absolutePath, 0)
             }
 
             // Write metadata JSON — fresh metadata for selected apps, legacy for historical apps
             val metaFile = File(backupRoot, "app_details.json")
-            if (!writeFileForBackup(metaFile, buildAppDetailsJson(apps, legacyApps, cache = appInfoCache))) {
+            if (!BackupFileIO.writeFileForBackup(metaFile, AppDetailsBuilder.buildAppDetailsJson(apps, legacyApps, cache = appInfoCache))) {
                 LogUtil.e(TAG, "backupApps: failed to write app_details.json")
                 return@withContext BackupResult(0, 0, 0, outputDir.absolutePath, 0)
             }
@@ -148,7 +149,7 @@ object BackupOperation {
             val failAtomic = AtomicInteger(0)
             val skippedAtomic = AtomicInteger(0)
             // Collect per-app extra metadata for app_details.json
-            val perAppExtraMap = ConcurrentHashMap<String, PerAppExtra>()
+            val perAppExtraMap = ConcurrentHashMap<String, AppDetailsBuilder.PerAppExtra>()
 
             // Use supervisorScope so that one app's backup failure does NOT
             // cancel siblings — each app is independent. Errors are logged
@@ -199,18 +200,13 @@ object BackupOperation {
 
             val elapsed = System.currentTimeMillis() - startTime
             RootShell.exec("chmod -R go-rwx '${backupRoot.absolutePath.shellEscape()}'")
-            val successCount = successAtomic.get()
-            val failCount = failAtomic.get()
-            val skippedCount = skippedAtomic.get()
-
-            LogUtil.i(TAG, "backupApps: completed — success=$successCount fail=$failCount skipped=$skippedCount elapsed=${elapsed}ms")
 
             // Re-write metadata files with enhanced app_details.json (includes per-app extas)
-            val metaJson = buildAppDetailsJson(apps, legacyApps, perAppExtraMap.ifEmpty { null })
-            writeFileForBackup(File(backupRoot, "app_details.json"), metaJson)
+            val metaJson = AppDetailsBuilder.buildAppDetailsJson(apps, legacyApps, perAppExtraMap.ifEmpty { null })
+            BackupFileIO.writeFileForBackup(File(backupRoot, "app_details.json"), metaJson)
 
             // 备份完整性校验（可选）
-            if (successCount > 0) {
+            if (successAtomic.get() > 0) {
                 LogUtil.i(TAG, "backupApps: starting integrity check...")
                 val integrityReport = BackupIntegrityChecker.checkBackupIntegrity(
                     backupDir = backupRoot,
@@ -235,6 +231,12 @@ object BackupOperation {
                     failAtomic.incrementAndGet()
                 }
             }
+
+            val successCount = successAtomic.get()
+            val failCount = failAtomic.get()
+            val skippedCount = skippedAtomic.get()
+
+            LogUtil.i(TAG, "backupApps: completed — success=$successCount fail=$failCount skipped=$skippedCount elapsed=${elapsed}ms")
 
             BackupResult(
                 successCount = successCount,
@@ -265,7 +267,7 @@ object BackupOperation {
         skippedAtomic: java.util.concurrent.atomic.AtomicInteger,
         successAtomic: java.util.concurrent.atomic.AtomicInteger,
         failAtomic: java.util.concurrent.atomic.AtomicInteger,
-        perAppExtraMap: ConcurrentHashMap<String, PerAppExtra>,
+        perAppExtraMap: ConcurrentHashMap<String, AppDetailsBuilder.PerAppExtra>,
         progressTracker: BackupProgressTracker,
         emit: suspend (BackupProgress) -> Unit,
     ) {
@@ -275,11 +277,10 @@ object BackupOperation {
 
         // ── Incremental check: compare APK version ──
         val oldEntry = oldMetaJson.optJSONObject(pkgName)
-        val oldApkVersion = oldEntry?.optString("apk_version", null)
-        var installedVersion: String? = null
+        val oldApkVersion = oldEntry?.optString("apk_version")
         var apkChanged = true
         if (oldApkVersion != null) {
-            installedVersion = appInfoCache.getVersionCode(pkgName)
+            val installedVersion = appInfoCache.getVersionCode(pkgName)
             if (installedVersion != null && oldApkVersion == installedVersion) {
                 apkChanged = false
                 Log.d(TAG, "backupApps: $pkgName APK $oldApkVersion unchanged, skipping")
@@ -413,7 +414,7 @@ object BackupOperation {
             }
 
         perAppExtraMap[pkgName] =
-            PerAppExtra(
+            AppDetailsBuilder.PerAppExtra(
                 ssaid = ssaidValue,
                 permissions = permissionsJson,
                 keystore = hasKeystore,
@@ -427,171 +428,7 @@ object BackupOperation {
         emit(BackupProgress(index + 1, totalCount, pkgName, "appdone", "完成"))
     }
 
-    internal suspend fun buildAppDetailsJson(
-        apps: List<AppInfo>,
-        legacyApps: Map<String, SnapshotAppInfo>? = null,
-        perAppExtra: Map<String, PerAppExtra>? = null,
-        cache: AppInfoCache? = null,
-    ): String {
-        val root = JSONObject()
-        val now = java.text.SimpleDateFormat("yyyy.MM.dd HH:mm:ss", java.util.Locale.US).format(java.util.Date())
-        for (app in apps) {
-            val entry = JSONObject()
-            entry.put("label", app.label)
-            entry.put("isSystem", app.isSystem)
-            entry.put("PackageName", app.packageName.value)
-
-            // APK versionCode for incremental skip - 使用缓存
-            val apkVersion = cache?.getVersionCode(app.packageName.value) ?: run {
-                // 回退到直接查询
-                val versionResult = RootShell.exec("dumpsys package '${app.packageName.value.shellEscape()}' | grep versionCode | head -1")
-                versionResult.output
-                    .substringAfter("versionCode=")
-                    .substringBefore(" ")
-                    .filter { it.isDigit() }
-                    .takeIf { it.isNotEmpty() }
-            }
-            if (apkVersion != null) entry.put("apk_version", apkVersion)
-
-            // APK file sizes - 使用缓存
-            val paths = cache?.getApkPaths(app.packageName.value) ?: AppScanner.getApkPaths(app.packageName.value)
-            val sizes =
-                paths.map { path ->
-                    val result = RootShell.exec("stat -c%s '${path.shellEscape()}'")
-                    if (result.isSuccess) result.output.trim().toLongOrNull() ?: 0L else 0L
-                }
-            entry.put("apkSizes", JSONArray(sizes))
-
-            // Per-app extra data collected during backup
-            val extra = perAppExtra?.get(app.packageName.value)
-            if (extra != null) {
-                if (extra.ssaid != null) entry.put("Ssaid", extra.ssaid)
-                if (extra.permissions != null) entry.put("permissions", extra.permissions)
-                if (extra.keystore) entry.put("keystore", "true")
-
-                fun putSize(
-                    key: String,
-                    value: Long?,
-                ) {
-                    if (value != null) {
-                        val obj = JSONObject()
-                        obj.put("Size", value.toString())
-                        entry.put(key, obj)
-                    }
-                }
-                putSize("user", extra.userSize)
-                putSize("user_de", extra.userDeSize)
-                putSize("data", extra.dataSize)
-                putSize("obb", extra.obbSize)
-            }
-
-            val timeObj = JSONObject()
-            timeObj.put("date", now)
-            entry.put("Backup time", timeObj)
-
-            root.put(app.packageName.value, entry)
-        }
-        // Legacy apps from previous snapshot
-        val legacyMap = legacyApps ?: emptyMap()
-        for ((pkg, legacy) in legacyMap) {
-            if (!root.has(pkg)) {
-                val entry = JSONObject()
-                entry.put("label", legacy.label)
-                entry.put("isSystem", legacy.isSystem)
-                entry.put("apkSizes", JSONArray(legacy.apkSizes))
-                root.put(pkg, entry)
-            }
-        }
-        return root.toString(2)
-    }
-
-    /**
-     * Per-app extra metadata collected during backup write phase.
-     */
-    internal data class PerAppExtra(
-        val ssaid: String? = null,
-        val permissions: org.json.JSONObject? = null,
-        val keystore: Boolean = false,
-        val userSize: Long? = null,
-        val userDeSize: Long? = null,
-        val dataSize: Long? = null,
-        val obbSize: Long? = null,
-    )
-
-    // ── Backward-compat delegations ──────────────────────────────────
-    // 以下委托方法保留以兼容现有调用方（如 RestoreOperation、ResticStreamBackup、
-    // RestoreScreen）。新代码应直接使用 BackupFileIO。
-    @Deprecated("Use BackupFileIO.mkdirsForBackup", ReplaceWith("BackupFileIO.mkdirsForBackup(dir)"))
-    internal suspend fun mkdirsForBackup(dir: File): Boolean = BackupFileIO.mkdirsForBackup(dir)
-
-    @Deprecated("Use BackupFileIO.writeFileForBackup", ReplaceWith("BackupFileIO.writeFileForBackup(file, text)"))
-    internal suspend fun writeFileForBackup(
-        file: File,
-        text: String,
-    ): Boolean = BackupFileIO.writeFileForBackup(file, text)
-
-    @Deprecated("Use BackupFileIO.readTextFile", ReplaceWith("BackupFileIO.readTextFile(file)"))
-    internal suspend fun readTextFile(file: File): String? = BackupFileIO.readTextFile(file)
-
-    @Deprecated("Use BackupFileIO.backupIsDirectory", ReplaceWith("BackupFileIO.backupIsDirectory(dir)"))
-    internal suspend fun backupIsDirectory(dir: File): Boolean = BackupFileIO.backupIsDirectory(dir)
-
-    @Deprecated("Use BackupFileIO.backupFileSize", ReplaceWith("BackupFileIO.backupFileSize(file)"))
-    internal suspend fun backupFileSize(file: File): Long = BackupFileIO.backupFileSize(file)
-
-    @Deprecated("Use BackupFileIO.backupPathExists", ReplaceWith("BackupFileIO.backupPathExists(file)"))
-    internal suspend fun backupPathExists(file: File): Boolean = BackupFileIO.backupPathExists(file)
-
-    @Deprecated("Use BackupFileIO.listBackupFiles", ReplaceWith("BackupFileIO.listBackupFiles(dir)"))
-    internal suspend fun listBackupFiles(dir: File): List<String>? = BackupFileIO.listBackupFiles(dir)
-
-    @Deprecated("Use BackupAppDataOps.runTar", ReplaceWith("BackupAppDataOps.runTar(dirs, outputFile, isZstd, tarCmd, zstdCmd, excludes)"))
-    internal suspend fun runTar(
-        dirs: List<String>,
-        outputFile: String,
-        isZstd: Boolean,
-        tarCmd: String = "tar",
-        zstdCmd: String = "zstd",
-        excludes: List<String> = emptyList(),
-    ): RootShell.ShellResult =
-        BackupAppDataOps.runTar(dirs, outputFile, isZstd, tarCmd, zstdCmd, excludes)
-
-    @Deprecated("Use BackupAppDataOps.backupUserData", ReplaceWith("BackupAppDataOps.backupUserData(context, packageName, appDir, userId, compression)"))
-    internal suspend fun backupUserData(
-        context: android.content.Context,
-        packageName: String,
-        appDir: File,
-        userId: String,
-        compression: String,
-    ): Pair<Long?, Long?> =
-        BackupAppDataOps.backupUserData(context, packageName, appDir, userId, compression)
-
-    @Deprecated("Use BackupAppDataOps.backupObb", ReplaceWith("BackupAppDataOps.backupObb(packageName, appDir, compression)"))
-    internal suspend fun backupObb(
-        packageName: String,
-        appDir: File,
-        compression: String,
-    ): Long? = BackupAppDataOps.backupObb(packageName, appDir, compression)
-
-    @Deprecated("Use BackupAppDataOps.backupExternalData", ReplaceWith("BackupAppDataOps.backupExternalData(packageName, appDir, userId, compression)"))
-    internal suspend fun backupExternalData(
-        packageName: String,
-        appDir: File,
-        userId: String,
-        compression: String,
-    ): Long? = BackupAppDataOps.backupExternalData(packageName, appDir, userId, compression)
-
-    @Deprecated("Use BackupAppDataOps.backupSsaid", ReplaceWith("BackupAppDataOps.backupSsaid(packageName, appDir, userId, ssaidCache)"))
-    internal suspend fun backupSsaid(
-        packageName: String,
-        appDir: File,
-        userId: String,
-        ssaidCache: SsaidCache? = null,
-    ) = BackupAppDataOps.backupSsaid(packageName, appDir, userId, ssaidCache)
-
-    @Deprecated("Use BackupAppDataOps.backupPermissions", ReplaceWith("BackupAppDataOps.backupPermissions(packageName, appDir)"))
-    internal suspend fun backupPermissions(
-        packageName: String,
-        appDir: File,
-    ) = BackupAppDataOps.backupPermissions(packageName, appDir)
+    // Shim delegations to BackupFileIO / BackupAppDataOps have been removed:
+    // iteration 8 fully migrated all internal callers, so the 13 @Deprecated
+    // shims (previously kept for backward compat) are now dead code.
 }
