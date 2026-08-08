@@ -41,3 +41,21 @@ This project is indexed by GitNexus as **android-backup-gui** (2510 symbols, 488
 | Index, status, clean, wiki CLI commands | `.claude/skills/gitnexus/gitnexus-cli/SKILL.md` |
 
 <!-- gitnexus:end -->
+
+## Cursor Cloud specific instructions
+
+Single-module Android Gradle project. Standard commands live in `CLAUDE.md` / `README.md`
+(`./gradlew :app:testDebugUnitTest`, `:app:lintDebug`, `:app:assembleDebug`) — use those; don't duplicate them here.
+
+- **JDK 17 is mandatory.** The VM's default JDK is 21, but Gradle 8.2 / AGP 8.2.0 will not run on it.
+  JDK 17 is pinned for Gradle via `~/.gradle/gradle.properties` (`org.gradle.java.home=/usr/lib/jvm/java-17-openjdk-amd64`),
+  so `./gradlew` uses it regardless of the shell's `JAVA_HOME`. Do not remove that pin.
+- **Android SDK** lives at `$HOME/android-sdk` (platform-34, build-tools 34.0.0). `local.properties`
+  (`sdk.dir=...`) is gitignored and is regenerated on session startup by the update script — no manual step needed.
+- **The app cannot be launched in this VM.** It requires a rooted physical **arm64** device: native libs
+  (`librestic.so`, `libtar_bin.so`, `libzstd_bin.so`) are `arm64-v8a` only and the app needs root (`pm`, `dumpsys`, restic).
+  The realistic dev loop here is headless **build + lint + unit tests**, which mirrors CI (`.github/workflows/android.yml`).
+  To verify a build, inspect the produced APK with
+  `$HOME/android-sdk/build-tools/34.0.0/aapt dump badging app/build/outputs/apk/debug/app-debug.apk`.
+- **Release builds** (`:app:assembleRelease`) require `app/release.keystore` plus non-empty `KEYSTORE_PASSWORD`
+  and `KEY_PASSWORD`; these are not configured in this environment and are not needed for debug/dev work.
