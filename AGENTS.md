@@ -41,3 +41,48 @@ This project is indexed by GitNexus as **android-backup-gui** (2510 symbols, 488
 | Index, status, clean, wiki CLI commands | `.claude/skills/gitnexus/gitnexus-cli/SKILL.md` |
 
 <!-- gitnexus:end -->
+
+## Cursor Cloud specific instructions
+
+Single-module Android Gradle project. Standard commands live in `CLAUDE.md` / `README.md`
+(`./gradlew :app:testDebugUnitTest`, `:app:lintDebug`, `:app:assembleDebug`) — use those; don't duplicate them here.
+
+- **JDK 17 is mandatory.** The VM's default JDK is 21, but Gradle 8.2 / AGP 8.2.0 will not run on it.
+  JDK 17 is pinned for Gradle via `~/.gradle/gradle.properties` (`org.gradle.java.home=/usr/lib/jvm/java-17-openjdk-amd64`),
+  so `./gradlew` uses it regardless of the shell's `JAVA_HOME`. Do not remove that pin.
+- **Android SDK** lives at `$HOME/android-sdk` (platform-34, build-tools 34.0.0, platform-tools, emulator).
+  `local.properties` (`sdk.dir=...`) is gitignored and is regenerated on session startup by the update script.
+- **Default day-to-day loop is headless build + lint + unit tests** (mirrors `.github/workflows/android.yml`).
+  Inspect a debug APK with
+  `$HOME/android-sdk/build-tools/34.0.0/aapt dump badging app/build/outputs/apk/debug/app-debug.apk`.
+- **Release builds** (`:app:assembleRelease`) require `app/release.keystore` plus non-empty `KEYSTORE_PASSWORD`
+  and `KEY_PASSWORD`; not configured here and not needed for debug/dev work.
+
+### ARM64 guest on this x86_64 cloud VM (experimental)
+
+Verified: x86 host can run an **ARM64 Android guest via QEMU TCG**, but not with the stock modern Emulator.
+
+| Path | Result |
+|------|--------|
+| Emulator **37.x** + `system-images;android-*;*;arm64-v8a` | **Blocked**: `Avd's CPU Architecture 'arm64' is not supported by the QEMU2 emulator on x86_64 host` |
+| Emulator **31.3.13** (build `9189900`) + API **27** `google_apis;arm64-v8a` | **Works** after a one-byte-length patch (see below) |
+| Full APK install / Compose UI | Unreliable: guest often never sets `sys.boot_completed`; `pm install` hangs for long periods on TCG |
+| Native engine smoke test | **Works**: push `librestic.so` and run `version` → `restic … on linux/arm64` |
+| Root | Engineering `su` present (`su 0 id`); this is **not** Magisk/KernelSU — libsu-based app flows may still fail |
+
+**How to boot the experimental ARM64 AVD** (already created as `arm64_api27` when present):
+
+1. Keep Emulator 37 at `$HOME/android-sdk/emulator` (default for x86 images / sdkmanager).
+2. Keep patched 31.3.13 at `$HOME/android-sdk/emulator-31.3.13-arm64tcg`.
+3. Download 31.3.13 if missing:
+   `curl -fL -o /tmp/emu31.zip https://dl.google.com/android/repository/emulator-linux_x64-9189900.zip`
+4. **Required binary patch** on `qemu/linux-x86_64/qemu-system-aarch64-headless` (and the non-`-headless` twin):
+   replace the android argv token after `virtio-wifi\0` from `-soundhw\0` → `-pidfile\0`
+   (same length). Unpatched 31.3.13 dies with `PCI bus not available for hda` on ranchu ARM.
+5. Launch with 31.3.13 on `PATH` first, plus:
+   `emulator -avd arm64_api27 -no-window -no-audio -no-boot-anim -gpu swiftshader_indirect -accel off -no-snapshot`
+6. Minimal guest check after `adb` shows `device`:
+   `adb push app/.../lib/arm64-v8a/librestic.so /data/local/tmp/ && adb shell chmod 755 … && adb shell /data/local/tmp/librestic.so version`
+
+Do **not** treat ARM64-TCG as the primary CI path. Prefer unit tests + rooted physical arm64 for real backup/restore E2E.
+`/dev/kvm` may exist on the VM but the `ubuntu` user is often not in the kvm group; ARM64-on-x86 cannot use KVM anyway.
